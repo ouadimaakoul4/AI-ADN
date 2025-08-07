@@ -5,7 +5,7 @@ AI-ADN: Quantum-Ethical Architecture for Autonomous Cognizance — Open-Source F
 
 > **Artificial Intelligence - Axiomatic DNA**  
 > *An open-source framework for self-sovereign, pulsar-synchronized, ethically-fused intelligence.*  
-> Developed at Harvard Paulson School of Engineering (QEI-2025)
+
 
 [AI-ADN PAGE] https://ouadimaakoul4.github.io/AI-ADN/
 
