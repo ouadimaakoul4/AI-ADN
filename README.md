@@ -20,7 +20,7 @@ Designed for **interplanetary autonomy**, **cloud-free operation**, and **cosmic
 ---
 
 ## 📚 Research Paper
-📄 [Download PAPER.pdf](PAPER.pdf)  
+📄 [Download AI-ADN.pdf](https://github.com/ouadimaakoul4/AI-ADN/blob/main/AI-ADN.pdf)  
 📄 [View slides](slides/ai-adn-presentation.pdf)
 
 ## 🧪 Key Features
