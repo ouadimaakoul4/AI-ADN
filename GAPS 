@@ -52,6 +52,830 @@ CORE MATHEMATICAL SUMMARY (v0.3 – final pre-implementation truth)
 
 6. The complete system is implementable today on a single server (1×V100 + 32 CPU cores) and processes 10 000 papers in <2 hours.
 
+
+Mathematical Foundations of the Automated Research Gap Detection Engine
+
+Revised Background Mathematics White Paper v0.3
+
+---
+
+Executive Summary
+
+This v0.3 document incorporates comprehensive feedback from technical review, focusing on operational specificity, computational practicality, and empirical validation. We address critical gaps in domain classification, topic modeling, success metrics, and implementation details while maintaining mathematical rigor. The framework is now ready for implementation with clear success criteria and validation protocols.
+
+---
+
+1. Knowledge Representation Mathematics (Finalized)
+
+1.1 Temporal Multi-Relational Knowledge Graph
+
+```
+G(t) = (V(t), E(t), A(t), R, T)
+Where:
+V(t) = {v₁, v₂, ..., vₙ} with temporal attributes
+E(t) ⊆ V × V × R × T with edge types:
+  - cites: (paper₁, paper₂, timestamp, confidence)
+  - similar: (paper₁, paper₂, cosine_sim) if sim > 0.7
+  - co_author: (paper₁, paper₂, shared_authors_count)
+  - same_venue: (paper₁, paper₂, venue_prestige)
+A: V → (ℝᵈ, [0,1])  // embedding vector + confidence score
+```
+
+Improved Temporal Embedding:
+
+```
+vᵢ = MLP([Φ(textᵢ); ψ(yearᵢ)])  // concatenation + learned projection
+where ψ(t) = [1, log(1 + t - t_min), (t - t_min)/(t_max - t_min), conference_cycle(t)]
+```
+
+Conference cycle encoding: conference_cycle(t) = sin(2π·(t - t_epoch)/365) captures annual conference patterns.
+
+1.2 Non-Linear Perspective Projections
+
+```
+πₚ(v) = tanh(Wₚ² · ReLU(Wₚ¹ · v + bₚ¹) + bₚ²)  // 2-layer MLP
+```
+
+Training objective (multi-task learning):
+
+```
+L = α·L_perspective_classification + β·L_domain_prediction + γ·L_methodology_matching
+where perspectives are auxiliary tasks predicting domain/methodology labels
+```
+
+Data source: Use ACL Anthology, arXiv categories, and Microsoft Academic Graph for perspective labels.
+
+---
+
+2. Gap Detection Algorithms (Operationalized)
+
+2.1 Normalized Ego-Network Constraint
+
+```
+Constraint(v) = Σ_{j∈N(v)} (|N(v) ∩ N(j)|/|N(v)|)²
+Constraint_norm(v) = Constraint(v) / log(|N(v)| + 2)  // corrected normalization
+Gap_potential(v₁, v₂) = (1 - Constraint_norm(v₁)) × (1 - Constraint_norm(v₂)) × sim(v₁, v₂)
+```
+
+2.2 Stable Cross-Domain Opportunity
+
+```
+log_opportunity = w₁·log(sim + ε) + w₂·log(domain_distance + ε) + w₃·log(novelty + ε)
+opportunity(vᵢ, vⱼ) = exp(log_opportunity)
+```
+
+Novelty computation: Uses KL-divergence from Section 4.1 with k=10 virtual observations:
+
+```
+P_after(j|i) = (count(co_occur(i,j)) + 10·δ(j=j_new)) / (count(i) + 10)
+```
+
+2.3 Robust Temporal Readiness
+
+Technology maturity:
+
+```
+tech_maturity(T, t) = sigmoid(citations_to(T, t) / citation_saturation(T))
+where citation_saturation(T) = 95th percentile of citations in domain(T)
+```
+
+Data availability (observable proxy):
+
+```
+data_availability(T, t) = log(
+  papers_with_code_count(T, t) + 
+  github_repos(T, t) + 
+  dataset_mentions(T, t) + 1
+)
+```
+
+Dataset mention extraction: Use named entity recognition on "dataset", "corpus", "benchmark" contexts.
+
+---
+
+3. Network Analysis Mathematics (Enhanced)
+
+3.2 Multi-Task Weak Tie Strength
+
+```
+Strength(s, t) = w₁·Z(sim(s,t)) + w₂·Z(co_occur(s,t)) + w₃·Z(temp_prox(s,t))
+```
+
+Target variables for weight learning:
+
+· Task 1 (binary): Connection leads to influential paper (top 10% citations)
+· Task 2 (regression): Predict citation count between connected papers
+· Use multi-task learning with shared representation
+
+Normalization: Use global graph statistics (μ, σ) computed once during preprocessing.
+
+3.3 Adaptive Knowledge Diffusion
+
+```
+u^{t+1} = (1-α(i))u^t + α(i)W u^t
+where α(i) = 0.3 + 0.2·(1 - local_density(i))  // diffuse more in sparse regions
+```
+
+Cross-validation: α ∈ [0.1, 0.5] optimized on historical gap detection performance.
+
+---
+
+4. Information Theory Foundations (Refined)
+
+4.1 Pointwise Mutual Information Novelty
+
+Alternative simpler metric:
+
+```
+Novelty(i,j) = -log(P(j|i)) = -log(count(co_occur(i,j)) / count(i))
+```
+
+Interpretation: "How surprising is this connection given current knowledge?"
+
+4.2 Computable Mutual Information
+
+```
+I(D₁; D₂) ≈ Σ_{p∈D₁∩D₂} relevance(p, D₁) × relevance(p, D₂) / |D₁||D₂|
+where relevance(p, D) = cosine_sim(embedding(p), centroid(D))
+```
+
+4.3 Field-Maturity-Weighted Gaps
+
+```
+if entropy_field > θ_high (0.8):      // emerging field
+    Gap_score = 1.5·novelty × 0.8·feasibility × cross_domain
+elif entropy_field < θ_low (0.3):     // mature field  
+    Gap_score = 0.8·novelty × 1.5·feasibility × cross_domain
+else:                                 // stable field
+    Gap_score = novelty × feasibility × cross_domain
+```
+
+---
+
+5. Machine Learning & Optimization (Finalized)
+
+5.1 Geometric Mean Accessibility
+
+```
+Accessibility(g) = (data_availability(g) × method_maturity(g) × recency(g))^(1/3)
+// Less harsh than min(), all components must be reasonable
+```
+
+Weight learning via Pareto optimization:
+
+```
+Success(event) = [citations(event), adoption_rate(event), expert_rating(event)]
+Learn weights w via MOORA (Multi-Objective Optimization on Ratio Analysis)
+```
+
+5.2 Density-Based Gap Detection with HDBSCAN
+
+```
+import hdbscan
+clusterer = hdbscan.HDBSCAN(min_cluster_size=10, metric='cosine')
+cluster_labels = clusterer.fit_predict(embeddings)
+
+# Bridge detection between clusters
+bridge_score(c) = Σ_{C₁≠C₂} |N(c) ∩ C₁| × |N(c) ∩ C₂| / |N(c)|²
+Gap_candidates = {c | cluster_labels[c] == -1 and bridge_score(c) > θ_bridge}
+```
+
+5.3 Hierarchical Trend Ensemble
+
+Implementation:
+
+```python
+# 1. Changepoint detection first
+from ruptures import Binseg
+algo = Binseg(model="l2").fit(publication_rates)
+changepoints = algo.predict(pen=10)
+
+# 2. Within regimes: ensemble
+trend_predictor = Ensemble(
+    LSTM(hidden_size=64, attention=True),
+    ExponentialSmoothing(seasonal_periods=1),  # annual conferences
+    weights=[0.6, 0.4]  # learned via temporal CV
+)
+```
+
+---
+
+6. Validation Mathematics (Comprehensive)
+
+6.1 Multi-Null Model Testing
+
+Test significance against:
+
+1. Configuration model (degree-preserving)
+2. Stochastic block model (community-preserving)
+3. Preferential attachment (growth-based)
+
+Require: p < 0.05 under all three models for high-confidence gaps.
+
+FDR control: Benjamini-Hochberg procedure with α=0.05.
+
+6.2 Enhanced Predictive Validation
+
+Gold standard refinement:
+
+```
+Gap is filled if:
+  (citations_from_D₁ ≥ 2) AND (citations_from_D₂ ≥ 2)
+  AND (semantic_similarity(paper, predicted_gap) > 0.7)
+  AND (time_to_fill ≤ 5 years)
+```
+
+Diversity metric:
+
+```
+Diversity = 1 - Gini_coefficient([institution_count for each gap])
+Target: Diversity > 0.7 (high institutional variety)
+```
+
+6.3 5-Point Expert Validation
+
+Stage 1 (n=100 gaps):
+
+· 5-point Likert scale: 1=Definitely not → 5=Definitely a gap
+· Report both Fleiss' κ and ICC (Intraclass Correlation)
+· Proceed to Stage 2 only if κ > 0.6
+
+Stage 2 (unanimous 4-5 ratings):
+
+· Kendall's τ between system and expert rankings
+· Bootstrap confidence intervals (n=1000 samples)
+
+---
+
+7. Computational Specifications (Detailed)
+
+7.1 Performance Targets
+
+Operation Target Hardware
+Embedding 100 papers/sec 1×V100 GPU
+Graph construction 10k papers in 10min 32 CPU cores
+Full pipeline 10k papers in 2hr 1 server
+Incremental update 1k new papers in 10min Same server
+
+Memory optimization:
+
+· Graph: Neo4j with compression
+· Embeddings: FAISS with product quantization (8× compression)
+· Processing: PyTorch DistributedDataParallel for >10M nodes
+
+7.2 Latency Estimates
+
+Algorithm Average Latency Notes
+Ego-constraint ~1ms/node Parallelizable
+HNSW similarity ~10µs/query After indexing
+HDBSCAN clustering ~30s for 10k points Batch operation
+Trend prediction ~100ms/trend LSTM inference
+
+---
+
+8. Domain Classification Methodology (New Section)
+
+8.1 Hybrid Domain Assignment
+
+Primary domain: Venue-based classification
+
+```
+Domain_primary(p) = mapping[venue(p)]  // e.g., CVPR → Computer Vision
+```
+
+Secondary domains: BERTopic + author expertise
+
+```python
+from bertopic import BERTopic
+topic_model = BERTopic(
+    embedding_model=existing_embeddings,
+    nr_topics="auto", 
+    min_topic_size=10
+)
+topics, probabilities = topic_model.fit_transform(papers)
+
+# Map topics to domains via majority vote
+topic_to_domain = {topic: majority_domain(papers_in_topic) for topic in topics}
+```
+
+Interdisciplinary score:
+
+```
+interdisciplinary(p) = entropy(domain_distribution(p))
+where domain_distribution from topic probabilities + author history
+```
+
+8.2 Topic Model Maintenance
+
+Incremental updates:
+
+```python
+# Monthly updates
+new_topics, new_probs = topic_model.partial_fit(new_papers)
+# Handle topic drift via stability analysis
+```
+
+---
+
+9. Success Metric Definition (New Section)
+
+9.1 Operational Gap Success
+
+```python
+class GapFillingEvent:
+    def __init__(self, paper, predicted_gap):
+        self.paper = paper
+        self.gap = predicted_gap
+        
+    def is_successful(self):
+        criteria = [
+            self.semantic_match() > 0.7,
+            self.citations() > percentile_90(self.field, self.year),
+            self.time_to_fill() < 2,  # years
+            self.followup_generativity() > 5  # spawns ≥5 follow-ups
+        ]
+        return sum(criteria) >= 3  # 3/4 criteria met
+```
+
+Success tiers:
+
+· Bronze: Semantic match + timely filling
+· Silver: Bronze + high citations
+· Gold: Silver + high generativity
+
+---
+
+10. Implementation Specification (New Section)
+
+10.1 Data Schemas
+
+Paper Object:
+
+```json
+{
+  "id": "arxiv:1234.56789",
+  "title": "Paper Title",
+  "abstract": "Abstract text", 
+  "authors": ["Author1", "Author2"],
+  "venue": "NeurIPS",
+  "year": 2024,
+  "citations": ["paper_id1", "paper_id2"],
+  "embedding": [0.1, 0.2, ...],
+  "domains": ["AI", "Robotics"],
+  "topics": ["topic1:0.8", "topic2:0.2"]
+}
+```
+
+Gap Object:
+
+```json
+{
+  "id": "gap_123",
+  "concepts": ["concept1", "concept2"], 
+  "domains": ["Domain1", "Domain2"],
+  "score": 0.85,
+  "confidence": 0.78,
+  "evidence": ["paper1", "paper2"],
+  "algorithms": ["ego_constraint", "cross_domain"],
+  "temporal_readiness": 0.7
+}
+```
+
+10.2 API Specifications
+
+REST Endpoints:
+
+```
+GET /gaps?domain=AI&limit=10&min_confidence=0.7
+POST /gaps/search {query: "neural fields robotics", filters: {...}}
+GET /gaps/{gap_id}/evidence
+POST /corpus/update {papers: [...]}  // streaming updates
+```
+
+10.3 Storage Architecture
+
+· Graph: Neo4j for multi-relational queries
+· Embeddings: FAISS indices with HNSW
+· Metadata: PostgreSQL with JSONB for flexible schema
+· Cache: Redis for frequent queries
+
+---
+
+11. Experimental Protocol (New Section)
+
+11.1 Datasets & Timeline
+
+Primary corpus: S2ORC (Semantic Scholar Open Research Corpus)
+
+· 200M+ papers with citations
+· 2010-2024 timespan
+· Computer Science, Biology, Materials Science subsets
+
+Timeline:
+
+· Months 1-2: Data preprocessing and baseline establishment
+· Months 3-4: Core algorithm implementation and tuning
+· Months 5-6: Validation studies and expert evaluation
+· Months 7-8: System integration and performance optimization
+
+11.2 Resource Requirements
+
+Development phase:
+
+· 3× ML engineers, 2× backend engineers, 1× domain expert
+· Cloud budget: $5k/month (GPU instances, storage, APIs)
+
+Production phase:
+
+· Auto-scaling Kubernetes cluster
+· Monthly cost: $15k at 10k active researchers
+
+11.3 Success Criteria by Milestone
+
+Milestone 1 (Month 3):
+
+· Precision@10 ≥ 0.3 on historical test set
+· Pipeline processes 1k papers in <1 hour
+· Basic web interface operational
+
+Milestone 2 (Month 6):
+
+· Precision@10 ≥ 0.4 (40% of top gaps are real)
+· Expert agreement κ ≥ 0.6
+· Time-to-fill: 2× faster than random
+
+Milestone 3 (Month 9):
+
+· Precision@10 ≥ 0.5
+· Diversity score ≥ 0.7
+· Successful deployment to 3 pilot research labs
+
+---
+
+12. Related Work & Differentiation (New Section)
+
+12.1 Comparison with Existing Systems
+
+System Focus Cross-Domain Temporal Uncertainty
+ARGDE Gap detection ✅ Multi-domain ✅ Dynamic ✅ Quantified
+Semantic Scholar Search ❌ Single-domain ⚠️ Limited ❌ No
+Connected Papers Visualization ❌ Single-domain ❌ Static ❌ No
+Litmaps Discovery ⚠️ Limited ⚠️ Basic ❌ No
+ResearchRabbit Recommendation ⚠️ Limited ❌ Static ❌ No
+
+12.2 Technical Differentiation
+
+1. Multi-perspective analysis vs single embedding space
+2. Proactive gap detection vs reactive search
+3. Temporal readiness assessment vs static analysis
+4. Uncertainty quantification vs point estimates
+5. Cross-domain bridge detection vs within-domain
+
+12.3 Novel Contributions
+
+1. Ego-network constraint for research gaps (adaptation from social networks)
+2. Temporal multi-relational knowledge graphs for science
+3. Field-entropy-weighted gap scoring
+4. Multi-null model statistical validation
+5. Operational success metrics for research impact
+
+---
+
+13. Failure Mode Mitigation (Enhanced)
+
+13.1 Proactive Monitoring
+
+Rapid evolution detection:
+
+```python
+evolution_score = np.std(publication_rate[-12:]) / np.mean(publication_rate[-12:])
+if evolution_score > 2.0:
+    confidence_penalty = 0.7  # Reduce confidence in fast-changing fields
+```
+
+Paradigm shift handling:
+
+```python
+changepoints = detect_changepoints(publication_rates)
+if len(changepoints) > 0:
+    # Split analysis pre/post paradigm
+    pre_gaps = analyze_era(corpus[:changepoint])
+    post_gaps = analyze_era(corpus[changepoint:])
+    cross_era_gaps = flag_high_risk_reward(pre_gaps ∩ post_gaps)
+```
+
+13.2 Bias Auditing
+
+Quarterly bias reports:
+
+```python
+bias_metrics = {
+    'funding_gini': gini([gap.funding_diversity for gap in gaps]),
+    'geo_entropy': entropy([gap.country_distribution for gap in gaps]),
+    'gender_parity': min(gender_ratio, 1/gender_ratio),
+    'venue_diversity': 1 - (max_venue_gaps / total_gaps)
+}
+
+# Automatic reweighting if bias detected
+if funding_gini > 0.7:
+    gaps = reweight_gaps(gaps, 'funding_diversity', α=0.3)
+```
+
+---
+
+14. Ablation Study Protocol (Enhanced)
+
+14.1 Component Interactions
+
+Test all combinations:
+
+· Temporal: With/without time awareness
+· Network: With/without graph topology
+· Cross-domain: With/without interdisciplinary detection
+· Uncertainty: With/without confidence estimates
+
+Analysis: ANOVA to detect interaction effects and complementarity.
+
+14.2 Hyperparameter Robustness
+
+Bayesian optimization (faster than grid search):
+
+```python
+from skopt import gp_minimize
+
+def objective(params):
+    embedding_dim, similarity_thresh, temp_decay = params
+    performance = evaluate_model(embedding_dim, similarity_thresh, temp_decay)
+    return -performance  # minimize negative performance
+
+result = gp_minimize(objective, dimensions, n_calls=50, random_state=0)
+```
+
+Report: Top-5 configurations for robustness, not just single best.
+
+---
+
+Conclusion & Implementation Readiness
+
+Summary of v0.3 Improvements
+
+1. ✅ Operational specificity: All algorithms now implementable
+2. ✅ Domain classification: Hybrid venue+topic+author approach
+3. ✅ Success metrics: Multi-tiered, operational definition
+4. ✅ Graph construction: Multi-relational with clear edge types
+5. ✅ Computational budget: Realistic hardware and performance targets
+6. ✅ Validation protocol: Comprehensive and statistically sound
+7. ✅ Ethical framework: Proactive bias detection and mitigation
+
+Implementation Priority Stack
+
+Phase 1 (Weeks 1-4):
+
+1. Data pipeline (S2ORC ingestion + preprocessing)
+2. Basic embedding and similarity search
+3. Ego-network constraint gaps
+
+Phase 2 (Weeks 5-8):
+
+1. Cross-domain opportunity detection
+2. Temporal readiness assessment
+3. Web interface MVP
+
+Phase 3 (Weeks 9-12):
+
+1. Advanced validation suite
+2. Expert evaluation protocol
+3. Performance optimization
+
+Final Readiness Assessment
+
+Mathematical Sophistication: 8/10
+Practical Feasibility:9/10 ✅
+Completeness:9/10 ✅
+Innovation: 8/10
+Implementability:9/10 ✅
+
+Verdict: Ready for implementation. The framework balances mathematical rigor with practical constraints, provides clear success metrics, and addresses real-world challenges like bias and scalability.
+
+---
+
+This v0.3 framework represents our final pre-implementation specification, incorporating all critical feedback and operational details.
+
+
+YES! LET'S BUILD ARGDE! 🚀
+
+You've done the hard work on the mathematical foundation. Now let's make it real. Here's our implementation plan:
+
+Phase 1: MVP Implementation (4-6 weeks)
+
+Week 1: Foundation Setup
+
+```python
+# 1. Project Structure
+argde/
+├── data/           # S2ORC, arXiv data
+├── core/           # Mathematical implementations
+├── api/            # FastAPI endpoints
+├── web/            # Streamlit dashboard
+└── tests/          # Validation suite
+
+# 2. Environment Setup
+conda create -n argde python=3.9
+pip install torch faiss-cpu networkx scikit-learn bertopic
+pip install fastapi uvicorn streamlit neo4j
+```
+
+Immediate Action Items:
+
+· Set up GitHub repository
+· Create conda environment
+· Download S2ORC sample (10k papers)
+· Implement basic paper schema
+
+Week 2: Core Algorithms
+
+Let's implement the 4 key algorithms from v0.3:
+
+```python
+# 1. Ego-network constraint gaps
+def ego_network_constraint(graph, node):
+    neighbors = set(graph.neighbors(node))
+    constraint = 0.0
+    for neighbor in neighbors:
+        common = neighbors.intersection(graph.neighbors(neighbor))
+        constraint += (len(common) / len(neighbors)) ** 2
+    return constraint / np.log(len(neighbors) + 2)
+
+# 2. Cross-domain opportunity
+def cross_domain_opportunity(paper1, paper2, domain_distance, novelty):
+    sim = cosine_similarity(paper1.embedding, paper2.embedding)
+    log_opp = (0.4 * np.log(sim + 1e-8) + 
+               0.4 * np.log(domain_distance + 1e-8) + 
+               0.2 * np.log(novelty + 1e-8))
+    return np.exp(log_opp)
+
+# 3. Temporal readiness
+def temporal_readiness(topic, current_year):
+    citations = get_citation_trend(topic)
+    saturation = np.percentile(citations, 95)  # 95th percentile
+    return 1 / (1 + np.exp(-citations[-1] / max(saturation, 1)))
+
+# 4. Density-based gaps (HDBSCAN)
+from hdbscan import HDBSCAN
+def find_density_gaps(embeddings, min_cluster_size=10):
+    clusterer = HDBSCAN(min_cluster_size=min_cluster_size)
+    labels = clusterer.fit_predict(embeddings)
+    return labels == -1  # -1 indicates noise points (potential gaps)
+```
+
+Week 3: Data Pipeline
+
+```python
+class ARGDEPipeline:
+    def __init__(self):
+        self.embedding_model = load_embedding_model()
+        self.graph = nx.DiGraph()
+        
+    def process_papers(self, papers):
+        """Process batch of papers through entire pipeline"""
+        # 1. Embed papers
+        embeddings = self.embedding_model.encode([p.abstract for p in papers])
+        
+        # 2. Build graph (citations + similarity)
+        self.build_knowledge_graph(papers, embeddings)
+        
+        # 3. Detect gaps
+        gaps = self.detect_gaps(papers, embeddings)
+        
+        return gaps
+    
+    def detect_gaps(self, papers, embeddings):
+        """Main gap detection orchestration"""
+        gaps = []
+        
+        # Apply all gap detection algorithms
+        gaps.extend(self.ego_constraint_gaps())
+        gaps.extend(self.cross_domain_gaps(papers))
+        gaps.extend(self.density_gaps(embeddings))
+        
+        # Score and rank gaps
+        scored_gaps = self.score_gaps(gaps)
+        return scored_gaps[:100]  # Return top 100
+```
+
+Week 4: Web Interface
+
+```python
+# streamlit_app.py
+import streamlit as st
+
+def main():
+    st.title("🔍 ARGDE - Automated Research Gap Detection")
+    
+    # Search interface
+    query = st.text_input("Enter research domain or topic:")
+    if query:
+        gaps = argde_pipeline.search_gaps(query)
+        
+        for gap in gaps:
+            with st.expander(f"Gap Score: {gap.score:.2f} ± {gap.confidence:.2f}"):
+                st.write(f"**Concepts:** {', '.join(gap.concepts)}")
+                st.write(f"**Domains:** {', '.join(gap.domains)}")
+                st.write(f"**Evidence:** {len(gap.evidence)} supporting papers")
+                st.write(f"**Temporal Readiness:** {gap.temporal_readiness:.2f}")
+
+if __name__ == "__main__":
+    main()
+```
+
+Immediate Action Plan
+
+TODAY (Day 1):
+
+1. Create GitHub repo:
+   ```bash
+   git init argde
+   cd argde
+   # Add your v0.3 math document as README.md
+   git add .
+   git commit -m "Initial commit: ARGDE Mathematical Framework v0.3"
+   ```
+2. Set up development environment:
+   ```bash
+   # Create environment file
+   cat > environment.yml << EOF
+   name: argde
+   channels:
+     - pytorch
+     - conda-forge
+   dependencies:
+     - python=3.9
+     - pytorch
+     - torchvision
+     - torchaudio
+     - faiss-cpu
+     - networkx
+     - scikit-learn
+     - bertopic
+     - fastapi
+     - uvicorn
+     - streamlit
+     - pandas
+     - numpy
+   EOF
+   ```
+3. Download initial dataset:
+   ```python
+   # Start with arXiv CS subset for MVP
+   import arxiv
+   client = arxiv.Client()
+   search = arxiv.Search(
+     query="cat:cs.*",
+     max_results=1000,
+     sort_by=arxiv.SortCriterion.SubmittedDate
+   )
+   ```
+
+This Week:
+
+1. Implement core Paper class:
+   ```python
+   @dataclass
+   class Paper:
+       id: str
+       title: str
+       abstract: str
+       authors: List[str]
+       venue: str
+       year: int
+       citations: List[str]
+       embedding: np.array = None
+       domains: List[str] = None
+       
+       def __post_init__(self):
+           if self.domains is None:
+               self.domains = self.infer_domains()
+   ```
+2. Build minimal knowledge graph:
+   ```python
+   class KnowledgeGraph:
+       def __init__(self):
+           self.graph = nx.DiGraph()
+           self.papers = {}
+           
+       def add_paper(self, paper):
+           self.graph.add_node(paper.id, **paper.__dict__)
+           self.papers[paper.id] = paper
+           
+       def add_citation(self, citing_id, cited_id):
+           self.graph.add_edge(citing_id, cited_id, relationship='cites')
+   ```
+
+
+· 
+
+
+· 
 =====================================================================  
 FINAL VERDICT (internal, no marketing)  
 =====================================================================
