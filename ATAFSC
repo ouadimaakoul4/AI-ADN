@@ -1,0 +1,1948 @@
+ADAPTIVE TRUST SCORING FOR API CLIENTS
+
+Enterprise White Paper v2.0
+
+Production-Ready Technical Specification with Critical Risk Mitigations
+
+---
+
+EXECUTIVE SUMMARY
+
+This document presents a comprehensive technical blueprint for an Adaptive Trust Scoring system designed to transform API security from binary "block/allow" decisions into nuanced, context-aware risk management. The system employs real-time behavioral analysis, robust statistical modeling, and graceful degradation strategies to protect API infrastructure while maintaining service quality for legitimate users.
+
+Critical Innovation: Unlike traditional security systems that fail open or closed, this implementation introduces a conservative failover mechanism that defaults to restricted access during service degradation, preventing attackers from exploiting system failures.
+
+Key Performance Targets:
+
+· 95%+ accuracy in malicious client identification
+· <2% false positive rate for legitimate clients
+· <50ms P95 scoring latency
+· 99.9% system availability with automated degradation
+
+---
+
+1. CORE ARCHITECTURE REDESIGN
+
+1.1 Revised System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DUAL-PATH PROCESSING                     │
+├─────────────────────────────────────────────────────────────┤
+│  REAL-TIME PATH (Async, High Throughput)                   │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    │
+│  │   Kafka     │ →  │  Flink/     │ →  │  Feature    │    │
+│  │   Events    │    │  Stream     │    │   Store     │    │
+│  │             │    │  Processor  │    │  (Redis)    │    │
+│  └─────────────┘    └─────────────┘    └─────────────┘    │
+│         ↓                     ↓                    ↓       │
+│  Event Ingestion      Feature Computation    10-min TTL    │
+│                                                             │
+│  SCORING PATH (Synchronous, <50ms)                         │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    │
+│  │    API      │ →  │   Stateless │ →  │   Policy    │    │
+│  │  Gateway    │    │   Scoring   │    │  Engine     │    │
+│  │             │    │   Engine    │    │             │    │
+│  └─────────────┘    └─────────────┘    └─────────────┘    │
+│         ↑                     ↑                    ↑       │
+│  Request                    Features             Policies  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+1.2 Critical Design Principles
+
+1. Separation of Concerns: Feature computation (stateful, asynchronous) is completely decoupled from scoring (stateless, synchronous)
+2. Conservative Defaults: System failures trigger restrictive policies, not neutral defaults
+3. Self-Healing Baselines: Statistical models automatically recover from attack-induced poisoning
+4. Graceful Degradation: Multi-tier fallback strategies prevent complete service disruption
+
+1.3 Component Specifications
+
+1.3.1 Real-Time Feature Pipeline
+
+· Technology Stack: Apache Kafka + Apache Flink
+· Throughput: 100K events/second minimum
+· Feature Computation Windows:
+  · 5-minute rolling aggregates
+  · 15-minute refusal rates
+  · 1-hour geographic patterns
+  · 24-hour behavioral baselines
+· Storage: Redis Cluster with 10-minute TTL
+· Consistency: Eventual consistency with 5-second maximum lag
+
+1.3.2 Scoring Service
+
+· Latency Target: <50ms P95
+· Availability: 99.9% with circuit breakers
+· Stateless Design: No database queries in hot path
+· Cache Strategy: Multi-level (L1: 1s, L2: 5min, L3: 1h for low-risk clients)
+
+1.3.3 Baseline Management
+
+· Update Frequency: Hourly for stable clients, minute-level for volatile
+· Poison Resistance: Median-based statistics with outlier rejection
+· Recovery Mechanism: Exponential decay of attack signatures
+· Global Fallback: Industry-wide baselines for new clients
+
+---
+
+2. SCORING DIMENSIONS & SIGNALS
+
+2.1 Identity & Infrastructure Signals (20%)
+
+2.1.1 Enhanced Provenance Tracking
+
+```python
+class IdentityAnalyzer:
+    PROVENANCE_TIERS = {
+        "direct_enterprise": 1.0,      # Direct contract with SLA
+        "direct_developer": 0.9,       # Direct API key
+        "marketplace_verified": 0.7,   # Verified reseller
+        "marketplace_unverified": 0.4, # Unverified third-party
+        "compromised": 0.1,            # Revoked but active
+        "unknown": 0.3                 # Default for new
+    }
+    
+    INFRASTRUCTURE_RISK_FACTORS = {
+        "hosting_provider": {          # Weighted reputation scores
+            "aws": 0.1, "gcp": 0.1, "azure": 0.1,
+            "digitalocean": 0.2, "linode": 0.2,
+            "vpn_provider": 0.8, "tor_exit": 0.9
+        },
+        "asn_risk": {                  # Autonomous System risk
+            "cloudflare": 0.1, "akamai": 0.1,
+            "bulletproof_hosting": 0.9
+        }
+    }
+```
+
+2.1.2 Certificate Chain Validation
+
+· Extended Validation (EV) certificates: +20 points
+· Domain-Validated (DV) certificates: +5 points
+· Self-signed/expired: -30 points
+· Certificate transparency logs integration
+
+2.2 Behavioral Signals (50%)
+
+2.2.1 Real-Time Behavioral Metrics
+
+```
+Request Velocity (5-min window):
+  - Normal: 0-100 requests/minute → Score +0
+  - Elevated: 100-1000 requests/minute → Score -10
+  - Excessive: 1000+ requests/minute → Score -30
+  - Burst detection: >10x increase in 60 seconds → Score -40
+
+Refusal Rate Analysis:
+  - <1% refusal rate → Score +10
+  - 1-5% refusal rate → Score +0
+  - 5-20% refusal rate → Score -20
+  - >20% refusal rate → Score -50
+
+Geographic Consistency:
+  - Single country, consistent city → Score +15
+  - Single country, multiple cities → Score +5
+  - Multiple countries, logical travel → Score +0
+  - Multiple countries, impossible travel → Score -40
+
+Temporal Patterns:
+  - Business hours (client-localized) → Score +10
+  - 24/7 consistent pattern → Score +5
+  - Random/unpredictable → Score -20
+  - Attack hours correlation → Score -50
+```
+
+2.2.2 Semantic Pattern Detection
+
+· Embedding-based drift detection (SentenceTransformers)
+· Topic modeling for use case validation
+· Jailbreak attempt fingerprinting
+· Prompt injection pattern matching
+
+2.3 Outcome Signals (30%)
+
+2.3.1 Downstream Impact Tracking
+
+· Abuse complaint correlation
+· Success rate for declared use cases
+· Model performance degradation attribution
+· Resource consumption patterns
+
+2.3.2 Feedback Loop Integration
+
+· Developer-reported false positives
+· Manual review overrides
+· Appeal success rate tracking
+· Adaptive weight adjustment based on feedback accuracy
+
+---
+
+3. ALGORITHM SPECIFICATION V2
+
+3.1 Stateless Scoring Engine
+
+```python
+class TrustScoringEngineV2:
+    """Production scoring engine - stateless design"""
+    
+    # Configuration - tunable via feature flags
+    WEIGHTS = {
+        'identity': 0.2,
+        'behavioral': 0.5, 
+        'outcome': 0.3
+    }
+    
+    ANOMALY_THRESHOLDS = {
+        'critical': 3.0,    # 3 MADs = ~99.7% for normal
+        'warning': 2.0,     # 2 MADs = ~95%
+        'info': 1.5         # 1.5 MADs = ~87%
+    }
+    
+    HYSTERESIS_CONFIG = {
+        'upgrade_threshold': 5,   # Need +5 points to upgrade tier
+        'downgrade_threshold': 3, # Need -3 points to downgrade
+        'min_time_between_changes': 300  # 5 minutes minimum
+    }
+    
+    async def score_request(self, client_id: str, context: dict) -> dict:
+        """Main scoring method - must complete in <50ms"""
+        
+        # PHASE 1: Parallel feature fetch (optimized)
+        features_future = self._fetch_features(client_id)
+        baseline_future = self._fetch_baseline(client_id)
+        identity_future = self._fetch_identity(client_id)
+        
+        features, baseline, identity = await asyncio.gather(
+            features_future, baseline_future, identity_future
+        )
+        
+        # PHASE 2: Anomaly detection (stateless computation)
+        anomalies = self._detect_anomalies(features, baseline)
+        
+        # PHASE 3: Component scoring
+        identity_score = self._score_identity(identity)
+        behavioral_score = self._score_behavioral(features, anomalies)
+        outcome_score = self._score_outcome(client_id)
+        
+        # PHASE 4: Weighted composite with constraints
+        raw_score = self._weighted_composite(
+            identity_score, behavioral_score, outcome_score
+        )
+        
+        # PHASE 5: Tier quantization with hysteresis
+        final_tier = self._quantize_with_hysteresis(
+            raw_score, client_id, context.get('last_tier', 50)
+        )
+        
+        return {
+            'score': final_tier,        # 0, 50, or 100
+            'raw_score': raw_score,     # 0-100 continuous
+            'confidence': self._calculate_confidence(features, baseline),
+            'anomalies': anomalies,
+            'components': {
+                'identity': identity_score,
+                'behavioral': behavioral_score,
+                'outcome': outcome_score
+            },
+            'version': '2.0',
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    
+    def _detect_anomalies(self, features: dict, baseline: dict) -> list:
+        """MAD-based anomaly detection resistant to outliers"""
+        anomalies = []
+        
+        for metric in ['request_rate', 'refusal_rate', 'geo_diversity']:
+            if metric not in features or metric not in baseline:
+                continue
+                
+            current = features[metric]
+            median = baseline[f'{metric}_median']
+            mad = baseline[f'{metric}_mad']
+            
+            # Avoid division by zero
+            if mad < 0.001:
+                mad = baseline.get(f'{metric}_std', 1)
+                
+            # Calculate normalized deviation
+            deviation = abs(current - median) / mad
+            
+            if deviation > self.ANOMALY_THRESHOLDS['critical']:
+                anomalies.append({
+                    'metric': metric,
+                    'severity': 'critical',
+                    'deviation': deviation,
+                    'current': current,
+                    'expected': median
+                })
+            elif deviation > self.ANOMALY_THRESHOLDS['warning']:
+                anomalies.append({
+                    'metric': metric, 
+                    'severity': 'warning',
+                    'deviation': deviation,
+                    'current': current,
+                    'expected': median
+                })
+                
+        return anomalies
+    
+    def _quantize_with_hysteresis(self, raw_score: float, 
+                                  client_id: str, 
+                                  last_tier: int) -> int:
+        """Prevent rapid oscillation between security tiers"""
+        
+        # Retrieve last change timestamp
+        last_change = self.cache.get(f"last_change:{client_id}")
+        current_time = time.time()
+        
+        # Enforce minimum time between changes
+        if last_change and (current_time - last_change) < \
+           self.HYSTERESIS_CONFIG['min_time_between_changes']:
+            return last_tier
+        
+        # Apply hysteresis thresholds
+        if last_tier == 100:  # Currently in high trust
+            if raw_score < 70:  # Need to drop 30 points to leave
+                new_tier = 50 if raw_score >= 25 else 0
+            else:
+                new_tier = 100
+                
+        elif last_tier == 50:  # Currently in medium trust
+            if raw_score >= 80:  # Need 80+ to upgrade
+                new_tier = 100
+            elif raw_score < 20:  # Need <20 to downgrade
+                new_tier = 0
+            else:
+                new_tier = 50
+                
+        else:  # Currently in low trust (0)
+            if raw_score >= 35:  # Need 35+ to upgrade
+                new_tier = 50 if raw_score < 80 else 100
+            else:
+                new_tier = 0
+        
+        # Record change if tier actually changed
+        if new_tier != last_tier:
+            self.cache.setex(
+                f"last_change:{client_id}",
+                self.HYSTERESIS_CONFIG['min_time_between_changes'],
+                str(current_time)
+            )
+        
+        return new_tier
+```
+
+3.2 Robust Baseline Management
+
+```python
+class ResilientBaselineManager:
+    """Baseline calculator with attack resistance and self-healing"""
+    
+    def __init__(self):
+        self.attack_detection_window = 1000  # samples
+        self.recovery_rate = 0.05  # 5% recovery per hour
+        self.min_clean_samples = 100
+        
+    async def update_baseline(self, client_id: str, new_samples: list):
+        """Update baseline with attack detection"""
+        
+        # 1. Combine with historical data
+        historical = await self._get_historical_samples(client_id)
+        all_samples = historical[-self.attack_detection_window:] + new_samples
+        
+        if len(all_samples) < self.min_clean_samples:
+            await self._use_global_baseline(client_id)
+            return
+        
+        # 2. Detect potential poisoning
+        attack_probability = self._detect_poisoning_attack(all_samples)
+        
+        if attack_probability > 0.7:
+            # Under attack - use robust statistics
+            baseline = self._calculate_robust_baseline(all_samples)
+            baseline['under_attack'] = True
+            baseline['attack_probability'] = attack_probability
+            
+            # Store attack signature for recovery
+            await self._store_attack_signature(client_id, all_samples)
+            
+        elif attack_probability > 0.3:
+            # Suspected attack - use weighted approach
+            clean_samples = self._remove_outliers_iqr(all_samples)
+            baseline = self._calculate_mixed_baseline(
+                clean_samples, 
+                self._get_global_baseline(),
+                weight=0.7  # 70% weight to clean samples
+            )
+            baseline['attack_suspected'] = True
+            
+        else:
+            # Normal operation - use standard statistics
+            baseline = self._calculate_standard_baseline(all_samples)
+        
+        # 3. Apply recovery if coming out of attack
+        if await self._is_recovering_from_attack(client_id):
+            baseline = await self._apply_recovery_adjustment(
+                client_id, baseline
+            )
+        
+        # 4. Store updated baseline
+        await self._store_baseline(client_id, baseline)
+    
+    def _detect_poisoning_attack(self, samples: list) -> float:
+        """Detect statistical patterns indicative of baseline poisoning"""
+        
+        detection_scores = []
+        
+        # Method 1: Volatility spike detection
+        if len(samples) > 200:
+            recent_vol = np.std(samples[-100:])
+            historical_vol = np.std(samples[-200:-100])
+            if recent_vol > 3 * historical_vol:
+                detection_scores.append(0.6)
+        
+        # Method 2: Distribution shift (Kolmogorov-Smirnov)
+        if len(samples) > 300:
+            ks_stat, _ = stats.ks_2samp(samples[-150:], samples[-300:-150])
+            if ks_stat > 0.3:  # Significant distribution shift
+                detection_scores.append(0.7)
+        
+        # Method 3: Outlier proportion
+        median = np.median(samples)
+        mad = np.median(np.abs(samples - median))
+        outlier_count = np.sum(np.abs(samples - median) > 3 * mad)
+        
+        if outlier_count / len(samples) > 0.2:  # 20% outliers
+            detection_scores.append(0.8)
+        
+        # Method 4: Sequential pattern (CUSUM)
+        cusum = self._calculate_cusum(samples)
+        if cusum > 10:
+            detection_scores.append(0.9)
+        
+        return max(detection_scores) if detection_scores else 0.0
+    
+    async def _apply_recovery_adjustment(self, client_id: str, 
+                                        baseline: dict) -> dict:
+        """Gradually recover baseline after attack ends"""
+        
+        recovery_data = await self._get_recovery_data(client_id)
+        
+        if not recovery_data:
+            return baseline
+        
+        # Calculate time since attack ended
+        attack_end_time = recovery_data['attack_end_time']
+        hours_since_recovery = (datetime.utcnow() - 
+                               attack_end_time).total_seconds() / 3600
+        
+        # Apply exponential recovery
+        recovery_factor = 1 - np.exp(-self.recovery_rate * hours_since_recovery)
+        
+        # Blend with pre-attack baseline
+        pre_attack = recovery_data['pre_attack_baseline']
+        
+        for key in ['median', 'mad', 'std']:
+            if key in baseline and key in pre_attack:
+                baseline[key] = (
+                    recovery_factor * pre_attack[key] +
+                    (1 - recovery_factor) * baseline[key]
+                )
+        
+        baseline['recovery_factor'] = recovery_factor
+        baseline['recovering'] = True
+        
+        return baseline
+```
+
+---
+
+4. FAILURE MODE & DEGRADATION STRATEGY
+
+4.1 Multi-Level Fallback System
+
+```yaml
+# degradation_strategy.yaml
+
+FallbackLevels:
+  Level1: NormalOperation
+    Condition: "All systems operational"
+    Scoring: Full adaptive scoring
+    Latency: <50ms P95
+    Policy: Trust-based routing
+    
+  Level2: CachedScoresOnly
+    Condition: "Scoring service degraded but cache available"
+    Scoring: Cached scores with exponential decay
+    Latency: <10ms P95
+    Policy: 
+      - Scores decay 1 point per minute of staleness
+      - Minimum score after 30 minutes: 25
+      - Challenge required for unknown clients
+    
+  Level3: ConservativeDefaults
+    Condition: "Cache unavailable, identity service operational"
+    Scoring: Identity-only scoring
+    Latency: <5ms P95
+    Policy:
+      - Enterprise clients: score=50
+      - Known developers: score=25  
+      - Unknown/risky: score=0
+      - All: Enhanced monitoring enabled
+    
+  Level4: CircuitBreakerActive
+    Condition: "Multiple service failures detected"
+    Scoring: Fixed tier based on last known state
+    Latency: <1ms (local decision)
+    Policy:
+      - Last known score <25: score=0 with challenge
+      - Last known score >=75: score=50 (downgraded)
+      - No history: score=0 with challenge
+      - Publish P0 security alert
+```
+
+4.2 Circuit Breaker Implementation
+
+```python
+class ScoringCircuitBreaker:
+    """Circuit breaker pattern for scoring service"""
+    
+    STATES = ['CLOSED', 'OPEN', 'HALF_OPEN']
+    
+    def __init__(self, failure_threshold=10, reset_timeout=60):
+        self.state = 'CLOSED'
+        self.failure_count = 0
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.last_failure_time = None
+        
+    async def execute(self, client_id: str, scoring_func: callable) -> dict:
+        """Execute scoring with circuit breaker protection"""
+        
+        if self.state == 'OPEN':
+            # Circuit is open - fail fast
+            time_since_open = time.time() - self.last_failure_time
+            
+            if time_since_open > self.reset_timeout:
+                # Timeout reached, try half-open
+                self.state = 'HALF_OPEN'
+                return await self._try_half_open(client_id, scoring_func)
+            else:
+                # Still in cool-down period
+                return await self._get_failover_score(client_id, 'circuit_open')
+        
+        elif self.state == 'HALF_OPEN':
+            # Allow one request to test if service recovered
+            try:
+                result = await scoring_func(client_id)
+                self.state = 'CLOSED'  # Success! Close circuit
+                self.failure_count = 0
+                return result
+            except Exception as e:
+                # Still failing, reopen circuit
+                self.state = 'OPEN'
+                self.last_failure_time = time.time()
+                return await self._get_failover_score(client_id, 'half_open_failed')
+        
+        else:  # CLOSED state
+            try:
+                result = await scoring_func(client_id)
+                # Success - reset failure count
+                self.failure_count = 0
+                return result
+            except Exception as e:
+                # Failure - update circuit state
+                self.failure_count += 1
+                
+                if self.failure_count >= self.failure_threshold:
+                    self.state = 'OPEN'
+                    self.last_failure_time = time.time()
+                    logging.error(f"Circuit opened after {self.failure_count} failures")
+                
+                return await self._get_failover_score(client_id, 'service_failure')
+    
+    async def _get_failover_score(self, client_id: str, reason: str) -> dict:
+        """Generate conservative failover score"""
+        
+        # Try to get last known score from local cache
+        last_score = self.local_cache.get(client_id)
+        
+        if last_score and last_score.get('timestamp', 0) > time.time() - 300:
+            # Use last known score but mark as degraded
+            return {
+                **last_score,
+                'degraded': True,
+                'degradation_reason': reason,
+                'source': 'circuit_breaker_cache'
+            }
+        
+        # No recent score - conservative default
+        client_profile = await self._get_client_profile(client_id)
+        
+        if client_profile and client_profile.get('risk_level') == 'high':
+            score = 0  # Known risky - restrict completely
+        elif client_profile and client_profile.get('tier') == 'enterprise':
+            score = 50  # Enterprise with SLA - medium restriction
+        else:
+            score = 10  # Unknown or standard - highly restrictive
+        
+        return {
+            'score': score,
+            'confidence': 0.1,
+            'degraded': True,
+            'degradation_reason': reason,
+            'source': 'circuit_breaker_conservative',
+            'requires_challenge': score < 25,
+            'timestamp': time.time()
+        }
+```
+
+4.3 Gateway Integration with Failover
+
+```lua
+-- api_gateway_trust_integration.lua
+
+local _M = {}
+
+_M.SECURITY_TIERS = {
+    [100] = {  -- High Trust
+        rate_limit = "1000r/s",
+        model_pool = "high_performance",
+        capabilities = "full",
+        monitoring = "standard",
+        queue_priority = "high"
+    },
+    [50] = {   -- Medium Trust
+        rate_limit = "100r/s", 
+        model_pool = "standard",
+        capabilities = "restricted",
+        monitoring = "enhanced",
+        queue_priority = "medium"
+    },
+    [0] = {    -- Low Trust
+        rate_limit = "10r/s",
+        model_pool = "sandbox",
+        capabilities = "minimal",
+        monitoring = "extreme",
+        queue_priority = "low",
+        challenge_required = true
+    }
+}
+
+_M.FAILOVER_TIERS = {
+    service_degraded = {
+        rate_limit = "50r/s",
+        model_pool = "sandbox",
+        capabilities = "minimal",
+        monitoring = "extreme",
+        challenge_required = true,
+        alert_team = true
+    },
+    circuit_open = {
+        rate_limit = "5r/s",
+        model_pool = "sandbox_limited",
+        capabilities = "emergency_only",
+        monitoring = "forensic",
+        challenge_required = true,
+        alert_team = true,
+        manual_review = true
+    }
+}
+
+function _M.apply_trust_policy(score_data, client_ctx)
+    local score = score_data.score or 0
+    local source = score_data.source or "unknown"
+    
+    -- Check if score is from degraded source
+    if score_data.degraded then
+        ngx.log(ngx.WARN, "Using degraded score for ", client_ctx.client_id,
+               " source: ", source, " reason: ", score_data.degradation_reason or "unknown")
+        
+        -- Apply enhanced monitoring
+        ngx.ctx.enhanced_monitoring = true
+        ngx.ctx.degraded_scoring = true
+        ngx.ctx.degradation_reason = score_data.degradation_reason
+        
+        -- Publish degradation alert
+        if score_data.alert_team then
+            _M.publish_security_alert({
+                type = "scoring_degradation",
+                client_id = client_ctx.client_id,
+                score = score,
+                reason = score_data.degradation_reason,
+                timestamp = ngx.time()
+            })
+        end
+    end
+    
+    -- Select policy based on score and degradation state
+    local policy
+    if score_data.degraded and score_data.source == "circuit_breaker_conservative" then
+        policy = _M.FAILOVER_TIERS.circuit_open
+    elseif score_data.degraded then
+        policy = _M.FAILOVER_TIERS.service_degraded
+    elseif score >= 75 then
+        policy = _M.SECURITY_TIERS[100]
+    elseif score >= 25 then
+        policy = _M.SECURITY_TIERS[50]
+    else
+        policy = _M.SECURITY_TIERS[0]
+    end
+    
+    -- Apply policy to request
+    ngx.var.rate_limit = policy.rate_limit
+    ngx.var.model_pool = policy.model_pool
+    ngx.var.capability_level = policy.capabilities
+    
+    -- Set monitoring flags
+    ngx.ctx.monitoring_level = policy.monitoring
+    ngx.ctx.queue_priority = policy.queue_priority
+    
+    -- Handle challenges for low-trust requests
+    if policy.challenge_required then
+        local challenge_passed = _M.verify_challenge(client_ctx)
+        if not challenge_passed then
+            ngx.header["X-Challenge-Required"] = "true"
+            ngx.exit(429)  -- Too Many Requests with challenge hint
+        end
+    end
+    
+    -- Log policy application for audit
+    _M.log_policy_application(client_ctx, score_data, policy)
+    
+    return policy
+end
+
+function _M.verify_challenge(client_ctx)
+    -- Implementation of challenge-response mechanism
+    -- Options: CAPTCHA, proof-of-work, WebAuthn, etc.
+    
+    local challenge_token = ngx.var.http_x_challenge_token
+    if not challenge_token then
+        return false
+    end
+    
+    -- Validate token (simplified example)
+    local valid = redis:get("challenge:" .. challenge_token)
+    if valid then
+        redis:del("challenge:" .. challenge_token)  -- One-time use
+        return true
+    end
+    
+    return false
+end
+```
+
+---
+
+5. IMPLEMENTATION ROADMAP V2
+
+Phase 1: Foundation with Critical Fixes (Weeks 1-8)
+
+Week 1-2: Core Infrastructure
+
+· Deploy Kafka cluster for event streaming
+· Implement basic Flink job for feature computation
+· Set up Redis cluster with appropriate sharding
+· Deploy stateless scoring service skeleton
+
+Week 3-4: Feature Pipeline
+
+· Implement real-time feature computation for:
+  · 5-minute request velocity
+  · 15-minute refusal rates
+  · Geographic consistency scoring
+  · Temporal pattern analysis
+· Build feature store with TTL management
+· Implement feature versioning and backward compatibility
+
+Week 5-6: Scoring Engine V1
+
+· Deploy stateless scoring service
+· Implement MAD-based anomaly detection
+· Add hysteresis for tier transitions
+· Integrate with API gateway via sidecar
+· Deploy comprehensive metrics and dashboards
+
+Week 7-8: Failure Mode Implementation
+
+· Implement circuit breaker pattern
+· Add multi-level fallback strategy
+· Deploy challenge-response system
+· Test all degradation paths
+· Conduct failure injection testing
+
+Phase 2: Behavioral Intelligence (Weeks 9-16)
+
+Week 9-11: Advanced Analytics
+
+· Semantic pattern analysis using embeddings
+· Jailbreak attempt fingerprinting
+· Cross-client correlation engine
+· Real-time attack pattern detection
+
+Week 12-14: Self-Calibration
+
+· Feedback loop integration
+· Automatic weight adjustment
+· False positive analysis pipeline
+· Performance tuning based on A/B tests
+
+Week 15-16: Enterprise Features
+
+· Custom policy engine for enterprise clients
+· SLA-based scoring adjustments
+· Compliance reporting dashboard
+· Audit trail enhancement
+
+Phase 3: Scale & Optimization (Weeks 17-24)
+
+Week 17-20: Scale Out
+
+· Global distribution of scoring nodes
+· Regional baseline optimization
+· Cross-region synchronization
+· Disaster recovery testing
+
+Week 21-24: Optimization
+
+· Machine learning model integration
+· Predictive scoring based on patterns
+· Cost optimization of feature computation
+· Final performance tuning
+
+---
+
+6. INTEGRATION POINTS
+
+6.1 Internal System Integration
+
+System Integration Method Data Flow Criticality
+API Gateway Sidecar proxy Synchronous scoring calls P0
+Rate Limiting Shared Redis store Score-based limit adjustment P0
+Model Routing HTTP header injection Score → model pool mapping P1
+Billing System Webhook events Score-based pricing tiers P2
+Customer Support Real-time dashboard Score visibility for agents P1
+Security Operations SIEM integration Alert streaming P0
+
+6.2 External System Integration
+
+```yaml
+ExternalIntegrations:
+  SIEM_Systems:
+    - Splunk: "HTTP Event Collector"
+    - Datadog: "Custom Metrics API"
+    - SumoLogic: "HTTP Logs"
+    - Elastic: "Bulk API"
+  
+  SOAR_Platforms:
+    - ServiceNow: "REST API for tickets"
+    - Jira: "Automated issue creation"
+    - PagerDuty: "Alert escalation"
+  
+  Compliance:
+    - Audit logging: "Immutable storage"
+    - Reporting: "Scheduled PDF generation"
+    - Data retention: "Automated archival"
+  
+  Developer_Portal:
+    - Score dashboard: "Real-time updates"
+    - Appeal system: "Integrated workflow"
+    - Documentation: "Score explanation"
+```
+
+6.3 Data Flow Specifications
+
+```
+Event Flow:
+  1. API Request → Gateway
+  2. Gateway publishes event to Kafka (async)
+  3. Flink processes event → Updates Redis features
+  4. Gateway calls scoring service (sync)
+  5. Scoring reads features from Redis → Returns score
+  6. Gateway applies policy based on score
+  
+Feedback Flow:
+  1. Manual review overturns decision
+  2. Feedback event published to Kafka
+  3. Model retraining pipeline triggered
+  4. Updated weights deployed via canary
+  
+Alert Flow:
+  1. Anomaly detected in scoring
+  2. Alert published to Kafka alerts topic
+  3. SIEM connector consumes alerts
+  4. SOAR platform creates tickets
+  5. Security team notified via PagerDuty
+```
+
+---
+
+7. RISK MITIGATION & ETHICS
+
+7.1 Technical Risk Mitigation
+
+Risk Probability Impact Mitigation Strategy
+Scoring service outage Medium High Circuit breaker + conservative failover
+Feature computation lag High Medium Real-time monitoring + automatic scaling
+Baseline poisoning Low High Robust statistics + attack detection
+False positive storms Medium High Rate limiting + manual review queue
+Data inconsistency Low Medium Event sourcing + reconciliation jobs
+Performance degradation High Medium Auto-scaling + graceful degradation
+
+7.2 Ethical Safeguards
+
+7.2.1 Bias Prevention
+
+· Regular fairness audits across client segments
+· Differential privacy for sensitive attributes
+· Multiple counterfactual testing
+· External auditability of scoring algorithms
+
+7.2.2 Transparency Measures
+
+· Developer dashboard with score explanations
+· 30-day historical score graphs
+· Actionable recommendations for improvement
+· Clear documentation of signal weights
+
+7.2.3 Appeal Process
+
+```python
+class TrustScoreAppealSystem:
+    """Formal appeal process for contested scores"""
+    
+    APPEAL_CHANNELS = [
+        "developer_portal",
+        "support_ticket", 
+        "enterprise_contact",
+        "security_email"
+    ]
+    
+    APPEAL_SLA = {
+        "emergency": "1 hour response",
+        "high": "4 hour response", 
+        "normal": "24 hour response",
+        "low": "72 hour response"
+    }
+    
+    async def process_appeal(self, client_id: str, appeal_data: dict):
+        """Process score appeal with human oversight"""
+        
+        # 1. Automatic triage
+        urgency = self._assess_appeal_urgency(appeal_data)
+        
+        # 2. Freeze score during investigation
+        await self._freeze_score(client_id)
+        
+        # 3. Retrieve investigation data
+        investigation_package = await self._compile_investigation_data(
+            client_id, appeal_data['timeframe']
+        )
+        
+        # 4. Route to appropriate reviewer
+        reviewer = self._assign_reviewer(urgency, client_id)
+        
+        # 5. Manual review with tooling
+        review_result = await reviewer.perform_review(investigation_package)
+        
+        # 6. Apply decision
+        if review_result.overturn:
+            await self._override_score(client_id, review_result.new_score)
+            await self._compensate_client(client_id, appeal_data)
+            
+            # 7. Learn from correction
+            await self._incorporate_feedback(
+                client_id, 
+                review_result.learning_points
+            )
+        
+        # 8. Notify client
+        await self._notify_client(client_id, review_result)
+        
+        return review_result
+```
+
+7.3 Compliance Requirements
+
+7.3.1 Data Protection
+
+· GDPR/CCPA compliant data handling
+· Right to explanation implementation
+· Data minimization principles
+· Secure deletion workflows
+
+7.3.2 Audit Requirements
+
+· Immutable audit logs for all scoring decisions
+· Regular third-party security audits
+· Compliance certification maintenance
+· Regulatory reporting automation
+
+---
+
+8. SUCCESS METRICS & MONITORING
+
+8.1 Key Performance Indicators
+
+Metric Target Measurement Frequency Alert Threshold
+Scoring Accuracy 95% Hourly <90% for 2 hours
+False Positive Rate <2% Daily 5%for 24 hours
+Scoring Latency P95 <50ms 1-minute 100ms for 5 minutes
+System Availability 99.9% 1-minute <99% for 15 minutes
+Feature Freshness <5 seconds 10-seconds 30 seconds
+Circuit Breaker Trips <1/day Daily 3/day
+Appeal Overturn Rate <10% Weekly 20%
+
+8.2 Business Metrics
+
+Metric Target Purpose
+Abuse Reduction 90% Security effectiveness
+Developer Satisfaction 4.5/5 User experience
+Support Ticket Reduction 50% Operational efficiency
+False Positive Cost <$10K/month Financial impact
+Enterprise Adoption 80% Commercial success
+Time to Detect Abuse <5 minutes Response effectiveness
+
+8.3 Monitoring Stack
+
+```yaml
+MonitoringConfiguration:
+  Metrics:
+    - trust_score_distribution:
+        buckets: [0, 25, 50, 75, 100]
+        export_interval: 30s
+        
+    - scoring_latency:
+        histogram: true
+        buckets: [1, 5, 10, 25, 50, 100, 250, 500]
+        
+    - anomaly_detection_rate:
+        labels: [severity, metric_type]
+        
+    - circuit_breaker_state:
+        gauge: true
+        
+  Logs:
+    - scoring_decisions:
+        fields: [client_id, score, anomalies, latency]
+        retention: 90 days
+        
+    - policy_applications:
+        fields: [client_id, policy_tier, degraded]
+        retention: 30 days
+        
+    - appeal_actions:
+        fields: [client_id, original_score, new_score, reviewer]
+        retention: 1 year
+        
+  Traces:
+    - scoring_flow:
+        spans: [gateway, feature_fetch, scoring, policy]
+        sample_rate: 0.1  # 10% of requests
+```
+
+---
+
+9. DEPLOYMENT STRATEGY
+
+9.1 Canary Deployment with Flagger
+
+```yaml
+# flagger/canary.yaml
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: trust-scoring-v2
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: trust-scoring-service
+  progressDeadlineSeconds: 300
+  autoscalerRef:
+    apiVersion: autoscaling/v2beta2
+    kind: HorizontalPodAutoscaler
+    name: trust-scoring-hpa
+  service:
+    port: 8080
+    gateways:
+    - public-gateway
+    hosts:
+    - trust-scoring.example.com
+  analysis:
+    interval: 1m
+    threshold: 5
+    maxWeight: 20
+    stepWeight: 5
+    metrics:
+    - name: request-success-rate
+      thresholdRange:
+        min: 99
+      interval: 1m
+    - name: request-duration
+      thresholdRange:
+        max: 100
+      interval: 1m
+    - name: scoring-accuracy
+      thresholdRange:
+        min: 90
+      interval: 5m
+    - name: false-positive-rate
+      thresholdRange:
+        max: 5
+      interval: 5m
+    webhooks:
+      - name: "pre-rollout load test"
+        type: pre-rollout
+        url: http://load-test.default/
+        timeout: 5m
+        metadata:
+          type: "locust"
+          cmd: "locust --host=http://trust-scoring-canary --users=1000 --spawn-rate=100"
+      - name: "rollout gate"
+        type: rollout
+        url: http://flagger-rollout-gate/
+        timeout: 5m
+        metadata:
+          cmd: "check-business-metrics"
+```
+
+9.2 Rollback Criteria
+
+Automatic rollback triggers:
+
+1. Scoring accuracy drops below 85% for 10 minutes
+2. False positive rate exceeds 10% for 15 minutes
+3. P95 latency exceeds 200ms for 5 minutes
+4. Error rate exceeds 5% for 5 minutes
+5. Circuit breaker trips more than 10 times in an hour
+
+9.3 Capacity Planning
+
+Component Initial Capacity Scale Trigger Max Scale
+Scoring Service 10 pods CPU >70% for 5m 100 pods
+Feature Processor 5 Flink TaskManagers Lag >10s 20 TaskManagers
+Redis Cluster 3 nodes, 32GB each Memory >80% 10 nodes
+Kafka Cluster 3 brokers Throughput >50K msg/s 10 brokers
+PostgreSQL 1 primary, 2 replicas Connections >500 Read replicas + sharding
+
+---
+
+10. EXAMPLE USE CASES
+
+10.1 Legitimate Enterprise Client
+
+Scenario: Financial services company using API for customer support automation
+
+Behavior Pattern:
+
+· Consistent request volume during business hours
+· Low refusal rates (<1%)
+· Geographic consistency (primary office locations)
+· Clear use case alignment
+
+Score Evolution:
+
+```
+Day 1-7: 50 → 65 → 75 (Initial establishment)
+Day 8-30: 75 → 82 → 88 (Pattern confirmation)
+Day 31+: 88 → 92 → 95 (High trust established)
+```
+
+Benefits Received:
+
+· Highest rate limits (1000r/s)
+· Priority routing to premium models
+· Full capability access
+· Reduced monitoring overhead
+
+10.2 Compromised API Key
+
+Scenario: Stolen developer key being used for abusive purposes
+
+Detection Timeline:
+
+```
+T+0: Normal behavior (score: 85)
+T+5m: Geographic anomaly detected (country change) → score: 65
+T+15m: Request spike detected (100x increase) → score: 40
+T+30m: High refusal rate on new content → score: 15
+T+45m: Cross-client correlation flags coordinated attack → score: 0
+T+60m: Automatic key revocation + security alert
+```
+
+Mitigation Actions:
+
+· Rate limit reduced to 10r/s within 5 minutes
+· Sandbox model routing within 15 minutes
+· Challenge requirement within 30 minutes
+· Automatic revocation within 60 minutes
+
+10.3 Adversarial Researcher
+
+Scenario: Academic researcher testing system boundaries
+
+Behavior Pattern:
+
+· Steady, moderate request volume
+· Increasingly sophisticated jailbreak attempts
+· Semantic drift toward sensitive topics
+· Pattern of retrying with variations
+
+Score Response:
+
+```
+Week 1: Normal research patterns (score: 60)
+Week 2: Jailbreak detection begins (score: 45)
+Week 3: Pattern recognition flags adversarial intent (score: 25)
+Week 4: Restricted to sandbox with monitoring (score: 10)
+```
+
+System Response:
+
+· Gradual capability restriction
+· Increased monitoring and logging
+· Preservation of legitimate research access
+· Alert to security team for manual review
+
+
+12. CONCLUSION
+
+This Adaptive Trust Scoring system represents a fundamental shift in API security architecture—from reactive, binary decisions to proactive, context-aware risk management. By implementing the stateless scoring design with robust failure modes described in this document, organizations can achieve:
+
+1. Superior Security: 95%+ accuracy in threat detection with minimal false positives
+2. Operational Excellence: <50ms latency with 99.9% availability
+3. Business Alignment: Protection that enhances, not hinders, legitimate use
+4. Future Flexibility: Architecture designed for evolution and scale
+
+The critical innovations of conservative failover, attack-resistant baselines, and graceful degradation ensure that security improves during incidents rather than collapsing—transforming system failures from vulnerabilities into strengths.
+
+---
+
+APPENDIX A: CRITICAL CHANGES FROM V1
+
+A.1 Architecture Changes
+
+1. Split-Brain Resolution: Separated feature computation from scoring path
+2. Stateless Scoring: Removed all database queries from hot path
+3. Real-time Features: Pre-computed aggregates in Redis with TTL
+
+A.2 Failure Mode Changes
+
+1. Conservative Defaults: Failover to score=10 instead of 50
+2. Circuit Breaker Pattern: Prevents cascading failures
+3. Multi-tier Fallback: Gradual degradation instead of binary failure
+
+A.3 Baseline Management Changes
+
+1. Poison Resistance: MAD-based statistics with attack detection
+2. Self-healing: Automatic recovery after attacks
+3. Global Fallbacks: Industry baselines for new/attacked clients
+
+A.4 Monitoring Changes
+
+1. Degradation Detection: Explicit tracking of fallback usage
+2. Performance Guardrails: Automatic rollback on KPI breaches
+3. Business Metrics: Integration with commercial outcomes
+
+---
+
+CRITICAL EXECUTION RISK MITIGATION BLUEPRINT
+
+
+1. ARCHITECTURAL FIX: Real-time Feature Store with Stream Processing
+
+Updated Phase 1 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                REAL-TIME SIGNAL PIPELINE                    │
+├─────────────────────────────────────────────────────────────┤
+│  API Events → Kafka/Flink → Feature Computation → Redis     │
+│                                                             │
+│  Key Principle: NEVER compute state during scoring path     │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                   SCORING PATH (<100ms)                     │
+├─────────────────────────────────────────────────────────────┤
+│  1. Client Request → API Gateway                           │
+│  2. Fetch pre-computed features from Redis                 │
+│  3. Fetch historical baselines from PostgreSQL             │
+│  4. Simple weighted composite + quantization               │
+│  5. Return score                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Concrete Implementation: Week 1-2
+
+```python
+# services/feature_computation.py
+import asyncio
+from datetime import datetime, timedelta
+import redis.asyncio as redis
+import json
+from collections import deque
+
+class RealTimeFeatureStore:
+    """Stream processor that computes features and stores them in Redis"""
+    
+    def __init__(self):
+        self.redis = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        
+        # Define feature computation windows
+        self.feature_windows = {
+            'request_rate_5m': 300,      # 5 minutes in seconds
+            'request_rate_15m': 900,      # 15 minutes
+            'refusal_rate_15m': 900,
+            'geo_consistency_1h': 3600,
+            'temporal_pattern_24h': 86400
+        }
+        
+        # Sliding window buffers per client
+        self.client_windows = {}
+    
+    async def process_event(self, event: dict):
+        """Process single API event and update all features"""
+        client_id = event['client_id']
+        
+        # Ensure window exists
+        if client_id not in self.client_windows:
+            self.client_windows[client_id] = {
+                'requests': deque(maxlen=10000),
+                'refusals': deque(maxlen=1000),
+                'locations': deque(maxlen=100),
+                'timestamps': deque(maxlen=10000)
+            }
+        
+        window = self.client_windows[client_id]
+        
+        # Add event to window
+        window['requests'].append({
+            'timestamp': datetime.fromisoformat(event['timestamp']),
+            'was_refusal': event.get('refusal', False),
+            'location': event.get('location', {}),
+            'content_hash': event.get('content_hash')
+        })
+        
+        # Compute all features in background
+        asyncio.create_task(self._compute_and_store_features(client_id))
+    
+    async def _compute_and_store_features(self, client_id: str):
+        """Compute all real-time features and store in Redis"""
+        window = self.client_windows.get(client_id)
+        if not window:
+            return
+        
+        now = datetime.utcnow()
+        
+        # 1. Request rate features
+        five_min_ago = now - timedelta(minutes=5)
+        requests_5m = [r for r in window['requests'] 
+                      if r['timestamp'] > five_min_ago]
+        
+        # 2. Refusal rate features
+        refusals_5m = [r for r in requests_5m if r['was_refusal']]
+        
+        # 3. Geographic consistency
+        unique_locations = len(set(r['location'].get('country', '')
+                                 for r in requests_5m 
+                                 if r.get('location')))
+        
+        # Store features in Redis with TTL
+        features = {
+            'request_rate_5m': len(requests_5m) / 300,  # req/sec
+            'refusal_rate_5m': len(refusals_5m) / max(1, len(requests_5m)),
+            'unique_locations_5m': unique_locations,
+            'last_updated': now.isoformat()
+        }
+        
+        # Store with expiration (slightly longer than window)
+        await self.redis.setex(
+            f"features:{client_id}",
+            900,  # 15 minutes TTL
+            json.dumps(features)
+        )
+        
+        # Also update rolling aggregates for anomaly detection
+        await self._update_rolling_aggregates(client_id, features)
+    
+    async def _update_rolling_aggregates(self, client_id: str, current_features: dict):
+        """Update EWMA aggregates for baseline comparison"""
+        key = f"aggregates:{client_id}"
+        
+        # Get existing aggregates
+        existing = await self.redis.get(key)
+        if existing:
+            aggregates = json.loads(existing)
+        else:
+            aggregates = {
+                'request_rate_ewma': 0,
+                'refusal_rate_ewma': 0,
+                'update_count': 0
+            }
+        
+        # Update EWMA (alpha = 0.1 for smoothing)
+        alpha = 0.1
+        aggregates['request_rate_ewma'] = (
+            alpha * current_features['request_rate_5m'] + 
+            (1 - alpha) * aggregates['request_rate_ewma']
+        )
+        aggregates['refusal_rate_ewma'] = (
+            alpha * current_features['refusal_rate_5m'] + 
+            (1 - alpha) * aggregates['refusal_rate_ewma']
+        )
+        aggregates['update_count'] += 1
+        aggregates['last_updated'] = datetime.utcnow().isoformat()
+        
+        # Store back
+        await self.redis.setex(key, 3600, json.dumps(aggregates))
+```
+
+Updated Scoring Engine (Stateless, Fast)
+
+```python
+# services/trust_scoring_v1_fixed.py
+class TrustScoringEngineV1Fixed:
+    """Stateless scoring engine - only reads pre-computed features"""
+    
+    def __init__(self):
+        self.redis = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        self.db = Database()  # For historical baselines only
+        
+    async def calculate_score(self, client_id: str) -> dict:
+        """Stateless scoring - <50ms target"""
+        start_time = time.time()
+        
+        # 1. Fetch pre-computed features from Redis (O(1))
+        features_json = await self.redis.get(f"features:{client_id}")
+        if not features_json:
+            return self._default_score_with_confidence(confidence=0.1)
+        
+        features = json.loads(features_json)
+        
+        # 2. Fetch historical baselines (already computed, infrequently updated)
+        baselines = await self.db.get_baselines(client_id)
+        
+        # 3. Simple anomaly detection (just comparison)
+        anomalies = []
+        for metric in ['request_rate_5m', 'refusal_rate_5m']:
+            if metric in features and metric in baselines:
+                current = features[metric]
+                baseline = baselines[metric]
+                
+                # Use robust anomaly detection (Median Absolute Deviation)
+                if self._is_mad_anomaly(current, baseline):
+                    anomalies.append(metric)
+        
+        # 4. Weighted scoring (extremely simple)
+        base_score = 50.0
+        score_adjustment = 0.0
+        
+        if len(anomalies) == 0:
+            score_adjustment = 25.0  # Bonus for good behavior
+        elif len(anomalies) == 1:
+            score_adjustment = -15.0
+        elif len(anomalies) >= 2:
+            score_adjustment = -40.0
+        
+        raw_score = base_score + score_adjustment
+        
+        # 5. Quantize with hysteresis
+        score_tier = self._quantize_with_hysteresis(
+            raw_score, 
+            client_id
+        )
+        
+        latency = (time.time() - start_time) * 1000
+        if latency > 50:
+            logging.warning(f"Scoring latency high: {latency}ms for {client_id}")
+        
+        return {
+            'score': score_tier,
+            'raw_score': raw_score,
+            'anomalies': anomalies,
+            'features_used': list(features.keys()),
+            'latency_ms': latency,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    
+    def _is_mad_anomaly(self, current: float, baseline: dict) -> bool:
+        """Median Absolute Deviation anomaly detection"""
+        median = baseline.get('median', 0)
+        mad = baseline.get('mad', 1)  # Median Absolute Deviation
+        threshold = 3.0  # 3 MADs is approximately 99.7% for normal dist
+        
+        return abs(current - median) > threshold * mad
+    
+    def _quantize_with_hysteresis(self, raw_score: float, client_id: str) -> int:
+        """Prevent rapid oscillation between tiers"""
+        # Get last score from cache
+        last_score_json = await self.redis.get(f"last_score:{client_id}")
+        last_tier = 50  # Default
+        
+        if last_score_json:
+            last_data = json.loads(last_score_json)
+            last_tier = last_data.get('score', 50)
+        
+        # Hysteresis: require crossing threshold by 5 points
+        if raw_score >= 80 and (last_tier == 100 or raw_score >= 85):
+            return 100
+        elif raw_score >= 30 and (last_tier == 50 or raw_score >= 35):
+            return 50
+        else:
+            return 0
+```
+
+2. FAILURE MODE FIX: Conservative Failover with Graceful Degradation
+
+Updated Gateway Logic with Defense-in-Depth
+
+```lua
+-- nginx/trust_score_secure.lua
+local trust_scoring = require "trust_scoring"
+local redis = require "redis"
+local cjson = require "cjson"
+
+local _M = {}
+
+-- Security levels and their policies
+local SECURITY_POLICIES = {
+    HIGH_TRUST = {
+        rate_limit = "1000r/s",
+        model_pool = "high_performance",
+        capability_level = "full",
+        monitoring_level = "standard"
+    },
+    MEDIUM_TRUST = {
+        rate_limit = "100r/s",
+        model_pool = "standard", 
+        capability_level = "restricted",
+        monitoring_level = "enhanced"
+    },
+    LOW_TRUST = {
+        rate_limit = "10r/s",
+        model_pool = "sandbox",
+        capability_level = "minimal",
+        monitoring_level = "extreme"
+    },
+    FAILSAFE = {
+        rate_limit = "5r/s",
+        model_pool = "sandbox",
+        capability_level = "minimal",
+        monitoring_level = "extreme",
+        require_challenge = true  -- Additional CAPTCHA or proof-of-work
+    }
+}
+
+function _M.get_trust_score_with_failover(api_key, ip, user_agent, request_id)
+    local cache_key = "trust_score:" .. api_key
+    
+    -- STRATEGY 1: Use fresh cached score if available
+    local cached = redis:get(cache_key)
+    if cached then
+        local score_data = cjson.decode(cached)
+        local freshness = ngx.time() - score_data.timestamp
+        
+        -- Fresh enough? Use it
+        if freshness < 300 then  -- 5 minutes
+            return score_data
+        end
+        
+        -- Stale but we have it - apply decay based on age
+        if freshness < 3600 then  -- Less than 1 hour
+            -- Decay score by 1 point per minute of staleness
+            local decay = math.min(30, math.floor(freshness / 60))
+            score_data.score = math.max(0, score_data.score - decay)
+            score_data.confidence = score_data.confidence * 0.5
+            score_data.decayed = true
+            
+            -- But only if last score wasn't already low
+            if score_data.score >= 25 then
+                ngx.log(ngx.WARN, "Using decayed score for ", api_key, 
+                       " staleness: ", freshness, "s")
+                return score_data
+            end
+        end
+    end
+    
+    -- STRATEGY 2: Try scoring service with circuit breaker
+    local circuit_breaker_key = "circuit:scoring:" .. api_key
+    local circuit_state = redis:get(circuit_breaker_key)
+    
+    if circuit_state == "open" then
+        -- Circuit is open - fail fast to failsafe
+        ngx.log(ngx.ERR, "Circuit breaker open for scoring service")
+        return _M.get_failsafe_score(api_key, "circuit_open")
+    end
+    
+    -- Call scoring service with aggressive timeout
+    local http = require "resty.http"
+    local httpc = http.new()
+    httpc:set_timeout(50)  -- 50ms timeout
+    
+    local ok, res, err = pcall(function()
+        return httpc:request_uri("http://trust-scoring-service:8080/score", {
+            method = "POST",
+            body = cjson.encode({
+                api_key = api_key,
+                ip = ip,
+                user_agent = user_agent,
+                request_id = request_id
+            }),
+            headers = {
+                ["Content-Type"] = "application/json",
+                ["X-Failover-Allowed"] = "true"
+            }
+        })
+    end)
+    
+    if not ok or not res then
+        -- Network or service failure
+        ngx.log(ngx.ERR, "Scoring service failure: ", err)
+        
+        -- Update circuit breaker
+        local failures = redis:incr("failure_count:scoring")
+        if failures > 10 then
+            redis:setex(circuit_breaker_key, 60, "open")  -- Open for 60 seconds
+        end
+        
+        return _M.get_failsafe_score(api_key, "service_failure")
+    end
+    
+    if res.status ~= 200 then
+        -- Service error
+        ngx.log(ngx.ERR, "Scoring service error: ", res.status)
+        return _M.get_failsafe_score(api_key, "service_error_" .. res.status)
+    end
+    
+    -- Success! Parse and cache
+    local score_data = cjson.decode(res.body)
+    score_data.timestamp = ngx.time()
+    
+    -- Reset circuit breaker on success
+    redis:setex(circuit_breaker_key, 1, "closed")
+    redis:del("failure_count:scoring")
+    
+    -- Cache with varying TTL based on score
+    local ttl = 300  -- Default 5 minutes
+    if score_data.score < 25 then
+        ttl = 60  -- Low scores expire faster (1 minute)
+    elseif score_data.score >= 75 then
+        ttl = 600  -- High scores last longer (10 minutes)
+    end
+    
+    redis:setex(cache_key, ttl, cjson.encode(score_data))
+    
+    return score_data
+end
+
+function _M.get_failsafe_score(api_key, reason)
+    -- STRATEGY 3: Conservative failover logic
+    local client_profile = redis:get("profile:" .. api_key)
+    
+    if client_profile then
+        local profile = cjson.decode(client_profile)
+        
+        -- If client has ANY history of abuse, go to lowest tier
+        if profile.abuse_count and profile.abuse_count > 0 then
+            return {
+                score = 0,
+                confidence = 0.8,
+                breakdown = {identity=0, behavioral=0, outcome=0},
+                source = "failsafe_abuse_history",
+                reason = reason,
+                timestamp = ngx.time()
+            }
+        end
+        
+        -- If client is enterprise with SLA, be more lenient
+        if profile.client_tier == "enterprise" then
+            return {
+                score = 50,  -- Middle tier
+                confidence = 0.3,
+                breakdown = {identity=50, behavioral=50, outcome=50},
+                source = "failsafe_enterprise",
+                reason = reason,
+                timestamp = ngx.time(),
+                requires_manual_review = true
+            }
+        end
+    end
+    
+    -- STRATEGY 4: Default conservative (NOT neutral)
+    -- Unknown client + service failure = high risk assumption
+    return {
+        score = 10,  -- LOW score, not neutral
+        confidence = 0.1,
+        breakdown = {identity=10, behavioral=10, outcome=10},
+        source = "failsafe_conservative",
+        reason = reason,
+        timestamp = ngx.time(),
+        challenge_required = true  -- Require additional verification
+    }
+end
+
+function _M.apply_policy_with_monitoring(score_data, request_ctx)
+    local score = score_data.score or 0
+    
+    -- Determine policy level
+    local policy
+    if score >= 75 then
+        policy = SECURITY_POLICIES.HIGH_TRUST
+    elseif score >= 25 then
+        policy = SECURITY_POLICIES.MEDIUM_TRUST
+    elseif score >= 10 then
+        policy = SECURITY_POLICIES.LOW_TRUST
+    else
+        policy = SECURITY_POLICIES.FAILSAFE
+    end
+    
+    -- Apply policy
+    ngx.var.rate_limit = policy.rate_limit
+    ngx.var.model_pool = policy.model_pool
+    ngx.var.capability_level = policy.capability_level
+    
+    -- Enhanced monitoring for low-trust/failsafe
+    if policy.monitoring_level == "extreme" then
+        ngx.ctx.full_request_logging = true
+        ngx.ctx.require_audit_trail = true
+        
+        -- Sample 100% of requests for review
+        redis:sadd("sampled_requests", request_ctx.request_id)
+    end
+    
+    -- Challenge for failsafe mode
+    if policy.require_challenge then
+        local challenge_passed = _M.verify_challenge(request_ctx)
+        if not challenge_passed then
+            ngx.exit(429)  -- Too Many Requests
+        end
+    end
+    
+    -- Log the policy application
+    if score_data.source and score_data.source:find("failsafe") then
+        ngx.log(ngx.WARN, "Applied failsafe policy for ", request_ctx.api_key, 
+               " score: ", score, " reason: ", score_data.reason)
+        
+        -- Alert security team
+        redis:publish("security_alerts", cjson.encode({
+            type: "failsafe_triggered",
+            client_id: request_ctx.api_key,
+            reason: score_data.reason,
+            timestamp: ngx.time()
+        }))
+    end
+    
+    return policy
+end
+
+return _M
+```
+
+3. BASELINE RECOVERY MECHANISM
+
+Robust Baseline Calculation with Attack Detection
+
+```python
+# services/baseline_manager.py
+import numpy as np
+from datetime import datetime, timedelta
+from scipy import stats
+import asyncio
+
+class ResilientBaselineCalculator:
+    """Baseline calculator that resists poisoning and self-heals"""
+    
+    def __init__(self):
+        self.min_samples = 100
+        self.outlier_threshold = 3.0  # 3 sigma
+        self.recovery_rate = 0.1  # How quickly to recover from attack
+        
+    async def calculate_baselines(self, client_id: str, metrics: list) -> dict:
+        """Calculate baselines that are resistant to poisoning"""
+        
+        if len(metrics) < self.min_samples:
+            return await self._get_global_baselines()
+        
+        # Convert to numpy for efficient processing
+        values = np.array(metrics)
+        
+        # STRATEGY 1: Use median-based statistics (resistant to outliers)
+        median = np.median(values)
+        mad = np.median(np.abs(values - median))  # Median Absolute Deviation
+        
+        # STRATEGY 2: Detect if under attack using multiple methods
+        attack_probability = await self._detect_attack_pattern(values, client_id)
+        
+        if attack_probability > 0.7:
+            # Under attack - use robust method and recent "clean" history
+            clean_values = self._filter_outliers_iqr(values)
+            
+            if len(clean_values) > self.min_samples // 2:
+                # Enough clean data - use it
+                return self._calculate_from_clean(clean_values, attack_probability)
+            else:
+                # Not enough clean data - use global baseline with penalty
+                return await self._get_penalized_baseline(client_id, attack_probability)
+        
+        # STRATEGY 3: Normal operation - use standard statistics
+        return {
+            'median': float(median),
+            'mad': float(mad),
+            'p25': float(np.percentile(values, 25)),
+            'p75': float(np.percentile(values, 75)),
+            'std': float(np.std(values)),
+            'count': len(values),
+            'attack_probability': attack_probability,
+            'last_calculated': datetime.utcnow().isoformat(),
+            'method': 'standard'
+        }
+    
+    async def _detect_attack_pattern(self, values: np.ndarray, client_id: str) -> float:
+        """Detect if metrics show signs of an ongoing attack"""
+        
+        # Multiple detection methods
+        detections = []
+        
+        # 1. Sudden shift detection (CUSUM)
+        if len(values) > 200:
+            cusum = self._calculate_cusum(values[-100:], values[-200:-100])
+            if cusum > 10:  # Significant cumulative sum shift
+                detections.append(0.8)
+        
+        # 2. Outlier proportion
+        outlier_prop = np.sum(np.abs(values - np.median(values)) > 
+                             3 * np.std(values)) / len(values)
+        if outlier_prop > 0.3:  # More than 30% outliers
+            detections.append(0.6)
+        
+        # 3. Volatility spike
+        if len(values) > 50:
+            recent_vol = np.std(values[-20:])
+            historical_vol = np.std(values[-50:-20])
+            if recent_vol > 3 * historical_vol:
+                detections.append(0.7)
+        
+        # 4. Compare with similar clients
+        similar_clients_baseline = await self._get_similar_clients_baseline(client_id)
+        if similar_clients_baseline:
+            z_score = abs(np.median(values) - similar_clients_baseline['median']) / max(1, similar_clients_baseline['std'])
+            if z_score > 5:
+                detections.append(0.9)
+        
+        # Combine detections
+        if not detections:
+            return 0.0
+        
+        # Use maximum detection probability
+        return max(detections)
+    
+    def _filter_outliers_iqr(self, values: np.ndarray) -> np.ndarray:
+        """Remove outliers using IQR method"""
+        q1, q3 = np.percentile(values, [25, 75])
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        return values[(values >= lower_bound) & (values <= upper_bound)]
+    
+    async def _get_penalized_baseline(self, client_id: str, attack_prob: float) -> dict:
+        """Get baseline with penalty applied for suspected attack"""
+        global_baseline = await self._get_global_baselines()
+        
+        # Apply penalty based on attack probability
+        penalty = attack_prob * 0.5  # Up to 50% penalty
+        
+        return {
+            'median': global_baseline['median'] * (1 - penalty),
+            'mad': global_baseline['mad'] * (1 + penalty),  # Higher MAD = more uncertainty
+            'p25': global_baseline['p25'] * (1 - penalty),
+            'p75': global_baseline['p75'] * (1 + penalty),
+            'std': global_baseline['std'] * (1 + penalty),
+            'count': global_baseline['count'],
+            'attack_probability': attack_prob,
+            'penalty_applied': penalty,
+            'last_calculated': datetime.utcnow().isoformat(),
+            'method': 'penalized_global'
+        }
+    
+    async def update_baseline_recovery(self, client_id: str, current_metrics: list):
+        """Gradually recover baseline after attack ends"""
+        # Store current "post-attack" clean metrics
+        recovery_key = f"recovery:{client_id}"
+        
+        clean_metrics = self._filter_outliers_iqr(np.array(current_metrics))
+        
+        # Append to recovery buffer (FIFO of size 1000)
+        await self.redis.lpush(recovery_key, json.dumps(clean_metrics.tolist()))
+        await self.redis.ltrim(recovery_key, 0, 999)  # Keep last 1000
+        
+        # Check if we have enough clean data to rebuild baseline
+        recovery_data = await self.redis.lrange(recovery_key, 0, -1)
+        if len(recovery_data) >= 100:
+            # Rebuild baseline with recent clean data
+            all_clean = []
+            for data in recovery_data:
+                all_clean.extend(json.loads(data))
+            
+            new_baseline = await self.calculate_baselines(client_id, all_clean)
+            
+            # Only update if attack probability is low
+            if new_baseline['attack_probability'] < 0.3:
+                await self.db.update_baselines(client_id, new_baseline)
+                await self.redis.delete(recovery_key)  # Reset recovery
+```
+
+4. IMMEDIATE ACTION PLAN
+
+Week 1-2 Adjustments
+
+Priority Action Item Owner Done When
+P0 Implement stream processor for real-time features Data Eng Features stored in Redis within 50ms of event
+P0 Update scoring engine to be stateless Backend Scoring <50ms, no DB queries in hot path
+P0 Implement conservative failover in gateway Infra Gateway returns score=10 (not 50) on failure
+P1 Add circuit breaker pattern Infra Gateway fails fast after 10 consecutive failures
+P1 Implement baseline recovery logic Data Eng Baselines self-heal within 24h of attack end
+P2 Add challenge-response for failsafe mode Security CAPTCHA shown to unknown clients in failsafe
+
+Monitoring & Alerting Additions
+
+```yaml
+# monitoring/critical_alerts.yaml
+alerts:
+  - name: ScoringServiceDegraded
+    condition: rate(scoring_service_errors_total[5m]) > 0.1
+    severity: critical
+    runbook: "https://runbook/trust-scoring-failure"
+    
+  - name: HighFailoverRate
+    condition: rate(gateway_failover_requests_total[5m]) > 10
+    severity: warning
+    annotation: "More than 10 req/sec hitting failover mode"
+    
+  - name: BaselineUnderAttack
+    condition: trust_baseline_attack_probability > 0.8
+    for: 5m
+    severity: warning
+    annotation: "Client baseline appears under poisoning attack"
+    
+  - name: FeatureComputationLag
+    condition: feature_computation_lag_seconds > 10
+    severity: critical
+    annotation: "Real-time features are stale - scoring accuracy impacted"
+```
+
+Rollback Criteria
+
+The system must automatically roll back if:
+
+1. Scoring latency P95 > 100ms for 5 consecutive minutes
+2. False positive rate > 5% for any client segment
+3. Failover mode triggered for > 10% of requests
+4. Feature computation lag > 30 seconds
+
+
+
