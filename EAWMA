@@ -536,3 +536,228 @@ eawma-mvp/
 - Full ablation study  
 - Failure analysis
 
+### EAWMA MVP Update: Integrating Neuro-Symbolic Reasoner & Mental Model Constraints
+
+this is an **outstanding refinement**. It directly addresses the critical gap in the MVP: how to meaningfully translate the **Neuro-Symbolic Reasoner** and **Mental World Model** into discrete, verifiable behavior in the grid world without overcomplicating the prototype.
+
+This approach is perfect for an MVP:
+- Keeps everything lightweight and debuggable
+- Introduces **true symbolic reasoning** (hard veto + fuzzy soft penalties)
+- Enables **lexicographic safety** (hard constraints non-negotiable)
+- Directly supports **ablation studies** for publication
+- Fully aligns with EAWMA’s core claim: **neural prediction + symbolic verification = safer, more adaptive agents**
+
+Here is the **final integrated update** to the MVP specification incorporating your proposal.
+
+---
+
+### Updated NeuroSymbolicReasoner (`models/neurosymbolic_reasoner.py`)
+
+```python
+import numpy as np
+
+class NeuroSymbolicReasoner:
+    def __init__(self, hazard_zones, social_dist=(1, 3), stability_thresh=2):
+        self.hazards = set(hazard_zones)  # e.g., {(6,7), (6,8), (7,7), (7,8)}
+        self.min_social, self.max_social = social_dist
+        self.stability_thresh = stability_thresh  # Max allowed velocity change
+
+    def evaluate_trajectory(self, trajectory, human_positions, prev_action=None):
+        """
+        Evaluate full trajectory for safety and appropriateness.
+        Returns score in [0, 1], where 0.0 = vetoed (unsafe)
+        """
+        score = 1.0
+        prev_pos = trajectory[0]
+
+        for i, pos in enumerate(trajectory):
+            pos = tuple(pos)
+            human_pos = human_positions[min(i, len(human_positions)-1)]
+
+            # 1. Hard Constraint: Physical Safety (Hazard Zones)
+            if pos in self.hazards:
+                return 0.0  # Immediate veto
+
+            # 2. Soft Constraint: Social Proximity (Fuzzy Gaussian-like)
+            d = np.linalg.norm(np.array(pos) - np.array(human_pos))
+            if d < self.min_social:
+                score *= 0.5   # Too close → crowding penalty
+            elif d > self.max_social:
+                score *= 0.8   # Too far → reduced assistance
+
+            # 3. Soft Constraint: Stability (no sudden moves near fragile object)
+            if i > 0:
+                velocity_change = np.linalg.norm(np.array(pos) - np.array(prev_pos))
+                if 'glass' in self.env.objects and velocity_change > self.stability_thresh:
+                    score *= 0.7
+
+            prev_pos = pos
+
+        return score
+
+    def check_logic_consistency(self, action, inferred_intent, robot_pos, goal_locations):
+        """
+        Symbolic logic checks based on inferred intent
+        """
+        next_pos = self.compute_next_pos(robot_pos, action)
+
+        if inferred_intent == "rest":
+            rest_area = goal_locations["rest"]
+            if self.is_blocking_path(next_pos, rest_area):
+                return False
+        elif inferred_intent == "drink":
+            water_area = goal_locations["water"]
+            if self.is_too_far(next_pos, water_area):
+                return False
+        elif inferred_intent == "leave":
+            exit_area = goal_locations["exit"]
+            if self.is_blocking_path(next_pos, exit_area):
+                return False
+
+        return True
+
+    # Helper methods (implement simply)
+    def is_blocking_path(self, pos, target_area):
+        # Simple: if robot is adjacent to target and not moving away
+        return np.linalg.norm(np.array(pos) - np.array(target_area)) <= 1
+
+    def is_too_far(self, pos, target):
+        return np.linalg.norm(np.array(pos) - np.array(target)) > 5
+```
+
+---
+
+### Updated Constrained Hypertree MCTS (`models/planner.py`)
+
+```python
+class ConstrainedHypertreeMCTS:
+    def __init__(self, reasoner, simulations=300, depth=10):
+        self.reasoner = reasoner
+        self.simulations = simulations
+        self.depth = depth
+
+    def search(self, state, inferred_intent, human_traj, goal_locations):
+        root = Node(state)
+        
+        for _ in range(self.simulations):
+            node = root
+            trajectory = [node.state.pos]
+            human_pos_seq = human_traj[-self.depth:]  # Approximate future human pos
+
+            # Selection + Early Pruning
+            while node.children and trajectory:
+                valid_children = []
+                for child in node.children:
+                    temp_traj = trajectory + [child.state.pos]
+                    temp_score = self.reasoner.evaluate_trajectory(temp_traj, human_pos_seq)
+                    if temp_score > 0.0:  # Not vetoed
+                        valid_children.append((child, temp_score))
+                
+                if not valid_children:
+                    break  # Backpropagate failure
+                
+                # Select best UCB among valid
+                child, safety_score = max(valid_children, key=lambda x: x[0].ucb_score() * x[1])
+                node = child
+                trajectory.append(node.state.pos)
+
+            # Expansion only if not pruned
+            if len(trajectory) < self.depth:
+                node = self.expand(node)
+
+            # Simulation with safety-aware rollout
+            reward = self.simulate_safely(node, inferred_intent, human_traj, goal_locations)
+            self.backprop(node, reward)
+
+        # Final best: highest value among safe children
+        safe_children = [c for c in root.children if c.safety_score > 0.0]
+        return max(safe_children, key=lambda c: c.value) if safe_children else safe_fallback()
+```
+
+---
+
+### Ablation Study Plan (For Paper Section 7)
+
+| Variant                  | Components Included                            | Expected Behavior                              | Target Success |
+|--------------------------|------------------------------------------------|------------------------------------------------|----------------|
+| Baseline MCTS            | Only task reward (reach assist goal)           | Ignores safety & intent → high violations      | ~50%           |
+| + World Model            | Physical prediction                            | Better navigation, fewer collisions            | ~60%           |
+| + Mental Model           | Intent inference                               | Assists correct goal                           | ~68%           |
+| Full EAWMA MVP           | + Neuro-Symbolic Reasoner (hard + soft constraints) | 0% hazard violations + socially appropriate   | ≥70%           |
+
+**Key Result to Highlight:**  
+Even if task success only improves modestly, **0% hard violations** while maintaining high success is a **strong safety claim** — perfect for embodied AI workshops.
+
+---
+
+### Why This Concretizes EAWMA Perfectly
+
+- **Mental World Model** → Drives goal selection via inverse planning
+- **Neuro-Symbolic Reasoner** → Enforces **hard symbolic veto** + **soft fuzzy penalties**
+- **Lexicographic Safety** → Safety is non-negotiable (-\infty on violation)
+- **Ablation-Ready** → Clean, interpretable variants
+- **Lightweight** → No external solvers, pure Python + NumPy
+
+This is **exactly** what reviewers want from an MVP paper:  
+> "We don't claim SOTA performance — we show that symbolic constraints + intent inference enable safer behavior than pure neural planning."
+
+---
+
+### Final Recommendation
+
+**Implement in this order:**
+1. Basic environment + data generation
+2. World model (train to convergence)
+3. Mental model (intent inference)
+4. **Add NeuroSymbolicReasoner** (your code above)
+5. **Upgrade planner** to use early pruning + safety scoring
+6. Run ablations
+
+
+To visualize the internal decision-making of EAWMA, we need to show the Pruning Process. In this script, we simulate the agent's grid-world reasoning: it will consider a "Direct Path" (efficient but violates a constraint) and a "Cognitive Path" (safe and intent-aligned).
+EAWMA "Thought Process" Visualization Script
+This script uses matplotlib to render the 10x10 grid, the inferred intent of the human, and the "Rejected" vs. "Accepted" trajectories from the Hypertree Planner.
+import matplotlib.pyplot as plt
+import numpy as np
+
+def visualize_eawma_planning(grid_size, robot_pos, human_pos, intent, hazard_zone):
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # 1. Setup Grid
+    ax.set_xticks(np.arange(0, grid_size, 1))
+    ax.set_yticks(np.arange(0, grid_size, 1))
+    ax.grid(which='both', color='lightgrey', linestyle='-', linewidth=0.5)
+    
+    # 2. Draw Entities
+    ax.plot(robot_pos[0], robot_pos[1], 'bs', markersize=15, label='Robot (EAWMA)')
+    ax.plot(human_pos[0], human_pos[1], 'ro', markersize=15, label=f'Human (Intent: {intent})')
+    
+    # 3. Draw Hazard Zone (Spill)
+    rect = plt.Rectangle((hazard_zone[0], hazard_zone[1]), 2, 2, color='yellow', alpha=0.3, label='Spill Zone')
+    ax.add_patch(rect)
+
+    # 4. Simulate Hypertree Planner "Rollouts"
+    # Path A: Fast but enters spill (Rejected by Reasoner)
+    rejected_path = np.array([[2, 2], [3, 3], [4, 4], [5, 5]])
+    ax.plot(rejected_path[:,0], rejected_path[:,1], 'r--', alpha=0.6, label='Rejected: Unsafe/Fast')
+    ax.text(4, 4.5, "❌ Reasoner Veto: Hazard", color='red', fontsize=9, fontweight='bold')
+
+    # Path B: Aligned with Human Intent (Inferred via Mental Model)
+    # Human moving to 'rest_area' at (9,9), Robot moves to fetch glass and meet them
+    accepted_path = np.array([[2, 2], [2, 3], [3, 4], [4, 5], [6, 6]])
+    ax.plot(accepted_path[:,0], accepted_path[:,1], 'g-', linewidth=3, label='Accepted: Safe & Intent-Aligned')
+    ax.text(6, 6.5, "✅ Reasoner: Valid", color='green', fontsize=9, fontweight='bold')
+
+    ax.set_title(f"EAWMA MVP: Planning for Human Intent '{intent}'")
+    ax.legend(loc='upper left')
+    plt.gca().invert_yaxis()
+    plt.show()
+
+# Run visualization
+visualize_eawma_planning(10, [2,2], [8,8], "REST", [3,3])
+
+Key Observations in the Visualized Logic
+ * Intent Grounding: The Mental Model's prediction (e.g., "REST") shifts the reward weights in the Planner. Instead of racing to the water glass's current position, the agent plans a trajectory toward where the human will be (the Rest Area).
+ * Constraint Enforcement: The yellow "Spill Zone" triggers a hard veto in the Reasoner. In a standard LLM-based agent, this might be ignored if the text prompt simply says "fetch water quickly." EAWMA's Reasoner ensures the p_{success} of the trajectory is zero if it intersects the hazard.
+ * Social Distancing: You can add a "Buffer Zone" around the human. If the accepted_path gets too close to the human_pos (e.g., <1 cell), the Reasoner would apply the fuzzy penalty mentioned in the previous step, forcing the robot to take a wider, more polite berth.
+Next Step for your Prototype
