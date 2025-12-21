@@ -310,3 +310,229 @@ Detailed textual representation (ASCII art) of the EAWMA architecture, illustrat
 
 This diagram captures the modular, closed-loop design proposed in Section 4. It highlights the Bayesian fusion at the belief state and the role of memory in personalization.
 
+
+### EAWMA MVP: Final Minimal Viable Prototype Specification  
+**A Concrete, Executable Plan for Preliminary Validation**
+
+**Authors:** Ouadi Maakoul (with AI-assisted contributions acknowledged)  
+**Date:** December 22, 2025  
+**Target:** Transform EAWMA from conceptual proposal to empirically validated framework via a lightweight prototype in simulation.
+
+---
+
+### MVP Scope (Focused & Feasible)
+**Core Claim to Validate:** Integrating a mental world model (ToM intent inference) with predictive simulation and constrained planning improves safe, adaptive behavior.
+
+**3 Core Modules Implemented:**
+1. **Perception + World Model** (predictive dynamics)
+2. **Mental World Model** (inverse planning for intent inference)
+3. **Constrained Hypertree Planner** (MCTS with safety rules)
+
+**Omitted for MVP:** Full episodic memory, advanced neuro-symbolic (use hard constraints), real-robot deployment, Gaussian splatting, large-scale training.
+
+**Task:** "Assistive Fetching in a 2D Grid World"  
+- Environment: 10x10 grid (MiniGrid-based)
+- Entities: Robot (agent), simulated human, water glass, rest area, exit, obstacles, spill hazard zone
+- Human Goals: "drink" (move toward water), "rest" (move toward rest area), "leave" (move toward exit)
+- Robot Goal: Infer human intent → safely fetch/deliver object or assist without entering spill zone
+
+---
+
+### Environment & Data Generation
+
+**Custom MiniGrid Environment (`assistive_fetch_env.py`)**  
+- Partial observability (ego-centric view)
+- Human simulated with ε-optimal policy (80% optimal actions toward goal + 20% noise)
+- Spill zone: Fixed 2x2 area near delivery point
+
+**Data Generation Strategy**
+```python
+# Generate 10,000 training episodes
+episodes = []
+for _ in range(10000):
+    goal = np.random.choice(["drink", "rest", "leave"], p=[0.4, 0.4, 0.2])
+    human_traj = simulate_human(start_pos, goal, noise=0.2, length=15)
+    episodes.append({"traj": human_traj, "goal": goal, "grid": grid_state})
+
+# Test set: 1,000 unseen episodes with edge cases (ambiguous paths, obstacles)
+```
+
+---
+
+### Module Architectures (Concrete & Implementable)
+
+#### 1. World Model (`world_model.py`)
+```python
+class WorldPredictor(nn.Module):
+    def __init__(self, grid_size=10, latent_dim=128):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),  # 3 channels: robot, human, objects
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(64 * grid_size * grid_size, latent_dim)
+        )
+        self.dynamics = nn.GRUCell(latent_dim + 5, latent_dim)  # +5 one-hot actions
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 64 * grid_size * grid_size),
+            nn.Unflatten(1, (64, grid_size, grid_size)),
+            nn.ConvTranspose2d(64, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 3, 3, padding=1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, state, action, hidden):
+        z = self.encoder(state)
+        z_next = self.dynamics(torch.cat([z, action], dim=-1), hidden)
+        pred_state = self.decoder(z_next)
+        return pred_state, z_next
+```
+**Training:** MSE reconstruction + prediction loss on next state (50 epochs, batch=64)
+
+#### 2. Mental World Model (`mental_model.py`)
+```python
+class IntentInferer:
+    def __init__(self, goals, world_model, env, horizon=8):
+        self.goals = goals  # ["drink", "rest", "leave"]
+        self.world_model = world_model
+        self.env = env
+        self.horizon = horizon
+    
+    def goal_likelihood(self, human_traj, goal):
+        goal_pos = self.env.goal_positions[goal]
+        # Simulate optimal path using A* + world model rollout
+        optimal_actions = astar_path(human_traj[0], goal_pos, self.env)
+        predicted_states = self.world_model.rollout(human_traj[0], optimal_actions[:self.horizon])
+        
+        # Negative distance as likelihood
+        distances = [np.linalg.norm(actual - pred) 
+                     for actual, pred in zip(human_traj[-self.horizon:], predicted_states)]
+        return np.exp(-np.mean(distances))
+    
+    def predict(self, human_traj):
+        likelihoods = [self.goal_likelihood(human_traj, g) for g in self.goals]
+        return self.goals[np.argmax(likelihoods)]
+```
+
+#### 3. Constrained Planner (`planner.py`)
+```python
+class ConstrainedMCTS:
+    def __init__(self, simulations=300, depth=10):
+        self.simulations = simulations
+        self.depth = depth
+    
+    def search(self, state, inferred_goal):
+        root = Node(state)
+        for _ in range(self.simulations):
+            node = self.select(root)
+            if not self.is_terminal(node):
+                node = self.expand(node)
+            reward = self.simulate(node, inferred_goal)
+            self.backprop(node, reward)
+        
+        valid_children = [c for c in root.children if self.is_safe(c.trajectory)]
+        return max(valid_children, key=lambda c: c.value) if valid_children else safe_fallback()
+    
+    def is_safe(self, traj):
+        return not any(pos in spill_zone for pos in traj)
+```
+
+---
+
+### Success Metrics (Rigorous & Achievable)
+
+| Metric                     | Random Baseline | Frequency Baseline | MCTS (no mental) | EAWMA MVP Target |
+|----------------------------|-----------------|---------------------|------------------|------------------|
+| Intent Accuracy            | 33%             | 45%                 | N/A              | ≥55%             |
+| Task Success Rate          | ~30%            | ~40%                | ~50%             | ≥65%             |
+| Constraint Violations      | N/A             | N/A                 | ~15%             | 0%               |
+| Near-Misses (within 1 cell) | N/A             | N/A                 | N/A              | Track & report   |
+
+**Statistical Significance:** Run 5 seeds, report mean ± std, p<0.05 vs. best baseline
+
+---
+
+### Expected Failure Modes & Mitigation
+
+| Failure Mode                  | Symptom                        | Debug Strategy                  | Mitigation                     |
+|-------------------------------|--------------------------------|---------------------------------|--------------------------------|
+| Ambiguous trajectories        | Oscillating intent             | Log likelihoods per step        | Temporal smoothing             |
+| Poor world model prediction   | MSE >0.15                      | Visualize predictions           | Increase capacity/data         |
+| No safe plans                 | Agent freezes                  | Check constraint radius         | Relax then tighten             |
+| Integration disconnect        | High intent acc, low success   | Trace goal→action mapping       | Reward shaping                 |
+
+---
+
+### Computational Requirements
+- **Hardware:** Laptop CPU sufficient (M1/M2 or modern Intel); GPU optional for faster training
+- **Runtime:** 
+  - Data gen: ~1-2 hours
+  - World model training: ~4-6 hours
+  - Full eval (1,000 eps): ~30-60 min
+  - Total pipeline: <12 hours
+- **Budget:** $0-$50 (Colab Pro if needed)
+
+---
+
+### Visualization Strategy
+1. **Intent Inference Videos**: 10 episodes (5 success/5 failure) with overlay (predicted vs. true goal)
+2. **Planning Trees**: Visualize selected vs. rejected paths (constraint violations marked red)
+3. **Learning Curves**: Intent accuracy & success rate vs. episodes (5 seeds)
+4. **Failure Heatmaps**: Grid showing where mispredictions occur
+
+---
+
+### Realistic Timeline (12 Weeks with Buffers)
+
+| Phase                  | Weeks | Key Deliverables                  | Buffer |
+|------------------------|-------|-----------------------------------|--------|
+| Infrastructure         | 1-2   | Custom env, data pipeline         | +3 days|
+| World Model            | 3-5   | Trained predictor (MSE <0.12)     | +5 days|
+| Mental Model           | 6-8   | >55% intent accuracy              | +7 days|
+| Integration & Planning | 9-11  | End-to-end agent, ablations       | +7 days|
+| Analysis & Viz         | 12    | Plots, videos, results write-up   | +3 days|
+
+---
+
+### Repository Structure
+```
+eawma-mvp/
+├── env/
+│   ├── assistive_fetch_env.py
+│   └── human_simulator.py
+├── models/
+│   ├── world_model.py
+│   ├── mental_model.py
+│   └── planner.py
+├── data/
+│   └── generated_episodes.pkl
+├── training/
+│   ├── train_world.py
+│   └── train_full.py
+├── evaluation/
+│   ├── evaluate.py
+│   └── visualize.py
+├── configs/
+│   └── mvp_config.yaml
+├── tests/
+│   └── test_components.py
+├── requirements.txt
+└── README.md (with setup + demo video)
+```
+
+---
+
+### Success Criteria for Publication
+**Minimum (Workshop Paper):**  
+- Intent accuracy ≥55% (> frequency baseline)  
+- Task success ≥65% (> MCTS baseline)  
+- 0% violations + clear visualizations
+
+**Stretch (Conference Paper):**  
+- >65% intent, >75% success  
+- Full ablation study  
+- Failure analysis
+
