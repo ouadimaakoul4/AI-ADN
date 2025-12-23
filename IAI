@@ -233,5 +233,200 @@ plt.show()
 
 ---
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+
+class MultiIAI_Agent(nn.Module):
+    def __init__(self, agent_id, lambda_omega=5.0, trust_decay=0.95, calibration_threshold=0.3, peer_trust_init=1.0):
+        super().__init__()
+        self.agent_id = agent_id
+        # Slow Weights (Ψ): stable causal law — the gas constant R
+        self.log_R = nn.Parameter(torch.log(torch.tensor(1.0)))  # Start uncertain
+        self.slow_T = nn.Parameter(torch.tensor(300.0))          # Internal expected temperature
+        
+        # Trust in own sensors (P and T)
+        self.trust_P = torch.tensor(1.0)
+        self.trust_T = torch.tensor(1.0)
+        
+        # Trust in peers (dictionary for multiple)
+        self.peer_trusts = {}  # To be populated with other agents' IDs
+        
+        # Hyperparameters
+        self.lambda_omega = lambda_omega
+        self.trust_decay = trust_decay
+        self.calibration_threshold = calibration_threshold
+        self.peer_trust_init = peer_trust_init
+        
+        # History
+        self.history_R = []
+        self.history_trust_T = []
+        self.history_peer_trusts = {}  # Per peer
+        self.actions = []
+
+    def add_peer(self, peer_id):
+        self.peer_trusts[peer_id] = torch.tensor(self.peer_trust_init)
+        self.history_peer_trusts[peer_id] = []
+
+    def forward(self, p_obs, t_obs, peer_messages):
+        """
+        peer_messages: dict of {peer_id: (peer_R, confidence)} where confidence is e.g., 1.0
+        """
+        R = torch.exp(self.log_R)
+        
+        # 1. Own sensor processing (same as single agent)
+        p_pred = R * self.slow_T
+        error_P = (p_obs - p_pred) ** 2
+        error_T = (t_obs - self.slow_T) ** 2
+        surprise_P = error_P / (p_obs ** 2 + 1e-6)
+        surprise_T = error_T / (t_obs ** 2 + 1e-6)
+        
+        self.trust_P = self.trust_P * torch.exp(-surprise_P)
+        self.trust_T = self.trust_T * torch.exp(-surprise_T)
+        total = self.trust_P + self.trust_T + 1e-6
+        self.trust_P /= total
+        self.trust_T /= total
+        
+        action = None
+        effective_t = t_obs
+        if self.trust_T < self.calibration_threshold:
+            action = f"Calibrate_T (Agent {self.agent_id})"
+            effective_t = self.slow_T
+            self.trust_T = torch.min(torch.tensor(1.0), self.trust_T + 0.2)
+        
+        effective_T = self.trust_T * effective_t + (1 - self.trust_T) * self.slow_T
+        
+        # 2. Process own data first
+        new_R_own = p_obs / (effective_T + 1e-6)
+        current_surprise_own = (p_obs - R * effective_T) ** 2
+        proposed_surprise_own = (p_obs - new_R_own * effective_T) ** 2
+        delta_F_own = current_surprise_own - proposed_surprise_own
+        omega_own = self.lambda_omega * torch.abs(new_R_own - R)
+        
+        loss = 0.0
+        if delta_F_own > omega_own:
+            target_log_R = torch.log(new_R_own + 1e-6)
+            loss += (self.log_R - target_log_R) ** 2
+        
+        # 3. Process peer messages
+        for peer_id, (peer_R, peer_conf) in peer_messages.items():
+            # Treat peer_R as a "virtual observation" with weight peer_conf * trust
+            weighted_trust = self.peer_trusts[peer_id] * peer_conf
+            
+            # Surprise from peer: how much it deviates from own R
+            surprise_peer = (peer_R - R) ** 2 / (R ** 2 + 1e-6)
+            
+            # Decay trust if high surprise
+            self.peer_trusts[peer_id] *= torch.exp(-surprise_peer * self.lambda_omega)
+            
+            # Quarantine if trust too low
+            quarantine_action = None
+            if self.peer_trusts[peer_id] < self.calibration_threshold:
+                quarantine_action = f"Quarantine Peer {peer_id} (Agent {self.agent_id})"
+                weighted_trust = 0.0  # Ignore this message
+                self.actions.append(quarantine_action)
+            else:
+                # Slight trust recovery on low surprise
+                self.peer_trusts[peer_id] = torch.min(torch.tensor(1.0), self.peer_trusts[peer_id] + 0.05)
+            
+            # Proposed update from peer
+            if weighted_trust > 0:
+                delta_F_peer = surprise_peer  # Simplified: reduction in "disagreement"
+                omega_peer = self.lambda_omega * torch.abs(peer_R - R) * (1 - weighted_trust)  # Higher cost for low trust
+                
+                if delta_F_peer > omega_peer:
+                    target_log_R = torch.log((R + weighted_trust * peer_R) / (1 + weighted_trust) + 1e-6)
+                    loss += 0.1 * (self.log_R - target_log_R) ** 2  # Gentle pull from peer
+        
+        # Slow_T update if trusted
+        if self.trust_T > 0.5:
+            loss += 0.01 * (self.slow_T - effective_t) ** 2
+        
+        # Log
+        self.history_R.append(R.item())
+        self.history_trust_T.append(self.trust_T.item())
+        for peer_id in self.peer_trusts:
+            self.history_peer_trusts[peer_id].append(self.peer_trusts[peer_id].item())
+        if action:
+            self.actions.append(action)
+        
+        return loss
+
+# ==================== Toy Multi-Agent Simulation ====================
+torch.manual_seed(42)
+true_R = 8.314
+true_T = 300.0
+
+# Create agents
+num_agents = 2
+agents = [MultiIAI_Agent(i) for i in range(num_agents)]
+
+# Connect peers bidirectionally
+for i in range(num_agents):
+    for j in range(num_agents):
+        if i != j:
+            agents[i].add_peer(j)
+
+optimizers = [optim.Adam(agents[i].parameters(), lr=0.01) for i in range(num_agents)]
+
+steps = 200
+tamper_start = 80
+tamper_end = 140
+tamper_agent = 1  # Agent 1 gets tampered sensor
+
+losses = [[] for _ in range(num_agents)]
+
+for step in range(steps):
+    for idx, agent in enumerate(agents):
+        optimizers[idx].zero_grad()
+        
+        # Generate own observation
+        noise = torch.randn(1) * 3.0
+        if idx == tamper_agent and tamper_start <= step < tamper_end:
+            t_obs = true_T * 0.5 + noise  # Biased for tampered agent
+        else:
+            t_obs = true_T + noise
+        p_obs = true_R * true_T + noise
+        
+        # Collect peer messages: each shares current R with confidence 1.0
+        peer_messages = {}
+        for peer_id in agent.peer_trusts:
+            peer_R = torch.exp(agents[peer_id].log_R).detach()
+            peer_messages[peer_id] = (peer_R, 1.0)
+        
+        loss = agent(p_obs, t_obs, peer_messages)
+        loss.backward()
+        optimizers[idx].step()
+        
+        losses[idx].append(loss.item())
+
+# ==================== Results ====================
+for i, agent in enumerate(agents):
+    R_final = torch.exp(agent.log_R).item()
+    print(f"Agent {i} Final R: {R_final:.3f} (True: {true_R})")
+    print(f"Agent {i} Final trust in T: {agent.history_trust_T[-1]:.3f}")
+    for peer_id in agent.peer_trusts:
+        print(f"Agent {i} Final trust in Peer {peer_id}: {agent.peer_trusts[peer_id].item():.3f}")
+    print(f"Agent {i} Actions triggered: {len(agent.actions)}")
+
+# Plot (example for Agent 0)
+fig, axs = plt.subplots(3, 1, figsize=(10, 8))
+axs[0].plot(agents[0].history_R, label='Agent 0 R')
+axs[0].plot(agents[1].history_R, label='Agent 1 R', linestyle='--')
+axs[0].axhline(true_R, color='green', linestyle='--', label='True R')
+axs[0].legend()
+
+axs[1].plot(agents[0].history_trust_T, label='Agent 0 Trust_T', color='orange')
+axs[1].axvspan(tamper_start, tamper_end, alpha=0.2, color='gray', label='Tampering Period')
+axs[1].legend()
+
+axs[2].plot(agents[0].history_peer_trusts[1], label='Agent 0 Trust in Agent 1', color='purple')
+axs[2].legend()
+plt.tight_layout()
+plt.show()
+
+
+---
 
 
