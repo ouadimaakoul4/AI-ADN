@@ -680,4 +680,124 @@ plt.tight_layout()
 plt.show()
 ```
 
+---
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+
+# --- 1. DOUBLE PENDULUM DYNAMICS (Ground Truth) ---
+def get_pendulum_accel(state, g=9.81, L1=1.0, L2=1.0, m1=1.0, m2=1.0):
+    t1, t2, w1, w2 = state
+    delta = t2 - t1
+    
+    # Simple Lagrangian dynamics for double pendulum
+    den1 = (m1 + m2) * L1 - m2 * L1 * torch.cos(delta) * torch.cos(delta)
+    dw1 = (m2 * g * torch.sin(t2) * torch.cos(delta) - m2 * torch.sin(delta) * (L1 * w1**2 * torch.cos(delta) + L2 * w2**2) - (m1 + m2) * g * torch.sin(t1)) / den1
+    
+    den2 = (L2 / L1) * den1
+    dw2 = (torch.sin(delta) * ((m1 + m2) * L1 * w1**2 + (m1 + m2) * g * torch.cos(t1) + m2 * L2 * w2**2 * torch.cos(delta))) / den2
+    
+    return torch.stack([w1, w2, dw1, dw2])
+
+def rk4_step(state, dt, g, L1, L2):
+    k1 = get_pendulum_accel(state, g, L1, L2)
+    k2 = get_pendulum_accel(state + 0.5 * dt * k1, g, L1, L2)
+    k3 = get_pendulum_accel(state + 0.5 * dt * k2, g, L1, L2)
+    k4 = get_pendulum_accel(state + dt * k3, g, L1, L2)
+    return state + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+# --- 2. IAI PHYSICS AGENT ---
+class PendulumIAI(nn.Module):
+    def __init__(self, agent_id, lambda_omega=10.0):
+        super().__init__()
+        self.agent_id = agent_id
+        self.lambda_omega = lambda_omega
+        
+        # Slow Weights (Ψ): Physical Constants
+        self.g_est = nn.Parameter(torch.tensor(5.0)) # Start with wrong gravity
+        self.L1_est = nn.Parameter(torch.tensor(1.2))
+        self.L2_est = nn.Parameter(torch.tensor(0.8))
+        
+        self.peer_trusts = {}
+        self.history_g = []
+        self.trust_sensor = torch.tensor(1.0)
+
+    def forward(self, obs_curr, obs_next, dt, peer_msgs):
+        g, l1, l2 = self.g_est, self.L1_est, self.L2_est
+        
+        # 1. Physical Prediction (Fast Weight dynamics)
+        pred_next = rk4_step(obs_curr, dt, g, l1, l2)
+        
+        # 2. Compute Surprise (Variational Free Energy)
+        surprise = torch.mean((obs_next - pred_next)**2)
+        
+        # 3. Update Sensor Trust
+        self.trust_sensor *= torch.exp(-surprise * 5.0)
+        
+        # 4. Metabolic Gating for Slow Weight Update (g, L1, L2)
+        # Numerical gradient of surprise w.r.t parameters
+        loss = 0.0
+        if surprise > (self.lambda_omega * 0.01): # Omega threshold
+            loss += surprise # Minimize surprise via backprop to slow weights
+            
+        # 5. Peer Quarantine Logic
+        for p_id, p_g in peer_msgs.items():
+            if p_id not in self.peer_trusts: self.peer_trusts[p_id] = torch.tensor(1.0)
+            
+            peer_surprise = (p_g - self.g_est)**2
+            self.peer_trusts[p_id] *= torch.exp(-peer_surprise * self.lambda_omega)
+            
+            if self.peer_trusts[p_id] > 0.5:
+                loss += 0.1 * (self.g_est - p_g)**2 # Social consensus
+                
+        self.history_g.append(self.g_est.item())
+        return loss
+
+# --- 3. SIMULATION ---
+dt = 0.01
+steps = 500
+num_agents = 4
+agents = [PendulumIAI(i) for i in range(num_agents)]
+opts = [optim.Adam(a.parameters(), lr=0.05) for a in agents]
+
+# Ground Truth State [theta1, theta2, omega1, omega2]
+gt_state = torch.tensor([np.pi/4, np.pi/2, 0.0, 0.0])
+gt_g, gt_l1, gt_l2 = 9.81, 1.0, 1.0
+
+for s in range(steps):
+    # Physics engine step
+    next_gt_state = rk4_step(gt_state, dt, gt_g, gt_l1, gt_l2)
+    
+    # Multi-Agent Loop
+    for i, agent in enumerate(agents):
+        opts[i].zero_grad()
+        
+        # Sensor Noise & Rogue behavior (Agent 3 is gaslit/broken)
+        noise = torch.randn(4) * 0.02
+        obs_curr = gt_state + noise
+        obs_next = next_gt_state + noise
+        
+        if i == 3 and s > 100: # Rogue Agent
+            obs_next += torch.tensor([0.5, -0.5, 0.0, 0.0]) # Bias trajectory
+            
+        # Collect peer estimates of Gravity (g)
+        peer_msgs = {j: agents[j].g_est.detach() for j in range(num_agents) if i != j}
+        
+        loss = agent(obs_curr, obs_next, dt, peer_msgs)
+        if loss > 0:
+            loss.backward()
+            opts[i].step()
+            
+    gt_state = next_gt_state
+
+# --- 4. OUTPUT ---
+print(f"Ground Truth Gravity: {gt_g}")
+for a in agents:
+    print(f"Agent {a.agent_id} Inferred Gravity: {a.g_est.item():.4f}")
+    if 0 in a.peer_trusts:
+        print(f"  Trust in Agent 3: {a.peer_trusts[3].item():.4f}")
+
+
+---
