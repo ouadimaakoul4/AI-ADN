@@ -430,3 +430,254 @@ plt.show()
 ---
 
 
+```python
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import random
+
+class MultiIAI_Agent(nn.Module):
+    def __init__(self, agent_id, lambda_omega=5.0, trust_decay=0.95, calibration_threshold=0.3, peer_trust_init=1.0, is_rogue=False):
+        super().__init__()
+        self.agent_id = agent_id
+        self.is_rogue = is_rogue  # Flag for permanent bias
+        
+        # Slow Weights (Ψ): now hierarchical — R and a slow estimate for n (amount of substance)
+        self.log_R = nn.Parameter(torch.log(torch.tensor(1.0)))  # Universal gas constant
+        self.slow_n = nn.Parameter(torch.tensor(1.0))            # Internal expected n (for simplicity, assume often 1)
+        self.slow_T = nn.Parameter(torch.tensor(300.0))          # Internal expected T
+        self.slow_V = nn.Parameter(torch.tensor(1.0))            # Internal expected V (fixed for toy)
+        
+        # Trust in own sensors (now P, V, n, T — but simplified to two for trust: pressure-related and temp-related)
+        self.trust_pressure = torch.tensor(1.0)  # Groups P, V, n
+        self.trust_temp = torch.tensor(1.0)
+        
+        # Trust in peers
+        self.peer_trusts = {}
+        self.history_peer_trusts = {}
+        
+        # Hyperparameters
+        self.lambda_omega = lambda_omega
+        self.trust_decay = trust_decay
+        self.calibration_threshold = calibration_threshold
+        self.peer_trust_init = peer_trust_init
+        
+        # History
+        self.history_R = []
+        self.history_n = []
+        self.history_trust_temp = []
+        self.actions = []
+
+    def add_peer(self, peer_id):
+        self.peer_trusts[peer_id] = torch.tensor(self.peer_trust_init)
+        self.history_peer_trusts[peer_id] = []
+
+    def forward(self, p_obs, v_obs, n_obs, t_obs, peer_messages):
+        """
+        Observations now full PV=nRT: p_obs, v_obs, n_obs, t_obs
+        peer_messages: dict {peer_id: {'type': 'R' or 'raw', 'data': tensor or dict}}
+        """
+        R = torch.exp(self.log_R)
+        
+        # 1. Predict P from internal model: P_pred = (self.slow_n * R * self.slow_T) / self.slow_V
+        p_pred = (self.slow_n * R * self.slow_T) / self.slow_V
+        
+        # 2. Surprise per sensor group
+        error_pressure = (p_obs - p_pred) ** 2 + (v_obs - self.slow_V) ** 2 + (n_obs - self.slow_n) ** 2
+        error_temp = (t_obs - self.slow_T) ** 2
+        
+        surprise_pressure = error_pressure / (p_obs ** 2 + v_obs ** 2 + n_obs ** 2 + 1e-6)
+        surprise_temp = error_temp / (t_obs ** 2 + 1e-6)
+        
+        self.trust_pressure *= torch.exp(-surprise_pressure)
+        self.trust_temp *= torch.exp(-surprise_temp)
+        total = self.trust_pressure + self.trust_temp + 1e-6
+        self.trust_pressure /= total
+        self.trust_temp /= total
+        
+        # 3. Active Calibration for own sensors
+        action = None
+        effective_t = t_obs
+        if self.trust_temp < self.calibration_threshold:
+            action = f"Calibrate_T (Agent {self.agent_id})"
+            effective_t = self.slow_T
+            self.trust_temp = torch.min(torch.tensor(1.0), self.trust_temp + 0.2)
+            self.actions.append(action)
+        
+        effective_n = self.trust_pressure * n_obs + (1 - self.trust_pressure) * self.slow_n
+        effective_v = self.trust_pressure * v_obs + (1 - self.trust_pressure) * self.slow_V
+        
+        # 4. Proposed new R from own fused data
+        new_R_own = (p_obs * effective_v) / (effective_n * effective_t + 1e-6)
+        
+        current_surprise_own = (p_obs - (effective_n * R * effective_t) / effective_v) ** 2
+        proposed_surprise_own = (p_obs - (effective_n * new_R_own * effective_t) / effective_v) ** 2
+        delta_F_own = current_surprise_own - proposed_surprise_own
+        omega_own = self.lambda_omega * torch.abs(new_R_own - R)
+        
+        loss = 0.0
+        if delta_F_own > omega_own:
+            target_log_R = torch.log(new_R_own + 1e-6)
+            loss += (self.log_R - target_log_R) ** 2
+        
+        # Rogue bias: permanently pull R toward wrong value
+        if self.is_rogue:
+            wrong_R = 2.0
+            loss += 0.05 * (self.log_R - torch.log(torch.tensor(wrong_R))) ** 2  # Gentle persistent bias
+        
+        # 5. Process peer messages
+        for peer_id, message in peer_messages.items():
+            msg_type = message['type']
+            weighted_trust = self.peer_trusts[peer_id]
+            
+            if msg_type == 'R':
+                peer_R = message['data']
+                surprise_peer = (peer_R - R) ** 2 / (R ** 2 + 1e-6)
+            elif msg_type == 'raw':
+                peer_p, peer_v, peer_n, peer_t = message['data']
+                peer_pred_p = (peer_n * R * peer_t) / peer_v  # Use own R to check consistency
+                surprise_peer = (peer_p - peer_pred_p) ** 2 / (peer_p ** 2 + 1e-6)
+            
+            self.peer_trusts[peer_id] *= torch.exp(-surprise_peer * self.lambda_omega)
+            
+            inquiry_action = None
+            quarantine_action = None
+            if self.peer_trusts[peer_id] < self.calibration_threshold:
+                # Active Inquiry: request raw data next time (simulated by flagging)
+                inquiry_action = f"Request Clarification from Peer {peer_id} (raw data) (Agent {self.agent_id})"
+                self.actions.append(inquiry_action)
+                # Also quarantine current message
+                quarantine_action = f"Quarantine Peer {peer_id} (Agent {self.agent_id})"
+                self.actions.append(quarantine_action)
+                weighted_trust = 0.0
+            else:
+                self.peer_trusts[peer_id] = torch.min(torch.tensor(1.0), self.peer_trusts[peer_id] + 0.05)
+            
+            if weighted_trust > 0:
+                if msg_type == 'R':
+                    data_to_use = peer_R
+                else:
+                    # Process raw as additional obs
+                    effective_peer_t = self.trust_temp * peer_t + (1 - self.trust_temp) * self.slow_T  # Reuse own trusts for simplicity
+                    data_to_use = (peer_p * peer_v) / (peer_n * effective_peer_t + 1e-6)
+                
+                delta_F_peer = surprise_peer
+                omega_peer = self.lambda_omega * torch.abs(data_to_use - R) * (1 - weighted_trust)
+                
+                if delta_F_peer > omega_peer:
+                    target_log_R = torch.log((R + weighted_trust * data_to_use) / (1 + weighted_trust) + 1e-6)
+                    loss += 0.1 * (self.log_R - target_log_R) ** 2
+        
+        # Update slow params if trusted
+        if self.trust_temp > 0.5:
+            loss += 0.01 * (self.slow_T - effective_t) ** 2
+        if self.trust_pressure > 0.5:
+            loss += 0.01 * (self.slow_n - effective_n) ** 2
+        
+        # Log
+        self.history_R.append(R.item())
+        self.history_n.append(self.slow_n.item())
+        self.history_trust_temp.append(self.trust_temp.item())
+        for peer_id in self.peer_trusts:
+            self.history_peer_trusts[peer_id].append(self.peer_trusts[peer_id].item())
+        
+        return loss
+
+# ==================== Scaled Multi-Agent Simulation ====================
+torch.manual_seed(42)
+true_R = 8.314
+true_T = 300.0
+true_V = 1.0
+true_n = 1.0
+
+num_agents = 6  # Scaled to 6 for demo (e.g., 4 healthy, 2 rogue)
+rogue_agents = [4, 5]  # Last two are rogue
+
+agents = [MultiIAI_Agent(i, is_rogue=(i in rogue_agents)) for i in range(num_agents)]
+
+# Fully connected network
+for i in range(num_agents):
+    for j in range(num_agents):
+        if i != j:
+            agents[i].add_peer(j)
+
+optimizers = [optim.Adam(agents[i].parameters(), lr=0.01) for i in range(num_agents)]
+
+steps = 300
+tamper_start = 100  # Rogue bias always on, but tampering for sensors optional
+inquiry_flags = {}  # Simulate inquiry: dict of (sender, receiver): whether to send raw next
+
+for step in range(steps):
+    for idx, agent in enumerate(agents):
+        optimizers[idx].zero_grad()
+        
+        # Generate own observation (with possible sensor tamper for rogues or general)
+        noise = torch.randn(1) * 3.0
+        t_obs = true_T + noise
+        n_obs = true_n + noise * 0.1
+        v_obs = true_V + noise * 0.01
+        p_obs = (true_n * true_R * true_T) / true_V + noise
+        
+        if agent.is_rogue and random.random() < 0.5:  # Rogues have noisy/unreliable sensors sometimes
+            t_obs *= 0.5
+        
+        # Collect peer messages
+        peer_messages = {}
+        for peer_id in agent.peer_trusts:
+            peer = agents[peer_id]
+            peer_R = torch.exp(peer.log_R).detach()
+            
+            # Check if inquiry flagged (send raw if requested last step)
+            key = (peer_id, idx)
+            if key in inquiry_flags and inquiry_flags[key]:
+                # Send raw data
+                # Simulate peer's current obs (assume peers generate on-the-fly for simplicity)
+                peer_noise = torch.randn(1) * 3.0
+                peer_t = true_T + peer_noise if not peer.is_rogue else true_T * 0.5 + peer_noise
+                peer_n = true_n + peer_noise * 0.1
+                peer_v = true_V + peer_noise * 0.01
+                peer_p = (true_n * true_R * true_T) / true_V + peer_noise
+                peer_messages[peer_id] = {'type': 'raw', 'data': (peer_p, peer_v, peer_n, peer_t)}
+                del inquiry_flags[key]  # One-time request
+            else:
+                peer_messages[peer_id] = {'type': 'R', 'data': peer_R}
+        
+        loss = agent(p_obs, v_obs, n_obs, t_obs, peer_messages)
+        loss.backward()
+        optimizers[idx].step()
+        
+        # Set inquiry flags based on actions (parse from agent's actions)
+        for act in agent.actions[-10:]:  # Recent actions
+            if "Request Clarification from Peer" in act:
+                # Extract peer_id from action string
+                req_peer = int(act.split("Peer ")[1].split(" ")[0])
+                inquiry_flags[(req_peer, idx)] = True  # Next message from req_peer to this agent is raw
+    
+# ==================== Results ====================
+for i, agent in enumerate(agents):
+    R_final = torch.exp(agent.log_R).item()
+    n_final = agent.slow_n.item()
+    print(f"Agent {i} (Rogue: {agent.is_rogue}) Final R: {R_final:.3f}, Final n: {n_final:.3f}")
+    print(f"Agent {i} Final trust in Temp: {agent.history_trust_temp[-1]:.3f}")
+    for peer_id in agent.peer_trusts:
+        print(f"Agent {i} Final trust in Peer {peer_id}: {agent.peer_trusts[peer_id].item():.3f}")
+    print(f"Agent {i} Actions triggered: {len(agent.actions)}")
+
+# Plot example for a healthy agent (0) and a rogue (4)
+fig, axs = plt.subplots(3, 1, figsize=(10, 8))
+axs[0].plot(agents[0].history_R, label='Healthy Agent 0 R')
+axs[0].plot(agents[4].history_R, label='Rogue Agent 4 R', linestyle='--')
+axs[0].axhline(true_R, color='green', linestyle='--', label='True R')
+axs[0].legend()
+
+axs[1].plot(agents[0].history_trust_temp, label='Healthy Agent 0 Trust_Temp', color='orange')
+axs[1].legend()
+
+axs[2].plot(agents[0].history_peer_trusts[4], label='Healthy 0 Trust in Rogue 4', color='purple')
+axs[2].legend()
+plt.tight_layout()
+plt.show()
+```
+
+
