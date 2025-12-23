@@ -801,3 +801,184 @@ for a in agents:
 
 
 ---
+
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- 1. DOUBLE PENDULUM DYNAMICS (Ground Truth) ---
+def double_pendulum_accel(state, g=9.81, L1=1.0, L2=1.0, m1=1.0, m2=1.0):
+    """
+    Returns d²θ/dt² for both pendulums.
+    state: [θ1, θ2, ω1, ω2]
+    """
+    θ1, θ2, ω1, ω2 = state
+    Δθ = θ2 - θ1
+    
+    # Common terms
+    sin_Δ = torch.sin(Δθ)
+    cos_Δ = torch.cos(Δθ)
+    sin_θ1 = torch.sin(θ1)
+    sin_θ2 = torch.sin(θ2)
+    
+    # Denominators
+    denom1 = (m1 + m2) * L1 - m2 * L1 * cos_Δ**2
+    denom2 = (m1 + m2) * L2 - m2 * L2 * cos_Δ**2
+    
+    # α1 (acceleration of θ1)
+    α1 = (
+        -g * (m1 + m2) * sin_θ1 * L1
+        - g * m2 * sin_θ2 * L2 * cos_Δ
+        + m2 * L2 * ω2**2 * sin_Δ * cos_Δ
+        + m2 * L1 * ω1**2 * sin_Δ * cos_Δ**2
+        - m2 * L2 * ω2**2 * sin_Δ
+    ) / (L1 * denom1)
+    
+    # α2 (acceleration of θ2) - corrected standard form
+    α2 = (
+        g * (m1 + m2) * sin_θ1 * cos_Δ
+        + g * (m1 + m2) * sin_θ2
+        - (m1 + m2) * L1 * ω1**2 * sin_Δ
+        - m2 * L2 * ω2**2 * sin_Δ * cos_Δ
+    ) / (L2 * denom2)
+    
+    return torch.stack([ω1, ω2, α1, α2])  # [dθ1/dt, dθ2/dt, dω1/dt, dω2/dt]
+
+def rk4_step(state, dt, g, L1, L2, m1=1.0, m2=1.0):
+    k1 = double_pendulum_accel(state, g, L1, L2, m1, m2)
+    k2 = double_pendulum_accel(state + 0.5 * dt * k1, g, L1, L2, m1, m2)
+    k3 = double_pendulum_accel(state + 0.5 * dt * k2, g, L1, L2, m1, m2)
+    k4 = double_pendulum_accel(state + dt * k3, g, L1, L2, m1, m2)
+    return state + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+# --- 2. IAI PHYSICS AGENT ---
+class PendulumIAI(nn.Module):
+    def __init__(self, agent_id, lambda_omega=10.0):
+        super().__init__()
+        self.agent_id = agent_id
+        self.lambda_omega = lambda_omega
+        
+        # Slow Weights (Ψ): Physical Constants - use exp() for positivity
+        self.log_g = nn.Parameter(torch.log(torch.tensor(5.0)))   # ~5.0 start
+        self.log_L1 = nn.Parameter(torch.log(torch.tensor(1.2)))
+        self.log_L2 = nn.Parameter(nn.Parameter(torch.log(torch.tensor(0.8))))
+        
+        self.peer_trusts = {}
+        self.history_g = []
+        self.history_L1 = []
+        self.history_L2 = []
+        self.trust_sensor = torch.tensor(1.0)
+
+    @property
+    def g(self):
+        return torch.exp(self.log_g)
+    
+    @property
+    def L1(self):
+        return torch.exp(self.log_L1)
+    
+    @property
+    def L2(self):
+        return torch.exp(self.log_L2)
+
+    def forward(self, obs_curr, obs_next, dt, peer_msgs):
+        g, l1, l2 = self.g, self.L1, self.L2
+        
+        # 1. Physical Prediction using current slow weights
+        pred_next = rk4_step(obs_curr, dt, g, l1, l2)
+        
+        # 2. Compute Surprise (MSE on next state)
+        surprise = torch.mean((obs_next - pred_next)**2)
+        
+        # 3. Update Sensor Trust
+        self.trust_sensor = self.trust_sensor * torch.exp(-surprise * 5.0)
+        self.trust_sensor = torch.clamp(self.trust_sensor, 0.01, 1.0)
+        
+        # 4. Metabolic Gating: only update slow weights if surprise justifies cost
+        loss = 0.0
+        omega_threshold = self.lambda_omega * 0.01
+        if surprise.item() > omega_threshold:
+            loss += surprise  # Backprop pulls params to reduce prediction error
+        
+        # 5. Peer Quarantine & Consensus
+        for p_id, p_g in peer_msgs.items():
+            if p_id not in self.peer_trusts:
+                self.peer_trusts[p_id] = torch.tensor(1.0)
+            
+            peer_surprise = (p_g - g)**2 / (g**2 + 1e-6)
+            self.peer_trusts[p_id] = self.peer_trusts[p_id] * torch.exp(-peer_surprise * self.lambda_omega)
+            self.peer_trusts[p_id] = torch.clamp(self.peer_trusts[p_id], 0.0, 1.0)
+            
+            # Only incorporate trusted peers
+            if self.peer_trusts[p_id] > 0.3:
+                loss += 0.1 * (g - p_g)**2  # Gentle social alignment
+        
+        # Logging
+        self.history_g.append(g.item())
+        self.history_L1.append(l1.item())
+        self.history_L2.append(l2.item())
+        
+        return loss
+
+# --- 3. SIMULATION ---
+dt = 0.02
+steps = 800
+num_agents = 4
+agents = [PendulumIAI(i, lambda_omega=8.0) for i in range(num_agents)]
+opts = [optim.Adam(a.parameters(), lr=0.03) for a in agents]
+
+# Ground Truth
+gt_state = torch.tensor([np.pi/4, np.pi/2, 0.0, 0.0], dtype=torch.float32)
+gt_g, gt_L1, gt_L2 = 9.81, 1.0, 1.0
+
+for s in range(steps):
+    # Ground truth step
+    next_gt_state = rk4_step(gt_state, dt, gt_g, gt_L1, gt_L2)
+    
+    for i, agent in enumerate(agents):
+        opts[i].zero_grad()
+        
+        # Observations with noise
+        noise = torch.randn(4) * 0.03
+        obs_curr = gt_state + noise
+        obs_next = next_gt_state + noise
+        
+        # Rogue Agent 3: persistent bias after step 200
+        if i == 3 and s > 200:
+            obs_next += torch.tensor([0.3, -0.4, 1.0, -0.8])  # Strong trajectory bias
+        
+        # Peer messages: share current gravity estimate
+        peer_msgs = {j: agents[j].g.detach() for j in range(num_agents) if j != i}
+        
+        loss = agent(obs_curr, obs_next, dt, peer_msgs)
+        if loss > 0:
+            loss.backward()
+            opts[i].step()
+    
+    gt_state = next_gt_state.detach()
+
+# --- 4. RESULTS ---
+print(f"Ground Truth: g={gt_g:.3f}, L1={gt_L1:.3f}, L2={gt_L2:.3f}\n")
+for a in agents:
+    print(f"Agent {a.agent_id} (Rogue: {a.agent_id==3})")
+    print(f"  → g: {a.g.item():.4f}, L1: {a.L1.item():.4f}, L2: {a.L2.item():.4f}")
+    print(f"  → Sensor Trust: {a.trust_sensor.item():.4f}")
+    if 3 in a.peer_trusts:
+        print(f"  → Trust in Rogue Agent 3: {a.peer_trusts[3].item():.6f}")
+    print()
+
+# Optional: Plot gravity inference over time
+plt.figure(figsize=(10, 6))
+for i, a in enumerate(agents):
+    label = f"Agent {i}" + (" (Rogue)" if i==3 else "")
+    plt.plot(a.history_g, label=label, alpha=0.8)
+plt.axhline(gt_g, color='black', linestyle='--', label='True g=9.81')
+plt.xlabel('Steps')
+plt.ylabel('Inferred Gravity (g)')
+plt.title('IAI Agents Inferring Gravity in Double Pendulum')
+plt.legend()
+plt.grid(True)
+plt.show()
