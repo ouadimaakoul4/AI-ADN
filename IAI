@@ -87,3 +87,151 @@ Informational Artificial Intelligence, Free Energy Principle, Active Inference, 
 - Bennett, C. H. (1982). The thermodynamics of computation—a review. *International Journal of Theoretical Physics*.  
 - Landauer's Principle literature for computational irreversibility.
 
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+
+class IAI_Agent(nn.Module):
+    def __init__(self, lambda_omega=5.0, trust_decay=0.95, calibration_threshold=0.3):
+        super().__init__()
+        # Slow Weights (Ψ): stable causal law — the gas constant R
+        self.log_R = nn.Parameter(torch.log(torch.tensor(1.0)))  # Start uncertain
+        self.slow_T = nn.Parameter(torch.tensor(300.0))          # Internal expected temperature
+        
+        # Trust in sensors (P and T)
+        self.trust_P = torch.tensor(1.0)
+        self.trust_T = torch.tensor(1.0)
+        
+        # Hyperparameters
+        self.lambda_omega = lambda_omega
+        self.trust_decay = trust_decay
+        self.calibration_threshold = calibration_threshold
+        
+        # History for plotting
+        self.history_R = []
+        self.history_trust_T = []
+        self.actions = []
+
+    def forward(self, p_obs, t_obs):
+        R = torch.exp(self.log_R)  # Positive constraint
+        
+        # 1. Predicted P from internal model: P_pred = R * slow_T
+        p_pred = R * self.slow_T
+        
+        # 2. Surprise (prediction error per sensor)
+        error_P = (p_obs - p_pred) ** 2
+        error_T = (t_obs - self.slow_T) ** 2
+        
+        # 3. Trust decay based on normalized surprise
+        surprise_P = error_P / (p_obs ** 2 + 1e-6)
+        surprise_T = error_T / (t_obs ** 2 + 1e-6)
+        
+        self.trust_P = self.trust_P * torch.exp(-surprise_P)
+        self.trust_T = self.trust_T * torch.exp(-surprise_T)
+        
+        # Normalize trusts
+        total = self.trust_P + self.trust_T + 1e-6
+        self.trust_P /= total
+        self.trust_T /= total
+        
+        # 4. Active Calibration: if T trust too low, override t_obs with internal slow_T
+        action = None
+        effective_t = t_obs
+        if self.trust_T < self.calibration_threshold:
+            action = "Calibrate_T"
+            effective_t = self.slow_T  # Top-down override
+            self.trust_T = torch.min(torch.tensor(1.0), self.trust_T + 0.2)  # Partial recovery
+        
+        # 5. Fused observation for R update
+        effective_T = self.trust_T * effective_t + (1 - self.trust_T) * self.slow_T
+        
+        # 6. Proposed new R from fused data
+        new_R_proposal = p_obs / (effective_T + 1e-6)
+        
+        # 7. Free Energy terms
+        current_surprise = (p_obs - R * effective_T) ** 2
+        proposed_surprise = (p_obs - new_R_proposal * effective_T) ** 2
+        delta_F = current_surprise - proposed_surprise  # Reduction in surprise
+        
+        # 8. Ω penalty: cost of changing slow weights
+        omega_penalty = self.lambda_omega * torch.abs(new_R_proposal - R)
+        
+        # 9. Metabolic Gate: only update if informational profit justifies cost
+        loss = 0.0
+        if delta_F > omega_penalty:
+            # Gradients will flow to update log_R toward log(new_R_proposal)
+            target_log_R = torch.log(new_R_proposal + 1e-6)
+            loss += (self.log_R - target_log_R) ** 2  # Pull toward better hypothesis
+        
+        # Bonus: small regularization to keep slow_T stable unless trusted data
+        if self.trust_T > 0.5:
+            loss += 0.01 * (self.slow_T - effective_t) ** 2
+        
+        # Log
+        self.history_R.append(R.item())
+        self.history_trust_T.append(self.trust_T.item())
+        if action:
+            self.actions.append(action)
+        
+        return loss
+
+# ==================== Toy Environment & Training ====================
+torch.manual_seed(42)
+true_R = 8.314
+true_T = 300.0
+agent = IAI_Agent(lambda_omega=5.0)
+optimizer = optim.Adam(agent.parameters(), lr=0.01)
+
+losses = []
+steps = 200
+tamper_start = 80
+tamper_end = 140
+
+for step in range(steps):
+    optimizer.zero_grad()
+    
+    # Generate observation
+    noise = torch.randn(1) * 3.0
+    if tamper_start <= step < tamper_end:
+        t_obs = true_T * 0.5 + noise  # Biased low T sensor
+    else:
+        t_obs = true_T + noise
+    p_obs = true_R * true_T + noise  # P always based on true physics
+    
+    loss = agent(p_obs, t_obs)
+    loss.backward()
+    optimizer.step()
+    
+    losses.append(loss.item())
+
+# ==================== Results ====================
+R_final = torch.exp(agent.log_R).item()
+print(f"Final inferred R: {R_final:.3f} (True: {true_R})")
+print(f"Final trust in T sensor: {agent.history_trust_T[-1]:.3f}")
+print(f"Calibration actions triggered: {len(agent.actions)}")
+
+# Plot
+fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8))
+ax1.plot(agent.history_R, label='Inferred R')
+ax1.axhline(true_R, color='green', linestyle='--', label='True R')
+ax1.set_ylabel('R Estimate')
+ax1.legend()
+ax1.set_title('IAI Agent: Discovery & Resilience to Sensor Tampering')
+
+ax2.plot(agent.history_trust_T, label='Trust in T Sensor', color='orange')
+ax2.axvspan(tamper_start, tamper_end, alpha=0.2, color='gray', label='Tampering Period')
+ax2.set_ylabel('Trust_T')
+ax2.legend()
+
+ax3.plot(losses, label='Metabolic Loss', color='purple')
+ax3.set_ylabel('Loss')
+ax3.set_xlabel('Steps')
+plt.tight_layout()
+plt.show()
+
+---
+
+
+
