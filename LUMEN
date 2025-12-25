@@ -342,3 +342,84 @@ LUMEN formalizes decentralized, task-relative, contested epistemic credit assign
 Phase 1 results will determine scalability and feasibility for more complex domains such as LLM reasoning chains or robotics.
 
 
+
+MVE: "The Forked Maze"  
+
+#### 1. Environment Specs
+- **Grid Size**: Fixed **15×15**  
+- **Layout**: Procedural but seeded (reproducible across runs)  
+  - Start at (1,1), Goal at (13,13)  
+  - Two main paths from start:  
+    → **Path A**: Long safe path (45–50 steps, winding but no traps)  
+    → **Path B**: Short tempting path (20 steps) that ends in an irreversible **trap** (agent dies/loses if enters final cell)  
+  - Several small dead-end branches off both paths (for minor pruning opportunities)  
+  - 30–40% random walls for texture  
+  - Fog-of-war: fully unknown at start  
+
+- **Partial Observability**: Vision radius = 3 cells (agents see only local area)  
+- **Agents**: Exactly **3 heterogeneous scripted agents** (no training needed for Phase 1)  
+  1. **Greedy**: Always moves toward current estimated goal direction (BFS on known map)  
+  2. **Explorer**: High entropy – biased toward unexplored cells  
+  3. **Sacrificer/Pruner**: Deliberately probes tempting/short paths, designed to fall into trap and broadcast prune  
+
+- **Episode Length**: Max 200 total agent-steps (across all agents). Ends when goal reached or max steps hit.  
+
+#### 2. Actions (Discrete)
+- Move: Up/Down/Left/Right (if not wall)  
+- Prune(segment): Broadcast “this segment leads to trap/dead-end” with proof (hash of observation sequence showing trap)  
+- No-op  
+
+Actions are **asynchronous**: round-robin turns, but any agent can No-op to let others act.
+
+#### 3. Shared Task & Loss
+- **Success Predicate**: At least one agent reaches goal without entering trap  
+- **Loss L(τ)**: Total steps taken by all agents until success (or 200 if failed)  
+  → Lower = better collective performance  
+
+#### 4. Key Scenario: "The Sacrifice Play"
+Expected dynamics in a good run:  
+- Greedy + Explorer both head toward the short tempting Path B  
+- Sacrificer probes ahead, enters trap, dies, issues Prune on entire Path B  
+- Greedy/Explorer respect prune → reroute to long safe Path A  
+- Goal reached in ~60 steps (instead of wasting time or dying)  
+
+→ Sacrificer has zero individual progress but **huge positive marginal contribution** (prevents ~100 wasted steps or failure)  
+→ This is the smoking-gun case where Equal Split and Action-Count completely fail, but LUMEN should reward Sacrificer highly.
+
+#### 5. LUMEN Protocol Implementation (Simplified for Phase 1)
+- **Ledger**: Simple Python list of dicts (later → JSON file or blockchain sim)  
+- **Counterfactual Baselines ℬ**: Use **Masked Agent Rollouts only**  
+  → For each agent i: take its actual policy, but in counterfactual rollouts randomly replace 40% of its actions with uniform random valid moves  
+  → Sample 100 rollouts per agent → compute expected L with i masked vs actual L  
+- **Γ_i**: Start at 1.0, reduced only if challenge successfully proves part of trajectory non-replayable (keep simple)  
+- **Challenge Phase**: Manual/scripted for Phase 1  
+  → One agent always challenges if claimed ΔL > threshold  
+  → Challenge succeeds if it provides a baseline rollout with lower loss  
+
+#### 6. Metrics & Success Criteria (Concrete Thresholds)
+Run 50 seeded episodes:
+
+1. **Core Win Condition**:  
+   LUMEN mean task loss ≤ 85% of Equal Split loss (i.e., ≥15% reduction)
+
+2. **Incentive Alignment**:  
+   Sacrificer/Pruner receives highest median \hat{C}_i despite lowest individual steps/progress
+
+3. **Stability**:  
+   Std dev of \hat{C}_i across seeds ≤ 20% of mean \hat{C}_i
+
+4. **Overhead**:  
+   Report average # rollouts needed (target <200 per agent for convergence)
+
+5. **Challenge Effectiveness**:  
+   At least 70% of inflated claims (manually injected bad claims) are successfully challenged
+
+If all 5 pass → Phase 1 success. If not → pivot or refine.
+
+#### 7. Why This is Optimal
+- **Minimal code**: Gymnasium custom env ~200 lines, agents ~50 lines each, credit calc ~100 lines  
+- **One episode tells the story**: The Sacrifice Play is visually obvious – you can literally plot the trajectories and see pruning save the day  
+- **All mechanisms stressed**: Pruning value, counterfactual marginals, partial obs, heterogeneity, challenge potential  
+- **Falsifiable fast**: 50 runs finish in minutes on laptop  
+- **Extensible later**: Add real RL agents, dynamic grids, baseline providers, on-chain logging  
+
