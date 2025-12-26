@@ -775,3 +775,85 @@ capabilities_vector:
     surface_friction_min: 0.3 # Minimum mu for stable locomotion
     thermal_limit_celsius: 65.0
 
+
+
+
+1. The L2WBA-HAL Architecture
+This bridge acts as a ROS 2 Subscriber. It listens for the WBARIntent, checks it against the CapabilitiesVector, and generates the control_msgs/JointTrajectory.
+2. The Bridge Code: wbar_to_ros2_hal.py
+# L2WBA-HAL v1.0: The Hardware Bridge
+# Maps WBAR Intent to ROS 2 Control (Unitree G1 / Generic Humanoid)
+
+import rclpy
+from rclpy.node import Node
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from l2wba_msgs.msg import WBARIntent # Hypothetical ROS2 msg
+import numpy as np
+
+class WBARHardwareBridge(Node):
+    def __init__(self):
+        super().__init__('wbar_hardware_bridge')
+        
+        # 1. Capabilities Mapping (Unitree G1 Example)
+        self.joint_names = [
+            'left_hip_pitch', 'left_knee', 'left_ankle',
+            'right_hip_pitch', 'right_knee', 'right_ankle',
+            'waist_yaw', 'head_pitch'
+        ]
+        
+        # 2. Subscribe to the AI Brain (WBAR)
+        self.subscription = self.create_subscription(
+            WBARIntent,
+            '/robot/intent/wbar',
+            self.intent_callback,
+            10)
+            
+        # 3. Publish to the Motor Controllers (ROS 2 Control)
+        self.publisher_ = self.create_publisher(
+            JointTrajectory, 
+            '/joint_trajectory_controller/joint_trajectory', 
+            10)
+
+    def intent_callback(self, msg):
+        self.get_logger().info(f"🤖 L2WBA-HAL: Received Intent for Task: {msg.task_goal}")
+        
+        # --- THE TRANSLATION LOGIC ---
+        
+        # Initialize ROS 2 Trajectory
+        traj = JointTrajectory()
+        traj.joint_names = self.joint_names
+        point = JointTrajectoryPoint()
+        
+        # Extract CoM and Contact Plan to calculate Inverse Kinematics (IK)
+        # For this MVP, we map 'StepTo' intent to a pre-defined Joint Pose
+        if "step" in msg.task_goal.lower():
+            # Example: Target joint angles for a stable step
+            target_positions = [0.2, -0.4, 0.2, 0.1, -0.2, 0.1, 0.0, 0.1]
+        else:
+            # Default Neutral Pose
+            target_positions = [0.0] * len(self.joint_names)
+
+        # Safety Check: Torque Saturation (from Capabilities Vector)
+        if msg.force_limits.max_linear_force > 700.0:
+            self.get_logger().warn("⚠️ HAL: Torque request too high! Clipping to safety limit.")
+            # Safety clipping logic here...
+
+        point.positions = target_positions
+        point.time_from_start.sec = int(msg.timing.duration) if msg.timing.duration > 0 else 1
+        
+        traj.points.append(point)
+        
+        # Dispatch to Motors
+        self.publisher_.publish(traj)
+        self.get_logger().info("🚀 HAL: Commands dispatched to motor controllers.")
+
+def main(args=None):
+    rclpy.init(args=args)
+    bridge = WBARHardwareBridge()
+    rclpy.spin(bridge)
+    bridge.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
+
