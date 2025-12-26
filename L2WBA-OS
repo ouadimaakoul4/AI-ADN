@@ -857,3 +857,64 @@ def main(args=None):
 if __name__ == '__main__':
     main()
 
+
+This docker-compose setup is the "Infrastructure-as-Code" for the L2WBA-OS. It ensures that whether a researcher is in a lab in Casablanca or a factory in Shenzhen, the entire stack—from the AI "Brain" to the "Motor Bridge"—spins up with one command.
+1. The L2WBA-OS Stack Orchestrator
+We will use three distinct containers to enforce the Hz Separation of Concerns:
+ * vla-brain: The high-level reasoning (0.1–10 Hz).
+ * wbar-optimizer: The physics refinement layer (100 Hz).
+ * hardware-hal: The ROS 2 bridge to the physical/simulated robot (1000 Hz).
+2. docker-compose.yml
+version: '3.8'
+
+services:
+  # 🧠 The Cognition Layer (Vision-Language-Action)
+  vla-brain:
+    image: l2wba/vla-brain-deepseek:latest
+    container_name: l2wba_brain
+    environment:
+      - ROBOT_TYPE=UNITREE_G1
+      - API_KEY=${AI_BRAIN_KEY}
+    volumes:
+      - ./config/capabilities_vector.yaml:/etc/l2wba/robot_caps.yaml
+    networks:
+      - l2wba_net
+    command: python3 run_brain.py --target /robot/intent/wbar
+
+  # 🔧 The Physics & Intent Layer (WBAR Optimizer)
+  wbar-optimizer:
+    image: l2wba/optimizer-jax:latest
+    container_name: l2wba_optimizer
+    depends_on:
+      - vla-brain
+    networks:
+      - l2wba_net
+    # Shared memory for fast data transfer between AI and Optimizer
+    shm_size: '2gb'
+
+  # 🦾 The Execution Layer (Hardware Abstraction)
+  hardware-hal:
+    image: l2wba/hal-ros2-humble:latest
+    container_name: l2wba_hal
+    privileged: true  # Required for USB/Serial motor access
+    network_mode: "host" # ROS 2 works best on host network for hardware discovery
+    volumes:
+      - /dev:/dev
+      - ./config/joint_limits.yaml:/etc/ros/limits.yaml
+    depends_on:
+      - wbar-optimizer
+
+networks:
+  l2wba_net:
+    driver: bridge
+
+3. The Deployment Workflow
+ * Clone & Configure: The user drops their capabilities_vector.yaml into the config folder.
+ * Pull & Ignite:
+   docker-compose up -d
+
+ * Command: The user sends a command via the Brain's API (e.g., "Go get the coffee cup").
+ * Flow:
+   * Brain generates the WBARIntent.
+   * Optimizer catches it, checks gravity/balance, and refines it.
+   * HAL receives the safe intent and pulses the motors.
