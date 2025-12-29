@@ -1,0 +1,266 @@
+```bash
+l2wba-os/                          # Root repository for L2WBA-OS (Linux for Humanoids)
+├── CMakeLists.txt                 # Top-level CMake build
+├── README.md                      # Project manifesto, quickstart, philosophy
+├── LICENSE                        # Apache 2.0
+├── docs/
+│   ├── whitepaper.md              # Full architecture whitepaper
+│   ├── mathematical_foundations.md
+│   └── deployment_guide.md
+├── src/
+│   ├── mediator/                  # Deterministic Mediation Engine
+│   │   ├── ConstraintEngine.hpp
+│   │   ├── ConstraintEngine.cpp
+│   │   ├── RealTimeMainLoop.cpp
+│   │   ├── SovereigntyHierarchy.hpp
+│   │   └── AdmittanceController.hpp
+│   ├── hal/                       # Hardware Abstraction Layer
+│   │   ├── EthercatMaster.hpp
+│   │   ├── EthercatMaster.cpp
+│   │   ├── PdoStructures.hpp
+│   │   └── BodyProfileLoader.cpp
+│   ├── ipc/                       # Inter-Process Communication
+│   │   ├── ShmRing.hpp            # Lock-free SPSC ring buffer
+│   │   └── SharedMemory.hpp
+│   ├── safety/                    # Shadow Mediator & Watchdog
+│   │   ├── ShadowMediator.hpp
+│   │   └── WatchdogHeartbeat.hpp
+│   ├── scheduling/                # Real-time thread utilities
+│   │   └── ContextAwareScheduler.hpp
+│   ├── monitoring/                # Jitter & tail latency analysis
+│   │   └── JitterAnalyzer.hpp
+│   └── marketplace/               # Physical Web routing
+│       ├── PhysicalRouter.hpp
+│       └── Registry.proto
+├── proto/                         # All protobuf definitions
+│   ├── ConstraintSystem.proto
+│   ├── AdmittanceControl.proto
+│   ├── BodyProfile.proto
+│   └── Registry.proto
+├── python/                        # Brain SDK
+│   ├── l2wba_sdk/
+│   │   ├── __init__.py
+│   │   ├── py.typed
+│   │   └── src/
+│   │       └── pybind11_binding.cpp
+│   ├── examples/
+│   │   ├── hello_humanoid.py      # Safe Object Retrieval demo
+│   │   └── perception_fusion.py
+│   └── pyproject.toml
+├── config/                        # Deployment configurations
+│   ├── grub                           # /etc/default/grub snippet
+│   ├── limits.d/
+│   │   └── l2wba-realtime.conf
+│   ├── systemd/
+│   │   ├── l2wba-hal.service
+│   │   ├── l2wba-mediator.service
+│   │   └── l2wba-monitor.service
+│   └── body_profiles/
+│       ├── unitree-g1.profile     # Example serialized BodyProfile
+│       └── generic-humanoid.profile
+├── scripts/                       # Host preparation & utilities
+│   ├── configure_host.sh          # Kernel hardening script
+│   ├── install_sdk.sh
+│   └── validate_d3_compliance.sh
+├── tests/                         # Validation suite
+│   ├── adversarial/
+│   │   └── ImpossibleIntentSuite.py
+│   ├── hil/
+│   │   └── HardwareInLoopValidator.cpp
+│   └── compliance/
+│       └── ScoringEngine.py
+├── docker/                        # Sandbox & production images
+│   ├── Dockerfile.sandbox
+│   ├── Dockerfile.production
+│   └── docker-compose.production.yml
+├── tools/                         # Build & analysis tools
+│   ├── cyclictest_wrapper.sh
+│   └── jitter_analyzer.py
+└── third_party/                   # Submodules (Eigen, protobuf, pybind11, etc.)
+```
+
+### Repository Structure Summary
+
+- **src/** → Core C++17/20 real-time components (mediator, HAL, IPC, safety)
+- **proto/** → All protocol buffers (compiled to C++ and Python)
+- **python/** → High-level Brain SDK with PyBind11 zero-copy bindings
+- **config/** → Systemd units, GRUB, limits – ready for deployment
+- **tests/** → Adversarial validation, HIL, compliance scoring
+- **docker/** → Developer sandbox + production stack
+- **docs/** → Whitepapers and guides
+
+This arborescence is designed for:
+- Clean separation of real-time (C++) and AI (Python) concerns
+- Easy cross-compilation for embedded targets
+- Seamless CI/CD with GitHub Actions (real-time tests via QEMU or HIL rigs)
+- Open contribution (Apache 2.0)
+
+
+
+
+```python
+# l2wba/hal/ArborescenceValidator.py
+# L2WBA-OS Arborescence Validator v1.0
+# Ensures kinematic tree validity and physical realizability before first boot
+# Licensed under Apache 2.0
+
+import networkx as nx
+import numpy as np
+from typing import List, Dict, Any
+from google.protobuf import json_format
+import json
+import sys
+
+# Import protobuf-generated classes (generated from BodyProfile.proto)
+from l2wba.marketplace import BodyProfile_pb2 as pb
+
+class ArborescenceValidator:
+    """
+    Validates the kinematic arborescence and physical parameters of a humanoid body.
+    Called by HAL immediately after loading BodyProfile.
+    """
+    
+    def __init__(self, profile_path: str):
+        self.profile = pb.BodyProfile()
+        
+        # Load serialized BodyProfile (binary or JSON)
+        try:
+            with open(profile_path, 'rb') as f:
+                self.profile.ParseFromString(f.read())
+        except Exception:
+            # Fallback to JSON format
+            with open(profile_path, 'r') as f:
+                json_format.Parse(f.read(), self.profile)
+        
+        self.dag = nx.DiGraph()
+        self.link_map: Dict[str, pb.BodyProfile.Link] = {}
+
+    def run_full_validation(self) -> None:
+        print(f"=== L2WBA-OS Arborescence Validation ===")
+        print(f"Body: {self.profile.manufacturer} {self.profile.model} ({self.profile.id})")
+        print(f"Certified Tier: {self.profile.certified_tier}\n")
+
+        self._build_graph()
+        self._check_topology()
+        self._check_root()
+        self._check_connectivity()
+        self._validate_inertias()
+        self._validate_masses()
+        self._validate_joint_limits()
+        self._check_primitive_compatibility()
+
+        print("\n✅ ARBORESCENCE VALIDATION PASSED")
+        print("   Mediator may now initialize Jacobian matrices and RNEA warm-start.")
+        print("   Robot is cleared for first motion.\n")
+
+    def _build_graph(self) -> None:
+        """Build directed graph: parent_link -> child_link"""
+        for link in self.profile.links:
+            self.link_map[link.name] = link
+            if link.parent_name != "floating_base":  # Root has no parent
+                self.dag.add_edge(link.parent_name, link.name)
+
+    def _check_topology(self) -> None:
+        if not nx.is_directed_acyclic_graph(self.dag):
+            cycle = nx.find_cycle(self.dag)
+            raise RuntimeError(f"TOPOLOGY ERROR: Kinematic cycle detected: {cycle}")
+
+    def _check_root(self) -> None:
+        roots = [n for n, d in self.dag.in_degree() if d == 0]
+        if len(roots) != 1:
+            raise RuntimeError(f"TOPOLOGY ERROR: Expected 1 root (pelvis/base), found {len(roots)}: {roots}")
+        if roots[0] != "pelvis" and roots[0] != "torso" and "base" not in roots[0].lower():
+            print(f"WARNING: Root link '{roots[0]}' does not follow naming convention (expected pelvis/torso/base)")
+
+    def _check_connectivity(self) -> None:
+        if not nx.is_weakly_connected(self.dag.to_undirected()):
+            raise RuntimeError("TOPOLOGY ERROR: Kinematic tree is not connected (multiple disconnected branches)")
+
+    def _validate_inertias(self) -> None:
+        for link in self.profile.links:
+            I = np.array([link.inertia.xx, link.inertia.yy, link.inertia.zz])
+            off_diag = np.array([
+                link.inertia.xy, link.inertia.xz, link.inertia.yz,
+                link.inertia.xy, link.inertia.xz, link.inertia.yz
+            ])
+            
+            # Principal moments must be positive
+            if np.any(I <= 0):
+                raise ValueError(f"PHYSICS ERROR: Link '{link.name}' has non-positive principal inertia: {I}")
+
+            # Triangle inequality for principal moments
+            if not (I[0] + I[1] >= I[2] and I[0] + I[2] >= I[1] and I[1] + I[2] >= I[0]):
+                raise ValueError(f"PHYSICS ERROR: Link '{link.name}' violates inertia triangle inequality: {I}")
+
+            # Off-diagonal terms should be small relative to diagonal (sanity)
+            if np.any(np.abs(off_diag) > 0.5 * I.mean()):
+                print(f"WARNING: Link '{link.name}' has large off-diagonal inertia terms")
+
+    def _validate_masses(self) -> None:
+        for link in self.profile.links:
+            if link.mass <= 0:
+                raise ValueError(f"PHYSICS ERROR: Link '{link.name}' has non-positive mass: {link.mass}")
+
+        # Optional: Warn if leaf is heavier than ancestors (common design flaw)
+        total_mass = sum(link.mass for link in self.profile.links)
+        print(f"Total robot mass: {total_mass:.2f} kg")
+
+    def _validate_joint_limits(self) -> None:
+        for joint in self.profile.joints:
+            if joint.position_lower >= joint.position_upper:
+                raise ValueError(f"JOINT ERROR: {joint.name} has invalid position limits "
+                                 f"[{joint.position_lower}, {joint.position_upper}]")
+            if joint.velocity_limit <= 0:
+                raise ValueError(f"JOINT ERROR: {joint.name} has non-positive velocity limit")
+            if joint.torque_limit <= 0:
+                raise ValueError(f"JOINT ERROR: {joint.name} has non-positive torque limit")
+
+    def _check_primitive_compatibility(self) -> None:
+        required_for_d3 = {"REACH_AND_GRASP", "WALK_TO", "WHOLE_BODY_POINT"}
+        supported = set(self.profile.capabilities.supported_primitives)
+        
+        if self.profile.certified_tier == pb.BodyProfile.ComplianceTier.D3:
+            missing = required_for_d3 - supported
+            if missing:
+                raise RuntimeError(f"TIER MISMATCH: D3 body missing required primitives: {missing}")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python ArborescenceValidator.py <path_to_body.profile>")
+        sys.exit(1)
+    
+    validator = ArborescenceValidator(sys.argv[1])
+    validator.run_full_validation()
+```
+
+### Integration into Boot Sequence
+
+```bash
+# /opt/l2wba/bin/hal (excerpt)
+int main() {
+    // ... EtherCAT init ...
+    
+    std::string profile_path = "/etc/l2wba/body.profile";
+    load_body_profile(profile_path);  // C++ loader
+    
+    // Trigger Python validator as pre-flight check
+    int ret = system("python3 /opt/l2wba/hal/ArborescenceValidator.py /etc/l2wba/body.profile");
+    if (ret != 0) {
+        emergency_stop("Arborescence validation failed");
+        return 1;
+    }
+    
+    std::cout << "Pre-flight checks passed. Initializing Mediator..." << std::endl;
+    launch_mediator();
+}
+```
+
+### Final Status: **L2WBA-OS v4.0
+
+- Hardened real-time kernel & services
+- Deterministic Mediator with Constraint Engine
+- EtherCAT HAL with PDO super-packets
+- Zero-copy Brain SDK (Python/PyTorch/JAX ready)
+- BodyProfile marketplace standard
+- Arborescence Validator (topology + physics sanity)
+
