@@ -575,3 +575,402 @@ private:
 - **License**: Apache 2.0 – fork and contribute on GitHub!
 
 This reference serves as a starting point for open-source implementations in the "Linux for robots" ecosystem. For full system integration, refer to the L2WBA-OS whitepaper.
+
+
+the "Real-Time Main Loop" code—specifically showing how to use the pthread library to pin this engine to a dedicated CPU core and synchronize it with an EtherCAT hardware clock
+
+
+// l2wba/mediator/RealTimeMainLoop.cpp
+// Copyright (c) 2025 xAI Robotics Division
+// Licensed under the Apache License, Version 2.0
+
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
+#include <chrono>
+#include <iostream>
+#include <stdexcept>
+#include <atomic>
+#include "ConstraintEngine.hpp"  // From previous reference implementation
+#include "l2wba/ethercat/EthercatMaster.hpp"  // Assume from v4.0 specs
+#include "l2wba/ipc/ShmRing.hpp"  // Shared memory ring buffer
+
+namespace l2wba::mediator {
+
+class RealTimeMediator {
+public:
+    RealTimeMediator(int cpu_core = 2, int priority = 99, uint32_t cycle_time_us = 500)
+        : cpu_core(cpu_core), priority(priority), cycle_time_us(cycle_time_us),
+          running(false) {
+        
+        // Initialize shared memory for brain intents (size 16, type IntentSegment)
+        intent_ring = new ipc::SharedMemoryRing<IntentSegment, 16>("/l2wba_brain_shm", true);
+        
+        // Initialize EtherCAT master
+        ethercat_master = new ethercat::EthercatMaster("eth0", cycle_time_us);
+        
+        // Initialize envelope and state (placeholders; load from config in production)
+        envelope = SafeOperationEnvelope{};  // Fill with robot-specific constraints
+        current_state = BodyState{};  // Update from sensors in loop
+    }
+    
+    ~RealTimeMediator() {
+        stop();
+        delete intent_ring;
+        delete ethercat_master;
+    }
+    
+    void start() {
+        running = true;
+        int rc = pthread_create(&thread, nullptr, &RealTimeMediator::thread_entry, this);
+        if (rc != 0) {
+            throw std::runtime_error("Failed to create real-time thread");
+        }
+    }
+    
+    void stop() {
+        running = false;
+        if (thread) {
+            pthread_join(thread, nullptr);
+            thread = 0;
+        }
+    }
+    
+private:
+    static void* thread_entry(void* arg) {
+        RealTimeMediator* self = static_cast<RealTimeMediator*>(arg);
+        self->run_loop();
+        return nullptr;
+    }
+    
+    void run_loop() {
+        // Step 1: Set thread name for debugging
+        pthread_setname_np(pthread_self(), "L2WBA_Mediator");
+        
+        // Step 2: Pin to dedicated CPU core (affinity)
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(cpu_core, &cpuset);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+            std::cerr << "Failed to set CPU affinity" << std::endl;
+            return;
+        }
+        
+        // Step 3: Set real-time scheduling policy and priority (SCHED_FIFO)
+        struct sched_param param;
+        param.sched_priority = priority;
+        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0) {
+            std::cerr << "Failed to set real-time priority" << std::endl;
+            return;
+        }
+        
+        // Step 4: Lock all memory to prevent paging
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1) {
+            std::cerr << "Failed to lock memory" << std::endl;
+            return;
+        }
+        
+        // Step 5: Main real-time loop, synchronized to EtherCAT hardware clock
+        ethercat_master->run_sync_loop([this](RxPdo& rx_pdo, const TxPdo& tx_pdo) {
+            auto cycle_start = std::chrono::steady_clock::now();
+            
+            // Update current state from TxPDO feedback
+            update_state_from_txpdo(tx_pdo);
+            
+            // Read intent from shared memory ring (blocking with timeout)
+            IntentSegment intent;
+            if (!intent_ring->pop(intent, cycle_time_us / 2)) {  // Timeout half cycle
+                // No new intent: Use safe default (e.g., hold position)
+                intent = create_hold_intent();
+            }
+            
+            // Mediate intent using ConstraintEngine
+            MediationResult result = engine.mediate_intent(intent, current_state, envelope);
+            
+            // Compute admittance commands if needed (from mediated intent)
+            AdmittanceIntent adm_intent = convert_to_admittance(result.mediated_intent);
+            JointCommand joint_cmd = admittance_controller.compute_command(
+                adm_intent, current_state, tx_pdo.get_wrench());  // Assume get_wrench method
+            
+            // Fill RxPDO with mediated commands
+            fill_rx_pdo_from_joint_cmd(rx_pdo, joint_cmd);
+            
+            // Monitor cycle time and jitter
+            auto cycle_end = std::chrono::steady_clock::now();
+            auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(cycle_end - cycle_start).count();
+            if (elapsed_us > cycle_time_us) {
+                log_missed_deadline(elapsed_us);
+            }
+        });
+    }
+    
+    // Helper: Update state from TxPDO (e.g., positions, velocities, temperatures)
+    void update_state_from_txpdo(const TxPdo& tx_pdo) {
+        // Example: Map joint feedback to BodyState
+        for (size_t i = 0; i < MAX_JOINTS; ++i) {
+            current_state.joint_positions[i] = tx_pdo.joints[i].position_actual;
+            current_state.joint_velocities[i] = tx_pdo.joints[i].velocity_actual;
+            // Update CoM, IMU, etc.
+        }
+        // Compute current CoM via forward kinematics (stub)
+    }
+    
+    // Helper: Create safe hold intent
+    IntentSegment create_hold_intent() {
+        IntentSegment hold;
+        hold.desired_twist.Clear();  // Zero velocity
+        return hold;
+    }
+    
+    // Helper: Convert mediated intent to admittance (stub)
+    AdmittanceIntent convert_to_admittance(const IntentSegment& intent) {
+        AdmittanceIntent adm;
+        // Map fields
+        return adm;
+    }
+    
+    // Helper: Fill RxPDO from joint commands
+    void fill_rx_pdo_from_joint_cmd(RxPdo& rx_pdo, const JointCommand& cmd) {
+        // Map torques, positions, etc. to PDO fields
+    }
+    
+    // Helper: Log missed deadline (for forensic)
+    void log_missed_deadline(long elapsed_us) {
+        std::cerr << "Missed deadline: " << elapsed_us << "us > " << cycle_time_us << "us" << std::endl;
+        // Trigger degraded mode if persistent
+    }
+    
+    pthread_t thread = 0;
+    int cpu_core;
+    int priority;
+    uint32_t cycle_time_us;
+    std::atomic<bool> running;
+    
+    ipc::SharedMemoryRing<IntentSegment, 16>* intent_ring;
+    ethercat::EthercatMaster* ethercat_master;
+    ConstraintEngine engine;
+    AdmittanceController admittance_controller;  // Assume from specs
+    SafeOperationEnvelope envelope;
+    BodyState current_state;
+};
+
+}  // namespace l2wba::mediator
+
+int main() {
+    try {
+        l2wba::mediator::RealTimeMediator mediator(2, 99, 500);  // Core 2, prio 99, 500us cycle
+        mediator.start();
+        
+        // Run until signal (e.g., Ctrl+C handler)
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        
+        mediator.stop();
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0;
+}
+
+
+Deployment manifest"—the systemd service file and the GRUB bootloader configuration—needed to prepare a raw Linux machine for this real-time workload
+
+
+```ini
+# /etc/default/grub
+# L2WBA-OS Real-Time Kernel Boot Configuration
+# Apply with: sudo update-grub
+
+GRUB_TIMEOUT=5
+GRUB_DISTRIBUTOR="Ubuntu"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+GRUB_CMDLINE_LINUX="isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 \
+threadirqs \
+processor.max_cstate=1 intel_idle.max_cstate=0 amd_pstate=active \
+idle=poll \
+mitigations=off \
+tsx_async_abort=off \
+spectre_v2=off \
+spec_store_bypass_disable=off \
+l1tf=off \
+mds=off \
+pti=off"
+
+# Optional: Enable huge pages for deterministic allocation (2MB pages)
+# GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX} hugepagesz=2M hugepages=2048"
+
+# Recommended for EtherCAT: Disable IOMMU if not needed (improves PCIe latency)
+# GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX} intel_iommu=off amd_iommu=off"
+```
+
+```bash
+# /etc/security/limits.d/l2wba-realtime.conf
+# Real-time and memory locking limits for L2WBA services
+
+*       soft    rtprio     99
+*       hard    rtprio     99
+*       soft    memlock    unlimited
+*       hard    memlock    unlimited
+*       soft    nice       -20
+*       hard    nice       -20
+```
+
+```ini
+# /etc/systemd/system/l2wba-mediator.service
+# Systemd unit for L2WBA-OS Real-Time Mediator (D3 Tier)
+
+[Unit]
+Description=L2WBA-OS Real-Time Mediator (Deterministic Safety Kernel)
+After=network.target l2wba-hal.service
+Requires=l2wba-hal.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=realtime
+
+# Binary path (adjust after make install)
+ExecStart=/opt/l2wba/bin/mediator \
+    --mode production \
+    --tier d3 \
+    --cycle-time 500 \
+    --cpu-core 2 \
+    --priority 99 \
+    --log-level info \
+    --forensic-buffer 5000
+
+# Real-time scheduling
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=99
+CPUQuota=100%
+CPUAffinity=2
+
+# Memory locking and huge pages
+MemoryLock=all
+LimitMEMLOCK=infinity
+
+# Prevent OOM killer
+OOMScoreAdjust=-1000
+
+# Disable swapping for this process
+ProtectSystem=full
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# Watchdog and restart policy
+WatchdogSec=100ms
+Restart=always
+RestartSec=100ms
+StartLimitIntervalSec=10s
+StartLimitBurst=3
+
+# Capability requirements for EtherCAT and raw memory access
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_RAWIO CAP_IPC_LOCK CAP_SYS_TIME
+AmbientCapabilities=CAP_SYS_NICE CAP_SYS_RAWIO CAP_IPC_LOCK CAP_SYS_TIME
+
+Environment=MALLOC_ARENA_MAX=1
+Environment=MALLOC_TRIM_THRESHOLD_=-1
+Environment=MALLOC_MMAP_MAX_=0
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/l2wba-hal.service
+# Systemd unit for L2WBA-OS Hardware Abstraction Layer (EtherCAT Master)
+
+[Unit]
+Description=L2WBA-OS EtherCAT Hardware Abstraction Layer
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=realtime
+
+ExecStart=/opt/l2wba/bin/hal \
+    --interface eth0 \
+    --cycle-time 500 \
+    --sync-mode dc \
+    --watchdog-timeout 100 \
+    --cpu-core 3
+
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=98
+CPUQuota=100%
+CPUAffinity=3
+
+MemoryLock=all
+LimitMEMLOCK=infinity
+
+OOMScoreAdjust=-1000
+
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_RAWIO CAP_NET_ADMIN CAP_IPC_LOCK
+AmbientCapabilities=CAP_SYS_NICE CAP_SYS_RAWIO CAP_NET_ADMIN CAP_IPC_LOCK
+
+WatchdogSec=100ms
+Restart=always
+RestartSec=100ms
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/l2wba-monitor.service
+# Optional: Jitter and health monitoring daemon
+
+[Unit]
+Description=L2WBA-OS Real-Time Monitoring and Alerting
+After=l2wba-mediator.service l2wba-hal.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/l2wba/bin/monitor --metrics-interval 100 --alert-threshold 150 --dashboard-port 9090
+CPUQuota=10%
+CPUAffinity=0
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Deployment Instructions (Run as root)
+
+```bash
+# 1. Apply GRUB configuration
+sudo cp /path/to/grub /etc/default/grub
+sudo update-grub
+
+# 2. Install limits
+sudo cp /path/to/l2wba-realtime.conf /etc/security/limits.d/
+sudo systemctl restart systemd-logind  # Apply limits to new sessions
+
+# 3. Install systemd units
+sudo cp l2wba-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# 4. Enable services
+sudo systemctl enable l2wba-hal.service
+sudo systemctl enable l2wba-mediator.service
+sudo systemctl enable l2wba-monitor.service  # optional
+
+# 5. Create realtime group (if not exists)
+sudo groupadd -r realtime
+
+# 6. Reboot to apply kernel parameters
+sudo reboot
+
+# After reboot:
+sudo systemctl start l2wba-hal.service
+sudo systemctl start l2wba-mediator.service
+sudo systemctl status l2wba-mediator.service
+```
+
+These configurations transform a standard Ubuntu 24.04 (or similar) system into a **D3-tier capable real-time host** for L2WBA-OS, with isolated cores, locked memory, hard real-time scheduling, and deterministic EtherCAT synchronization.
