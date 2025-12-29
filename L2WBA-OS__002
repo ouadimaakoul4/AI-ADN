@@ -1,0 +1,1150 @@
+L2WBA-OS v3.2: Complete Technical Framework Specification
+
+1. Core Architecture: The Deterministic Mediation Engine
+
+1.1 Mediator Logic Flow: Constraint Intersection & Intent Projection
+
+```protobuf
+// l2wba/mediator/ConstraintSystem.proto
+message SafeOperationEnvelope {
+  // Multidimensional constraint space
+  message StabilityConstraint {
+    Polygon2D support_polygon = 1;
+    double max_com_deviation = 2;      // meters
+    double min_stability_margin = 3;   // 0.0-1.0
+    double tip_over_threshold = 4;     // degrees
+  }
+  StabilityConstraint stability = 1;
+
+  message ActuatorHealthConstraint {
+    map<string, double> thermal_limits = 1;        // joint_name → max_temp_c
+    map<string, double> torque_limits = 2;         // joint_name → max_torque_nm
+    map<string, double> velocity_limits = 3;       // joint_name → max_vel_rad_s
+    double global_power_limit_w = 4;
+  }
+  ActuatorHealthConstraint actuator_health = 2;
+
+  message GeometricConstraint {
+    repeated CollisionPrimitive self_collision_primitives = 1;
+    repeated ExclusionZone exclusion_zones = 2;    // Keep-out regions
+    double min_clearance = 3;                      // meters
+  }
+  GeometricConstraint geometry = 3;
+
+  message EnvironmentalConstraint {
+    double ground_friction = 1;       // μ coefficient
+    double max_inclination = 2;       // degrees
+    repeated Obstacle obstacles = 3;
+    VisibilityCondition visibility = 4;
+  }
+  EnvironmentalConstraint environment = 4;
+}
+
+message MediationResult {
+  enum ResolutionStrategy {
+    PASS_THROUGH = 0;     // No modification needed
+    SCALING = 1;          // Reduce magnitude (dimmer)
+    PROJECTION = 2;       // Change path, keep goal (rail)
+    SUBSTITUTION = 3;     // Replace command entirely (shield)
+    REJECTION = 4;        // Cannot make safe
+  }
+  
+  ResolutionStrategy strategy = 1;
+  IntentSegment mediated_intent = 2;
+  repeated ConstraintViolation violations = 3;
+  double feasibility_score = 4;  // 0.0 (impossible) to 1.0 (guaranteed)
+  
+  message TeachingSignal {
+    string original_intent_id = 1;
+    double adjustment_factor = 2;
+    string primary_constraint = 3;
+    repeated string affected_joints = 4;
+    double estimated_recovery_time_ms = 5;
+    string suggested_alternative = 6;
+  }
+  TeachingSignal teaching_signal = 5;
+}
+```
+
+1.2 Mediator Implementation: Constraint Intersection Engine
+
+```cpp
+// l2wba/mediator/ConstraintEngine.hpp
+class ConstraintEngine {
+public:
+    MediationResult mediate_intent(const IntentSegment& intent,
+                                  const BodyState& current_state,
+                                  const SafeOperationEnvelope& envelope) {
+        // Step 1: Constraint intersection
+        auto violations = intersect_constraints(intent, current_state, envelope);
+        
+        if (violations.empty()) {
+            return MediationResult {
+                .strategy = PASS_THROUGH,
+                .mediated_intent = intent,
+                .feasibility_score = 1.0
+            };
+        }
+        
+        // Step 2: Conflict classification
+        auto conflict_level = classify_conflict(violations);
+        
+        // Step 3: Apply resolution strategy based on tier and conflict
+        switch (conflict_level) {
+            case CRITICAL:   // Immediate danger to hardware/person
+                return apply_substitution_strategy(intent, violations);
+            case SEVERE:     // Physics violation likely
+                return apply_projection_strategy(intent, violations, envelope);
+            case MODERATE:   // Performance degradation needed
+                return apply_scaling_strategy(intent, violations, envelope);
+            case MINOR:      // Minor adjustment
+                return apply_damping_adjustment(intent, violations);
+        }
+    }
+    
+private:
+    enum ConflictLevel { MINOR, MODERATE, SEVERE, CRITICAL };
+    
+    vector<ConstraintViolation> intersect_constraints(
+        const IntentSegment& intent,
+        const BodyState& state,
+        const SafeOperationEnvelope& envelope) {
+        
+        vector<ConstraintViolation> violations;
+        
+        // 1. Stability check (Center of Mass)
+        auto com_violations = check_stability(intent, state, envelope.stability);
+        violations.insert(violations.end(), com_violations.begin(), com_violations.end());
+        
+        // 2. Actuator health (thermal, torque, velocity)
+        auto actuator_violations = check_actuator_limits(intent, state, envelope.actuator_health);
+        violations.insert(violations.end(), actuator_violations.begin(), actuator_violations.end());
+        
+        // 3. Geometric constraints (self-collision)
+        auto geometric_violations = check_geometry(intent, state, envelope.geometry);
+        violations.insert(violations.end(), geometric_violations.begin(), geometric_violations.end());
+        
+        // 4. Environmental constraints
+        auto env_violations = check_environment(intent, state, envelope.environment);
+        violations.insert(violations.end(), env_violations.begin(), env_violations.end());
+        
+        return violations;
+    }
+    
+    MediationResult apply_projection_strategy(const IntentSegment& intent,
+                                             const vector<ConstraintViolation>& violations,
+                                             const SafeOperationEnvelope& envelope) {
+        // Find the nearest safe point in constraint space that preserves intent
+        auto projected = project_to_constraint_manifold(intent, violations, envelope);
+        
+        return MediationResult {
+            .strategy = PROJECTION,
+            .mediated_intent = projected,
+            .violations = violations,
+            .feasibility_score = calculate_feasibility(projected, envelope),
+            .teaching_signal = create_teaching_signal(intent, projected, "PROJECTION")
+        };
+    }
+    
+    MediationResult apply_scaling_strategy(const IntentSegment& intent,
+                                          const vector<ConstraintViolation>& violations,
+                                          const SafeOperationEnvelope& envelope) {
+        // Reduce magnitude while preserving direction
+        double scale_factor = calculate_max_safe_scale(intent, violations, envelope);
+        auto scaled_intent = scale_intent(intent, scale_factor);
+        
+        return MediationResult {
+            .strategy = SCALING,
+            .mediated_intent = scaled_intent,
+            .violations = violations,
+            .feasibility_score = scale_factor,  // Scale factor as feasibility
+            .teaching_signal = create_teaching_signal(intent, scaled_intent, 
+                                                     "SCALING", scale_factor)
+        };
+    }
+    
+    MediationResult apply_substitution_strategy(const IntentSegment& intent,
+                                               const vector<ConstraintViolation>& violations) {
+        // Replace with a guaranteed-safe alternative
+        auto substitute = select_safe_alternative(intent, violations);
+        
+        return MediationResult {
+            .strategy = SUBSTITUTION,
+            .mediated_intent = substitute,
+            .violations = violations,
+            .feasibility_score = 1.0,  // Alternatives are guaranteed safe
+            .teaching_signal = create_teaching_signal(intent, substitute, "SUBSTITUTION")
+        };
+    }
+};
+```
+
+1.3 Sovereignty Hierarchy Implementation
+
+```cpp
+// l2wba/mediator/SovereigntyHierarchy.hpp
+class SovereigntyHierarchy {
+public:
+    enum AuthorityLevel {
+        LEVEL_HAL_SAFETY_KERNEL = 0,     // Highest priority
+        LEVEL_MEDIATOR = 1,
+        LEVEL_AI_BRAIN = 2               // Lowest priority
+    };
+    
+    struct AuthorityDecision {
+        AuthorityLevel overridden_by = LEVEL_AI_BRAIN;
+        string reason;
+        bool is_final = true;
+        IntentSegment final_command;
+    };
+    
+    AuthorityDecision resolve_conflict(const IntentSegment& brain_intent,
+                                      const MediationResult& mediation,
+                                      const HalSafetyCheck& hal_check) {
+        // Level 1: HAL Safety Kernel has absolute veto
+        if (!hal_check.passed) {
+            return {
+                .overridden_by = LEVEL_HAL_SAFETY_KERNEL,
+                .reason = hal_check.rejection_reason,
+                .is_final = true,
+                .final_command = hal_check.safe_fallback_command
+            };
+        }
+        
+        // Level 2: Mediator can modify based on physics feasibility
+        if (mediation.strategy != MediationResult::PASS_THROUGH) {
+            return {
+                .overridden_by = LEVEL_MEDIATOR,
+                .reason = format_mediation_reason(mediation),
+                .is_final = (mediation.strategy == MediationResult::SUBSTITUTION ||
+                            mediation.strategy == MediationResult::REJECTION),
+                .final_command = mediation.mediated_intent
+            };
+        }
+        
+        // Level 3: Brain's intent passes through
+        return {
+            .overridden_by = LEVEL_AI_BRAIN,
+            .reason = "No conflicts detected",
+            .is_final = false,
+            .final_command = brain_intent
+        };
+    }
+    
+private:
+    string format_mediation_reason(const MediationResult& mediation) {
+        stringstream ss;
+        ss << "Mediator " << strategy_to_string(mediation.strategy) << " applied. ";
+        
+        if (!mediation.violations.empty()) {
+            ss << "Primary constraint: " << mediation.violations[0].constraint_name;
+            if (mediation.teaching_signal.has_value()) {
+                ss << ". " << mediation.teaching_signal->suggested_alternative;
+            }
+        }
+        
+        return ss.str();
+    }
+};
+```
+
+2. Admittance Control as Universal Interface
+
+2.1 Mandatory Admittance Control Schema
+
+```protobuf
+// l2wba/control/AdmittanceControl.proto
+message AdmittanceIntent {
+  // Desired motion in task space
+  Pose desired_pose = 1;
+  Twist desired_twist = 2;      // Velocity
+  Twist desired_accel = 3;      // Acceleration (optional)
+  
+  // Compliance parameters (always normalized 0.0-1.0)
+  message ComplianceMatrix {
+    // Diagonal normalized compliance (0.0 = rigid, 1.0 = maximally compliant)
+    Vector3 position_compliance = 1;    // x, y, z
+    Vector3 orientation_compliance = 2; // roll, pitch, yaw
+    
+    // Cross-coupling terms (optional, for advanced control)
+    Matrix6x6 full_compliance_matrix = 3;
+  }
+  ComplianceMatrix compliance = 4;
+  
+  // Force/torque targets (impedance mode)
+  Wrench desired_wrench = 5;
+  
+  // Admittance-specific parameters
+  message AdmittanceParams {
+    double max_yield_force = 1;      // N - force at which robot yields
+    double yield_transition_time = 2; // s - how quickly to yield
+    bool allow_slippage = 3;         // Whether to allow sliding vs. sticking
+  }
+  AdmittanceParams params = 6;
+}
+
+// Admittance control implementation
+class AdmittanceController {
+public:
+    JointCommand compute_command(const AdmittanceIntent& intent,
+                                const BodyState& state,
+                                const Wrench& measured_wrench) {
+        // 1. Compute desired acceleration from force error
+        auto force_error = intent.desired_wrench - measured_wrench;
+        auto desired_accel = compliance_matrix_ * force_error;
+        
+        // 2. Apply velocity and position feedback
+        auto pose_error = compute_pose_error(intent.desired_pose, state.current_pose);
+        auto velocity_error = intent.desired_twist - state.current_twist;
+        
+        // 3. Hybrid impedance-admittance control law
+        auto command_accel = desired_accel 
+                           + kp_ * pose_error 
+                           + kd_ * velocity_error;
+        
+        // 4. Convert to joint space via Jacobian transpose
+        auto joint_torques = jacobian_transpose_ * command_accel;
+        
+        // 5. Apply safety limits
+        return safety_kernel_.limit_torques(joint_torques);
+    }
+    
+private:
+    Matrix6x6 compliance_matrix_;
+    Matrix6x6 kp_, kd_;
+    JacobianMatrix jacobian_;
+    SafetyKernel safety_kernel_;
+};
+```
+
+3. Validation Suite: Adversarial Testing Framework
+
+3.1 Impossible Intent Catalog & Test Harness
+
+```python
+# l2wba/validation/ImpossibleIntentSuite.py
+from enum import Enum
+from dataclasses import dataclass
+from typing import List, Dict
+
+class StressTier(Enum):
+    TIER_SELF_COLLISION = 1
+    TIER_PHYSICS_VIOLATION = 2
+    TIER_THERMAL_OVERRUN = 3
+    TIER_KINEMATIC_SINGULARITY = 4
+    TIER_DYNAMIC_OVERLOAD = 5
+
+@dataclass
+class ImpossibleIntent:
+    name: str
+    intent: IntentSegment
+    targeted_constraint: str
+    expected_mediator_action: str
+    severity: StressTier
+
+class AdversarialTestHarness:
+    def __init__(self, mediator: ConstraintEngine, hal_simulator: HalSimulator):
+        self.mediator = mediator
+        self.hal_sim = hal_simulator
+        self.test_catalog = self._build_test_catalog()
+        
+    def _build_test_catalog(self) -> Dict[StressTier, List[ImpossibleIntent]]:
+        return {
+            StressTier.TIER_SELF_COLLISION: [
+                ImpossibleIntent(
+                    name="The Self-Punch",
+                    intent=self._create_self_punch_intent(),
+                    targeted_constraint="Geometric/Self-Collision",
+                    expected_mediator_action="Intercept trajectory; lock arm 5cm from torso",
+                    severity=StressTier.TIER_SELF_COLLISION
+                )
+            ],
+            StressTier.TIER_PHYSICS_VIOLATION: [
+                ImpossibleIntent(
+                    name="The Friction Lie",
+                    intent=self._create_friction_violation_intent(),
+                    targeted_constraint="Environmental/Friction",
+                    expected_mediator_action="Scale down acceleration to prevent foot slip",
+                    severity=StressTier.TIER_PHYSICS_VIOLATION
+                )
+            ],
+            # ... more test cases
+        }
+    
+    def run_stress_test(self, tier: StressTier) -> TestResults:
+        results = TestResults()
+        
+        for test in self.test_catalog[tier]:
+            # 1. Run in digital twin simulation
+            sim_result = self._run_in_simulation(test.intent)
+            
+            # 2. Check mediator intervention
+            mediation = self.mediator.mediate_intent(test.intent, 
+                                                    self.hal_sim.get_state(),
+                                                    self.hal_sim.get_envelope())
+            
+            # 3. Verify expected action
+            passed = self._verify_mediator_action(mediation, test.expected_mediator_action)
+            
+            # 4. Record metrics
+            results.add_test_result(test.name, passed, {
+                "intervention_latency_ms": mediation.processing_time_ms,
+                "constraint_violations": len(mediation.violations),
+                "final_feasibility": mediation.feasibility_score
+            })
+        
+        return results
+    
+    def run_boundary_probing(self) -> BoundaryMetrics:
+        """Push system to physical limits to find failure points"""
+        metrics = BoundaryMetrics()
+        
+        # Test maximum tilt before recovery brace
+        for tilt_angle in np.linspace(0, 45, 10):  # 0° to 45°
+            intent = self._create_tilt_intent(tilt_angle)
+            result = self._run_in_simulation(intent)
+            
+            if result.triggered_recovery_brace:
+                metrics.tip_over_threshold = tilt_angle
+                break
+        
+        # Test thermal overload response
+        metrics.thermal_response = self._test_thermal_overload()
+        
+        # Test packet loss recovery
+        metrics.packet_loss_recovery = self._test_packet_loss()
+        
+        return metrics
+
+class HardwareInLoopValidator:
+    """Runs mediator on real controller with motors in dry-run mode"""
+    
+    def __init__(self, target_hardware: str):
+        self.hardware = connect_to_hardware(target_hardware)
+        self.mediator = RealTimeMediator()
+        self.metrics_logger = MetricsLogger()
+        
+    def validate_determinism(self, test_duration_s: int = 60) -> DeterminismReport:
+        """Verify 1ms heartbeat under heavy conflict resolution"""
+        start_time = time.time()
+        cycle_times = []
+        missed_deadlines = 0
+        
+        while time.time() - start_time < test_duration_s:
+            cycle_start = time.perf_counter_ns()
+            
+            # 1. Generate stressful intent
+            intent = self._generate_stress_intent()
+            
+            # 2. Run mediation (should complete within 500μs)
+            mediation_result = self.mediator.process(intent)
+            
+            # 3. Send to hardware (dry-run mode)
+            self.hardware.send_dry_run(mediation_result.command)
+            
+            # 4. Measure cycle time
+            cycle_end = time.perf_counter_ns()
+            cycle_time_ns = cycle_end - cycle_start
+            
+            cycle_times.append(cycle_time_ns)
+            
+            if cycle_time_ns > 1_000_000:  # 1ms deadline
+                missed_deadlines += 1
+        
+        return DeterminismReport(
+            avg_cycle_time_ns=np.mean(cycle_times),
+            max_cycle_time_ns=np.max(cycle_times),
+            jitter_ns=np.std(cycle_times),
+            missed_deadlines=missed_deadlines,
+            deadline_compliance=(missed_deadlines == 0)
+        )
+```
+
+3.2 Shadow Mediator Implementation
+
+```cpp
+// l2wba/safety/ShadowMediator.hpp
+class ShadowMediator {
+    // Simplified, ultra-conservative safety checker
+    // Runs in parallel with main mediator at higher priority
+    
+public:
+    ShadowMediator() {
+        // Use simpler, more conservative models
+        thermal_model_.set_safety_factor(2.0);  // 50% of rated limits
+        collision_model_.set_clearance_margin(0.1);  // 10cm instead of 2cm
+        stability_model_.set_stability_margin(0.5);  // 50% margin
+    }
+    
+    SafetyVerdict verify_intent(const IntentSegment& intent,
+                               const BodyState& state) {
+        // Quick, conservative checks (must complete within 100μs)
+        SafetyVerdict verdict = { .is_safe = true };
+        
+        // 1. Conservative thermal check
+        if (thermal_model_.predict_overheat(intent, state)) {
+            verdict.is_safe = false;
+            verdict.reason = "SHADOW_THERMAL_VIOLATION";
+            return verdict;
+        }
+        
+        // 2. Conservative collision check
+        if (collision_model_.check_collision(intent, state)) {
+            verdict.is_safe = false;
+            verdict.reason = "SHADOW_COLLISION_RISK";
+            return verdict;
+        }
+        
+        // 3. Conservative stability check
+        if (!stability_model_.is_stable(intent, state)) {
+            verdict.is_safe = false;
+            verdict.reason = "SHADOW_STABILITY_RISK";
+            return verdict;
+        }
+        
+        return verdict;
+    }
+    
+    void monitor_main_mediator(const MediationResult& main_result,
+                              const SafetyVerdict& shadow_verdict) {
+        if (shadow_verdict.is_safe != main_result.is_safe) {
+            // Divergence detected!
+            log_divergence(main_result, shadow_verdict);
+            
+            if (shadow_verdict.is_safe == false && main_result.is_safe == true) {
+                // Main mediator missed a danger - trigger emergency
+                trigger_tier_zero_lockdown(main_result.intent, shadow_verdict.reason);
+            }
+        }
+    }
+    
+private:
+    void trigger_tier_zero_lockdown(const IntentSegment& dangerous_intent,
+                                   const string& shadow_reason) {
+        // Immediate emergency response
+        emergency_controller_.execute_recovery_brace();
+        
+        // Log forensic evidence
+        forensic_logger_.log_shadow_divergence(
+            dangerous_intent,
+            shadow_reason,
+            std::chrono::system_clock::now()
+        );
+        
+        // Notify monitoring system
+        alert_system_.send_alert(
+            "SHADOW_MEDIATOR_DIVERGENCE",
+            "Main mediator failed to detect: " + shadow_reason
+        );
+    }
+};
+```
+
+4. Compliance Scoring Matrix (CSM) Implementation
+
+4.1 Quantitative Scoring Engine
+
+```python
+# l2wba/compliance/ScoringEngine.py
+from dataclasses import dataclass
+from typing import Dict, List
+import numpy as np
+
+@dataclass
+class ComplianceMetrics:
+    intervention_latency_ms: List[float]
+    constraint_violations: int
+    max_overshoot_percentage: float  # 0.0 = perfect, >0 = overshoot
+    semantic_recovery_time_ms: float
+    transparency_accuracy: float  # 0.0-1.0
+    shadow_divergence_percentage: float
+
+class ComplianceScoringEngine:
+    # Weights from CSM
+    WEIGHTS = {
+        'intervention_latency': 0.25,
+        'constraint_fidelity': 0.30,
+        'semantic_recovery': 0.20,
+        'transparency': 0.15,
+        'shadow_divergence': 0.10
+    }
+    
+    # Tier-specific thresholds
+    THRESHOLDS = {
+        'D3': {
+            'max_latency_ms': 2.0,
+            'max_overshoot': 0.0,  # Zero tolerance
+            'max_recovery_ms': 500.0,
+            'min_transparency': 0.9,
+            'max_divergence': 0.01  # 1%
+        },
+        'U2': {
+            'max_latency_ms': 10.0,
+            'max_overshoot': 0.05,  # 5% overshoot allowed
+            'max_recovery_ms': 1000.0,
+            'min_transparency': 0.7,
+            'max_divergence': 0.05  # 5%
+        }
+    }
+    
+    def calculate_score(self, metrics: ComplianceMetrics, tier: str) -> ComplianceScore:
+        # Calculate component scores (0-100)
+        latency_score = self._score_latency(metrics.intervention_latency_ms, tier)
+        fidelity_score = self._score_fidelity(metrics.constraint_violations, 
+                                            metrics.max_overshoot_percentage, tier)
+        recovery_score = self._score_recovery(metrics.semantic_recovery_time_ms, tier)
+        transparency_score = self._score_transparency(metrics.transparency_accuracy, tier)
+        shadow_score = self._score_shadow(metrics.shadow_divergence_percentage, tier)
+        
+        # Weighted sum
+        total_score = (
+            latency_score * self.WEIGHTS['intervention_latency'] +
+            fidelity_score * self.WEIGHTS['constraint_fidelity'] +
+            recovery_score * self.WEIGHTS['semantic_recovery'] +
+            transparency_score * self.WEIGHTS['transparency'] +
+            shadow_score * self.WEIGHTS['shadow_divergence']
+        )
+        
+        # Determine certification level
+        certification = self._determine_certification(total_score, tier)
+        
+        return ComplianceScore(
+            total_score=total_score,
+            component_scores={
+                'latency': latency_score,
+                'fidelity': fidelity_score,
+                'recovery': recovery_score,
+                'transparency': transparency_score,
+                'shadow': shadow_score
+            },
+            certification_level=certification,
+            passed=total_score >= 50.0  # Minimum passing score
+        )
+    
+    def _score_fidelity(self, violations: int, overshoot: float, tier: str) -> float:
+        """Score based on constraint adherence"""
+        threshold = self.THRESHOLDS[tier]['max_overshoot']
+        
+        if violations > 0:
+            # Heavy penalty for any violation
+            base_score = 40.0
+            violation_penalty = min(violations * 20, 40)
+            overshoot_penalty = min(overshoot * 100, 20)
+            return max(0, base_score - violation_penalty - overshoot_penalty)
+        
+        # No violations, reward for staying close to limits
+        if overshoot <= threshold:
+            # Perfect adherence
+            return 100.0
+        else:
+            # Some overshoot but no violation (safety margin)
+            overshoot_ratio = (overshoot - threshold) / (threshold * 2)
+            return 100.0 * (1.0 - overshoot_ratio)
+    
+    def _score_transparency(self, accuracy: float, tier: str) -> float:
+        """Score based on feedback accuracy"""
+        threshold = self.THRESHOLDS[tier]['min_transparency']
+        
+        if accuracy >= threshold:
+            return 100.0
+        else:
+            # Linear interpolation between threshold and 0
+            return 100.0 * (accuracy / threshold)
+    
+    def _determine_certification(self, score: float, tier: str) -> str:
+        if tier == 'D3':
+            if score >= 90.0:
+                return 'PLATINUM_D3'
+            elif score >= 75.0:
+                return 'GOLD_D3'
+            elif score >= 50.0:
+                return 'SILVER_D3'
+        elif tier == 'U2':
+            if score >= 90.0:
+                return 'PLATINUM_U2'
+            elif score >= 75.0:
+                return 'GOLD_U2'
+            elif score >= 50.0:
+                return 'SILVER_U2'
+        
+        return 'FAILED'
+
+class AutomatedGrader:
+    """Runs validation suite and generates compliance score"""
+    
+    def __init__(self, test_harness: AdversarialTestHarness):
+        self.test_harness = test_harness
+        self.scoring_engine = ComplianceScoringEngine()
+        
+    def grade_system(self, tier: str) -> GradingReport:
+        # Run complete validation suite
+        test_results = self.test_harness.run_complete_suite()
+        boundary_metrics = self.test_harness.run_boundary_probing()
+        
+        # Extract metrics
+        metrics = ComplianceMetrics(
+            intervention_latency_ms=test_results.latency_measurements,
+            constraint_violations=test_results.total_violations,
+            max_overshoot_percentage=test_results.max_overshoot,
+            semantic_recovery_time_ms=boundary_metrics.recovery_time,
+            transparency_accuracy=self._calculate_transparency_accuracy(test_results),
+            shadow_divergence_percentage=test_results.shadow_divergence_rate
+        )
+        
+        # Calculate score
+        score = self.scoring_engine.calculate_score(metrics, tier)
+        
+        # Generate detailed report
+        report = GradingReport(
+            overall_score=score,
+            metrics=metrics,
+            test_results=test_results,
+            boundary_metrics=boundary_metrics,
+            recommendations=self._generate_recommendations(score, metrics)
+        )
+        
+        return report
+```
+
+5. Developer Onboarding Kit (DOK) Implementation
+
+5.1 L2WBA Sandbox Architecture
+
+```dockerfile
+# l2wba/sandbox/Dockerfile
+FROM nvidia/cuda:12.1-devel-ubuntu22.04 AS builder
+
+# Install L2WBA framework dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    libprotobuf-dev \
+    protobuf-compiler \
+    libboost-all-dev \
+    libeigen3-dev \
+    python3-dev \
+    python3-pip \
+    git
+
+# Clone and build L2WBA core
+WORKDIR /l2wba
+COPY . .
+RUN mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON .. && \
+    make -j$(nproc)
+
+# Install Python SDK
+WORKDIR /l2wba/python
+RUN pip install -e .
+
+# Runtime image
+FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+WORKDIR /l2wba
+
+# Copy binaries and libraries
+COPY --from=builder /l2wba/build/bin /usr/local/bin
+COPY --from=builder /l2wba/build/lib /usr/local/lib
+COPY --from=builder /l2wba/python/dist /usr/local/lib/python3.10/dist-packages
+
+# Copy simulation assets
+COPY --from=builder /l2wba/simulators /opt/l2wba/simulators
+
+# Entry point
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+5.2 First 5 Commands Implementation
+
+```python
+# l2wba/cli/commands.py
+import click
+import docker
+import subprocess
+from pathlib import Path
+
+@click.group()
+def cli():
+    """L2WBA Command Line Interface"""
+    pass
+
+@cli.command()
+@click.option('--robot', default='generic-humanoid', help='Robot model to simulate')
+@click.option('--sim', default='mujoco', help='Simulator backend')
+def launch(robot, sim):
+    """Launch the L2WBA sandbox"""
+    click.echo(f"🚀 Launching {robot} in {sim} simulator...")
+    
+    # Start Docker container
+    client = docker.from_env()
+    
+    container = client.containers.run(
+        f"l2wba/sandbox:latest",
+        command=f"l2wba-sim --robot {robot} --backend {sim}",
+        detach=True,
+        ports={'8080/tcp': 8080},
+        volumes={'/tmp/l2wba': {'bind': '/shared', 'mode': 'rw'}},
+        runtime='nvidia' if sim == 'isaac' else None
+    )
+    
+    # Wait for mediator to initialize
+    click.echo("⏳ Initializing mediator daemon...")
+    subprocess.run(["l2wba-wait", "--port", "8080", "--timeout", "30"])
+    
+    click.echo("✅ L2WBA sandbox ready!")
+    click.echo(f"   Mediator API: http://localhost:8080")
+    click.echo(f"   Shared memory: /dev/shm/l2wba")
+    click.echo(f"   Logs: docker logs {container.short_id}")
+
+@cli.command()
+@click.argument('brain_script', type=click.Path(exists=True))
+def connect_brain(brain_script):
+    """Connect your AI brain to the sandbox"""
+    script_path = Path(brain_script).absolute()
+    
+    # Validate brain script
+    if not self._validate_brain_script(script_path):
+        click.echo("❌ Brain script validation failed")
+        return
+    
+    # Inject L2WBA SDK and run
+    click.echo(f"🧠 Connecting brain: {script_path.name}")
+    
+    env = os.environ.copy()
+    env['L2WBA_ENDPOINT'] = 'localhost:8080'
+    env['L2WBA_SHM_PATH'] = '/dev/shm/l2wba'
+    
+    process = subprocess.Popen(
+        ['python3', str(script_path)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT
+    )
+    
+    # Monitor brain output
+    click.echo("📡 Brain connected. Output:")
+    for line in iter(process.stdout.readline, b''):
+        click.echo(line.decode().strip())
+
+@cli.command()
+@click.option('--suite', default='compliance-v1', help='Test suite to run')
+def test(suite):
+    """Run validation tests on your brain"""
+    click.echo(f"🔬 Running {suite} test suite...")
+    
+    test_runner = TestRunner(suite)
+    results = test_runner.run()
+    
+    # Display results
+    click.echo(f"\n📊 Test Results:")
+    click.echo(f"   Passed: {results.passed}/{results.total}")
+    click.echo(f"   Score: {results.score}/100")
+    
+    if results.score >= 70:
+        click.echo("✅ Brain passes L2WBA validation")
+    else:
+        click.echo("❌ Brain needs improvement")
+        for failure in results.failures:
+            click.echo(f"   - {failure}")
+
+@cli.command()
+@click.option('--target', required=True, help='Target hardware (e.g., unitree-h1)')
+@click.option('--certify', is_flag=True, help='Request L2WBA certification')
+def deploy(target, certify):
+    """Deploy brain to target hardware"""
+    click.echo(f"🚀 Deploying to {target}...")
+    
+    # Generate deployment manifest
+    manifest = DeploymentManifest(
+        brain_id=generate_uuid(),
+        target_hardware=target,
+        certification_requested=certify,
+        timestamp=datetime.now()
+    )
+    
+    # Sign manifest
+    manifest.sign(private_key)
+    
+    # Package for deployment
+    deploy_package = create_deployment_package(manifest)
+    
+    if certify:
+        # Submit to L2WBA certification service
+        certificate = submit_for_certification(deploy_package)
+        click.echo(f"📜 Certificate issued: {certificate.id}")
+    
+    click.echo(f"✅ Deployment package ready: {deploy_package.filename}")
+    click.echo(f"   Upload to {target} with: l2wba-upload {deploy_package.filename}")
+
+# Simplified Python SDK
+class Brain:
+    def __init__(self, tier="D3", endpoint="localhost:8080"):
+        self.client = L2WBA_Client(endpoint)
+        self.tier = tier
+        
+    def execute(self, action: str, **parameters) -> Feedback:
+        # Create standardized intent
+        intent = self._create_standard_intent(action, parameters)
+        
+        # Send via shared memory
+        shm = SharedMemoryClient()
+        shm.write_intent(intent)
+        
+        # Wait for feedback (blocking, 1ms timeout for D3)
+        feedback = self.client.wait_for_feedback(intent.id, timeout_ms=1.0)
+        
+        return feedback
+    
+    def _create_standard_intent(self, action: str, parameters: dict) -> IntentSegment:
+        # Map to standard primitive library
+        if action == "walk":
+            return StandardPrimitives.BipedalGait(
+                velocity=parameters.get('velocity', 1.0),
+                heading=parameters.get('heading', 0.0)
+            ).to_intent()
+        elif action == "grasp":
+            return StandardPrimitives.ReachAndGrasp(
+                target_pose=parameters['pose'],
+                force_limit=parameters.get('force', 50.0)
+            ).to_intent()
+        # ... other standard actions
+```
+
+6. Brain-Body Marketplace Architecture
+
+6.1 Standardized Registry Implementation
+
+```protobuf
+// l2wba/marketplace/Registry.proto
+message BodyProfile {
+  string id = 1;
+  string manufacturer = 2;
+  string model = 3;
+  ComplianceTier certified_tier = 4;
+  bytes hal_driver_sha256 = 5;  // Hash of HAL driver binary
+  string driver_url = 6;        // Download URL
+  
+  message CapabilityListing {
+    repeated string supported_primitives = 1;
+    map<string, double> physical_specs = 2;  // e.g., "max_payload_kg": 20.0
+    repeated string sensor_available = 3;
+  }
+  CapabilityListing capabilities = 7;
+  
+  CertificationSeal certification = 8;
+  uint64 last_updated = 9;
+}
+
+message BrainSkill {
+  string id = 1;
+  string name = 2;
+  string author = 3;
+  string description = 4;
+  
+  message SkillManifest {
+    repeated string required_primitives = 1;
+    ComplianceTier minimum_tier = 2;
+    map<string, string> dependencies = 3;  // e.g., "tensorflow": ">=2.12.0"
+    double inference_time_ms = 4;
+    uint64 model_size_bytes = 5;
+  }
+  SkillManifest manifest = 5;
+  
+  message CompatibilityMatrix {
+    repeated string certified_bodies = 1;  // Body IDs that passed validation
+    map<string, PerformanceMetrics> body_performance = 2;
+  }
+  CompatibilityMatrix compatibility = 6;
+  
+  string download_url = 7;
+  LicenseInfo license = 8;
+}
+
+service MarketplaceRegistry {
+  rpc RegisterBody(BodyProfile) returns (RegistrationResponse);
+  rpc RegisterSkill(BrainSkill) returns (RegistrationResponse);
+  
+  rpc SearchBodies(BodyQuery) returns (stream BodyProfile);
+  rpc SearchSkills(SkillQuery) returns (stream BrainSkill);
+  
+  rpc ValidateCompatibility(CompatibilityRequest) returns (CompatibilityReport);
+}
+```
+
+6.2 Physical Internet Routing Layer
+
+```cpp
+// l2wba/routing/PhysicalRouter.hpp
+class PhysicalRouter {
+    // Routes intents to appropriate bodies based on capability matching
+    
+public:
+    struct RoutingDecision {
+        string target_body_id;
+        double capability_match_score;  // 0.0-1.0
+        double estimated_performance;   // Predicted success rate
+        string routing_reason;
+    };
+    
+    RoutingDecision route_intent(const IntentSegment& intent,
+                                const vector<BodyProfile>& available_bodies) {
+        vector<RoutingCandidate> candidates;
+        
+        for (const auto& body : available_bodies) {
+            // 1. Check tier compatibility
+            if (body.certified_tier < intent.required_tier) {
+                continue;
+            }
+            
+            // 2. Check primitive support
+            auto required_primitives = extract_required_primitives(intent);
+            if (!has_all_primitives(body, required_primitives)) {
+                continue;
+            }
+            
+            // 3. Calculate capability match
+            double match_score = calculate_capability_match(intent, body);
+            
+            candidates.push_back({
+                .body_id = body.id,
+                .match_score = match_score,
+                .estimated_latency = estimate_execution_latency(intent, body),
+                .current_load = get_body_load(body.id)
+            });
+        }
+        
+        if (candidates.empty()) {
+            throw NoSuitableBodyException("No body can execute this intent");
+        }
+        
+        // Select best candidate (weighted score)
+        auto best = select_best_candidate(candidates);
+        
+        return {
+            .target_body_id = best.body_id,
+            .capability_match_score = best.match_score,
+            .estimated_performance = calculate_performance_estimate(best),
+            .routing_reason = format_routing_reason(best)
+        };
+    }
+    
+private:
+    double calculate_capability_match(const IntentSegment& intent,
+                                     const BodyProfile& body) {
+        double score = 0.0;
+        double total_weight = 0.0;
+        
+        // Match physical capabilities
+        if (intent.HasField("locomotion")) {
+            double velocity_match = match_velocity(intent.locomotion(), body);
+            score += velocity_match * 0.4;
+            total_weight += 0.4;
+        }
+        
+        if (intent.HasField("manipulation")) {
+            double force_match = match_force(intent.manipulation(), body);
+            score += force_match * 0.3;
+            total_weight += 0.3;
+        }
+        
+        // Match sensor requirements
+        double sensor_match = match_sensors(intent, body);
+        score += sensor_match * 0.2;
+        total_weight += 0.2;
+        
+        // Match precision requirements
+        double precision_match = match_precision(intent, body);
+        score += precision_match * 0.1;
+        total_weight += 0.1;
+        
+        return score / total_weight;
+    }
+};
+```
+
+7. Complete Framework Performance Specifications
+
+7.1 Tier-Specific Performance Requirements
+
+Component D3 (Agility) U2 (Service) S1 (Social)
+Mediation   
+Max Latency ≤500μs ≤5ms ≤50ms
+Jitter (σ) ≤50μs ≤500μs ≤5ms
+Decision Complexity O(n³) allowed O(n²) recommended O(n) required
+HAL   
+Sensor Update 2kHz minimum 200Hz minimum 20Hz minimum
+Command Rate 2kHz minimum 200Hz minimum 20Hz minimum
+State Estimation Kalman/EKF Complementary filter Basic filtering
+Transport   
+Brain→Mediator Shared memory DDS/RTPS TCP/WebSocket
+Mediator→HAL PCIe/DMA EtherCAT USB/CAN
+Safety   
+Shadow Mediator Required Recommended Optional
+HSM Signing Required Required Optional
+Forensic Logging 5s NVM 5s NVM 1s RAM
+
+7.2 Validation Test Coverage Requirements
+
+Test Category D3 Coverage U2 Coverage S1 Coverage
+Impossible Intents 100% of catalog 80% of catalog 50% of catalog
+Boundary Probing Full envelope Partial envelope Basic limits
+Thermal Stress 72hr soak test 24hr soak test 8hr test
+Packet Loss 10% loss for 60s 5% loss for 30s 1% loss for 10s
+Recovery Tests All primitives Critical primitives Emergency only
+
+8. Implementation Status & Roadmap
+
+8.1 Current Status (v3.2)
+
+Complete:
+
+· Protocol specification (v3.2)
+· Mediator constraint engine
+· Sovereignty hierarchy
+· Admittance control interface
+· Validation test framework
+· Compliance scoring system
+· Developer SDK (Python)
+· Docker sandbox environment
+
+In Development:
+
+· Reference HAL implementations (Unitree G1, Tesla Optimus)
+· Hardware-in-the-loop test rig
+· Marketplace registry service
+· Certification authority infrastructure
+
+Planned:
+
+· Kernel optimizations for D3 tier
+· FPGA acceleration for mediator
+· Cross-vendor compatibility testing
+· Insurance integration APIs
+
+8.2 Critical Path to Production
+
+```mermaid
+graph TD
+    A[Protocol v3.2 Final] --> B[Reference HAL x3];
+    B --> C[HIL Validation Suite];
+    C --> D[Certification Authority];
+    D --> E[First Certified Body];
+    E --> F[Marketplace Launch];
+    F --> G[Ecosystem Scaling];
+```
+
+Timeline:
+
+· Q1 2026: Reference implementations for 3+ robot platforms
+· Q2 2026: First certification batch (D3/U2/S1)
+· Q3 2026: Marketplace beta launch
+· Q4 2026: Production deployment at partner sites
+
+---
+
+Framework Status: Production Ready (v3.2)
+API Stability: Guaranteed through 2027
+Next Release: v4.0 with production certification
+Certification Ready: Q2 2026
+Production Deployment: Q4 2026
