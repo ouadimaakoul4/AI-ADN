@@ -1,0 +1,458 @@
+import React, { useState } from 'react';
+import { Play, AlertCircle, CheckCircle, Code, Zap } from 'lucide-react';
+
+// AST Type Definitions
+class Type {}
+class UnitType extends Type { toString() { return 'Unit'; }}
+class QubitType extends Type { toString() { return 'Qubit'; }}
+class BitType extends Type { toString() { return 'Bit'; }}
+class TensorType extends Type {
+  constructor(first, second) {
+    super();
+    this.first = first;
+    this.second = second;
+  }
+  toString() { return `(${this.first} ⊗ ${this.second})`; }
+}
+class LinearFuncType extends Type {
+  constructor(param, ret) {
+    super();
+    this.param = param;
+    this.ret = ret;
+  }
+  toString() { return `(${this.param} ⊸ ${this.ret})`; }
+}
+
+// Expression AST
+class Expr {}
+class Variable extends Expr {
+  constructor(name) {
+    super();
+    this.name = name;
+  }
+  toString() { return `Var(${this.name})`; }
+}
+class QInit extends Expr {
+  constructor(bitValue) {
+    super();
+    this.bitValue = bitValue;
+  }
+  toString() { return `qinit ${this.bitValue}`; }
+}
+class Gate extends Expr {
+  constructor(gateName, operands) {
+    super();
+    this.gateName = gateName;
+    this.operands = operands;
+  }
+  toString() { return `${this.gateName}(${this.operands.join(', ')})`; }
+}
+class Measure extends Expr {
+  constructor(operand) {
+    super();
+    this.operand = operand;
+  }
+  toString() { return `meas(${this.operand})`; }
+}
+class TensorPair extends Expr {
+  constructor(first, second) {
+    super();
+    this.first = first;
+    this.second = second;
+  }
+  toString() { return `(${this.first}, ${this.second})`; }
+}
+class LetPair extends Expr {
+  constructor(var1, var2, pairExpr, body) {
+    super();
+    this.var1 = var1;
+    this.var2 = var2;
+    this.pairExpr = pairExpr;
+    this.body = body;
+  }
+  toString() { return `let (${this.var1}, ${this.var2}) = ${this.pairExpr} in ${this.body}`; }
+}
+
+// Simple Parser
+function parseQuanthos(source) {
+  source = source.trim();
+  
+  // Parse let expressions
+  const letMatch = source.match(/^let\s*\((\w+)\s*,\s*(\w+)\)\s*=\s*(.+?)\s+in\s+(.+)$/s);
+  if (letMatch) {
+    const [, var1, var2, pairExpr, body] = letMatch;
+    return new LetPair(var1, var2, parseQuanthos(pairExpr), parseQuanthos(body));
+  }
+  
+  // Parse tensor pairs
+  const pairMatch = source.match(/^\((.+?),\s*(.+?)\)$/);
+  if (pairMatch) {
+    const [, first, second] = pairMatch;
+    return new TensorPair(parseQuanthos(first), parseQuanthos(second));
+  }
+  
+  // Parse gates
+  const gateMatch = source.match(/^(\w+)\((.+?)\)$/);
+  if (gateMatch) {
+    const [, gateName, operandsStr] = gateMatch;
+    if (gateName === 'meas') {
+      return new Measure(parseQuanthos(operandsStr));
+    }
+    const operands = operandsStr.split(',').map(s => parseQuanthos(s.trim()));
+    return new Gate(gateName, operands);
+  }
+  
+  // Parse qinit
+  const qinitMatch = source.match(/^qinit\s+([01])$/);
+  if (qinitMatch) {
+    return new QInit(parseInt(qinitMatch[1]));
+  }
+  
+  // Parse variable
+  if (/^\w+$/.test(source)) {
+    return new Variable(source);
+  }
+  
+  throw new Error(`Cannot parse: ${source}`);
+}
+
+// Type Checker
+class TypeChecker {
+  constructor() {
+    this.context = {};
+  }
+  
+  typecheck(expr) {
+    if (expr instanceof Variable) {
+      if (!(expr.name in this.context)) {
+        throw new Error(`Unbound variable: ${expr.name}`);
+      }
+      const type = this.context[expr.name];
+      delete this.context[expr.name];
+      return type;
+    }
+    
+    if (expr instanceof QInit) {
+      return new QubitType();
+    }
+    
+    if (expr instanceof Gate) {
+      const operandTypes = expr.operands.map(op => this.typecheck(op));
+      for (const t of operandTypes) {
+        if (!(t instanceof QubitType)) {
+          throw new Error(`Gate ${expr.gateName} requires Qubit operands`);
+        }
+      }
+      if (operandTypes.length === 1) return new QubitType();
+      return operandTypes.reduce((acc, t) => new TensorType(acc, t));
+    }
+    
+    if (expr instanceof Measure) {
+      const opType = this.typecheck(expr.operand);
+      if (!(opType instanceof QubitType)) {
+        throw new Error('Measurement requires a Qubit');
+      }
+      return new BitType();
+    }
+    
+    if (expr instanceof TensorPair) {
+      const firstType = this.typecheck(expr.first);
+      const secondType = this.typecheck(expr.second);
+      return new TensorType(firstType, secondType);
+    }
+    
+    if (expr instanceof LetPair) {
+      const pairType = this.typecheck(expr.pairExpr);
+      if (!(pairType instanceof TensorType)) {
+        throw new Error('let-pair requires a tensor type');
+      }
+      
+      const oldContext = {...this.context};
+      this.context[expr.var1] = pairType.first;
+      this.context[expr.var2] = pairType.second;
+      
+      const bodyType = this.typecheck(expr.body);
+      this.context = oldContext;
+      return bodyType;
+    }
+    
+    throw new Error(`Unsupported expression: ${expr.constructor.name}`);
+  }
+}
+
+// Code Generator
+class CodeGenerator {
+  constructor() {
+    this.lines = [];
+    this.qubitCounter = 0;
+    this.varToQubit = {};
+    this.scopeStack = [{}];
+  }
+  
+  allocateQubits(count = 1) {
+    const start = this.qubitCounter;
+    const indices = Array.from({length: count}, (_, i) => start + i);
+    this.qubitCounter += count;
+    return indices;
+  }
+  
+  getCurrentScope() {
+    return this.scopeStack[this.scopeStack.length - 1];
+  }
+  
+  mapVar(name, qubits) {
+    this.getCurrentScope()[name] = qubits;
+  }
+  
+  getQubits(name) {
+    for (let i = this.scopeStack.length - 1; i >= 0; i--) {
+      if (name in this.scopeStack[i]) {
+        const qubits = this.scopeStack[i][name];
+        delete this.scopeStack[i][name];
+        return qubits;
+      }
+    }
+    throw new Error(`Undefined variable: ${name}`);
+  }
+  
+  emit(line) {
+    this.lines.push(line);
+  }
+  
+  generate(expr) {
+    if (expr instanceof Variable) {
+      return this.getQubits(expr.name);
+    }
+    
+    if (expr instanceof QInit) {
+      const [idx] = this.allocateQubits(1);
+      if (expr.bitValue === 1) {
+        this.emit(`x q[${idx}];`);
+      }
+      return [idx];
+    }
+    
+    if (expr instanceof Gate) {
+      const operandQubits = expr.operands.flatMap(op => this.generate(op));
+      const gate = {
+        'H': 'h', 'X': 'x', 'Y': 'y', 'Z': 'z',
+        'CNOT': 'cx', 'CX': 'cx', 'CZ': 'cz'
+      }[expr.gateName] || expr.gateName.toLowerCase();
+      
+      if (operandQubits.length === 1) {
+        this.emit(`${gate} q[${operandQubits[0]}];`);
+      } else if (operandQubits.length === 2) {
+        this.emit(`${gate} q[${operandQubits[0]}], q[${operandQubits[1]}];`);
+      }
+      return operandQubits;
+    }
+    
+    if (expr instanceof Measure) {
+      const qubits = this.generate(expr.operand);
+      this.emit(`bit c${qubits[0]};`);
+      this.emit(`c${qubits[0]} = measure q[${qubits[0]}];`);
+      return [];
+    }
+    
+    if (expr instanceof TensorPair) {
+      const first = this.generate(expr.first);
+      const second = this.generate(expr.second);
+      return [...first, ...second];
+    }
+    
+    if (expr instanceof LetPair) {
+      const pairQubits = this.generate(expr.pairExpr);
+      const mid = Math.floor(pairQubits.length / 2);
+      
+      this.scopeStack.push({});
+      this.mapVar(expr.var1, pairQubits.slice(0, mid));
+      this.mapVar(expr.var2, pairQubits.slice(mid));
+      
+      const result = this.generate(expr.body);
+      this.scopeStack.pop();
+      return result;
+    }
+    
+    throw new Error(`Unsupported: ${expr.constructor.name}`);
+  }
+  
+  compile(expr) {
+    this.lines = ['// Generated by Quanthos Compiler', 'OPENQASM 3.0;', 'include "stdgates.inc";', ''];
+    this.qubitCounter = 0;
+    this.scopeStack = [{}];
+    
+    this.generate(expr);
+    
+    if (this.qubitCounter > 0) {
+      this.lines.splice(3, 0, `qubit[${this.qubitCounter}] q;`, '');
+    }
+    
+    return this.lines.join('\n');
+  }
+}
+
+const QuanthosCompiler = () => {
+  const [source, setSource] = useState(`let (q0, q1) = (qinit 0, qinit 0) in
+let q0_h = H(q0) in
+CNOT(q0_h, q1)`);
+  
+  const [result, setResult] = useState(null);
+  
+  const examples = [
+    {
+      name: 'Bell State',
+      code: `let (q0, q1) = (qinit 0, qinit 0) in
+let q0_h = H(q0) in
+CNOT(q0_h, q1)`
+    },
+    {
+      name: 'Single Qubit',
+      code: `H(qinit 0)`
+    },
+    {
+      name: 'Measurement',
+      code: `meas(H(qinit 0))`
+    },
+    {
+      name: 'Error: No-Cloning',
+      code: `let (q, _) = (qinit 0, qinit 1) in
+(q, q)`
+    }
+  ];
+  
+  const compile = () => {
+    try {
+      const ast = parseQuanthos(source);
+      const checker = new TypeChecker();
+      const type = checker.typecheck(ast);
+      const generator = new CodeGenerator();
+      const qasm = generator.compile(ast);
+      
+      setResult({
+        success: true,
+        ast: ast.toString(),
+        type: type.toString(),
+        qasm
+      });
+    } catch (error) {
+      setResult({
+        success: false,
+        error: error.message
+      });
+    }
+  };
+  
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 p-6">
+      <div className="max-w-6xl mx-auto">
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-8 border border-white/20">
+          <div className="flex items-center gap-3 mb-6">
+            <Zap className="text-yellow-400" size={32} />
+            <h1 className="text-3xl font-bold text-white">Quanthos Compiler</h1>
+          </div>
+          
+          <p className="text-gray-200 mb-6">
+            An object-oriented quantum programming language with linear type safety
+          </p>
+          
+          <div className="grid md:grid-cols-2 gap-6">
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <label className="text-white font-semibold flex items-center gap-2">
+                  <Code size={18} />
+                  Quanthos Source Code
+                </label>
+                <select 
+                  className="bg-white/20 text-white rounded px-3 py-1 text-sm"
+                  onChange={(e) => setSource(examples[e.target.value].code)}
+                >
+                  {examples.map((ex, i) => (
+                    <option key={i} value={i}>{ex.name}</option>
+                  ))}
+                </select>
+              </div>
+              
+              <textarea
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+                className="w-full h-64 bg-gray-900 text-green-400 font-mono p-4 rounded-lg border border-white/20 focus:border-purple-400 focus:outline-none resize-none"
+                spellCheck={false}
+              />
+              
+              <button
+                onClick={compile}
+                className="mt-4 w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-bold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all"
+              >
+                <Play size={20} />
+                Compile
+              </button>
+            </div>
+            
+            <div>
+              <label className="text-white font-semibold mb-3 block">Output</label>
+              
+              {result && (
+                <div className="space-y-4">
+                  {result.success ? (
+                    <>
+                      <div className="bg-green-900/30 border border-green-500/50 rounded-lg p-4">
+                        <div className="flex items-center gap-2 text-green-400 font-semibold mb-2">
+                          <CheckCircle size={18} />
+                          Type Check Passed
+                        </div>
+                        <div className="text-green-300 text-sm">
+                          Result Type: <code className="bg-black/30 px-2 py-1 rounded">{result.type}</code>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-blue-900/30 border border-blue-500/50 rounded-lg p-4">
+                        <div className="text-blue-400 font-semibold mb-2">AST</div>
+                        <pre className="text-blue-200 text-xs overflow-x-auto">{result.ast}</pre>
+                      </div>
+                      
+                      <div className="bg-purple-900/30 border border-purple-500/50 rounded-lg p-4">
+                        <div className="text-purple-400 font-semibold mb-2">Generated OpenQASM 3.0</div>
+                        <pre className="text-purple-200 text-sm overflow-x-auto">{result.qasm}</pre>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="bg-red-900/30 border border-red-500/50 rounded-lg p-4">
+                      <div className="flex items-center gap-2 text-red-400 font-semibold mb-2">
+                        <AlertCircle size={18} />
+                        Compilation Error
+                      </div>
+                      <pre className="text-red-300 text-sm whitespace-pre-wrap">{result.error}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {!result && (
+                <div className="bg-white/5 border border-white/10 rounded-lg p-8 text-center text-gray-400">
+                  Click "Compile" to see the output
+                </div>
+              )}
+            </div>
+          </div>
+          
+          <div className="mt-8 bg-white/5 rounded-lg p-6 border border-white/10">
+            <h3 className="text-white font-semibold mb-3">Key Features</h3>
+            <div className="grid md:grid-cols-3 gap-4 text-sm">
+              <div className="text-gray-300">
+                <strong className="text-purple-400">Linear Types:</strong> Prevents qubit cloning at compile time
+              </div>
+              <div className="text-gray-300">
+                <strong className="text-purple-400">Type Safety:</strong> Enforces quantum constraints via λ⊗ calculus
+              </div>
+              <div className="text-gray-300">
+                <strong className="text-purple-400">Portability:</strong> Compiles to standard OpenQASM 3.0
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default QuanthosCompiler;
