@@ -1,0 +1,94 @@
+A Theoretical Framework for Drift-Resilient Neural Decoding: The AdaTCN-v2 Architecture
+
+Abstract
+
+This thesis presents a complete mathematical framework for a drift-resilient neural decoder, designed to address the fundamental problem of non-stationarity in chronic brain-computer interfaces (BCIs). We propose AdaTCN-v2, a theoretically-grounded architecture centered on a Dual-Loop Adaptation System. The core innovation is the rigorous decoupling of unsupervised low-drift compensation from supervised high-intent decoding. This is formalized through: (1) a data-informed, composite corruption model C(·) that provides a strong prior for training a stabilizing Denoising Autoencoder (DAE); (2) an anchored latent regularization strategy that explicitly enforces the stability-plasticity balance; and (3) a hybrid Temporal Convolutional Network-Extreme Learning Machine (TCN-ELM) decoder that enables efficient, analytic adaptation of the task map. The result is a minimally-supervised framework that, in theory, eliminates perpetual recalibration for biological drift and confines necessary supervision to user-initiated, infrequent sessions for task refinement.
+
+1. Introduction: The Problem of Non-Stationarity
+
+The efficacy of a chronic BCI decoder is governed by its ability to map a time-varying neural signal \mathbf{x}_t \in \mathbb{R}^N to a stable intent \mathbf{i}_t \in \mathbb{R}^M. The primary obstacle is non-stationarity: the statistical distribution of \mathbf{x}_t drifts over time due to glial encapsulation, electrode micromotion, neuronal plasticity, and learning. Formally, if a decoder \mathcal{F} is calibrated at time t=0 such that \mathbf{i}_t = \mathcal{F}(\mathbf{x}_t; \boldsymbol{\Theta}_0), the changing data distribution p_t(\mathbf{x}) ensures that \mathcal{F}(\mathbf{x}_t; \boldsymbol{\Theta}_0) becomes increasingly inaccurate for t > 0. The objective is to construct a parameter update rule \boldsymbol{\Theta}_t = \mathcal{A}(\boldsymbol{\Theta}_{t-1}, \mathbf{x}_t) that maintains decoding fidelity with minimal external supervision.
+
+2. Mathematical Foundation: Signal and Drift Model
+
+We model the observed neural feature vector \mathbf{x}_t as a corrupted version of a latent, stable neural intent code \mathbf{z}_t.
+
+2.1 Latent Signal Model
+
+\mathbf{z}_t = \mathcal{G}(\mathbf{i}_t, \boldsymbol{\xi}_t)
+
+where \mathcal{G} is an unknown, nonlinear generative process mapping intent \mathbf{i}_t and noise \boldsymbol{\xi}_t to a stable neural representation. The decoder's goal is to approximate \mathbf{i}_t = \mathcal{G}^{-1}(\mathbf{z}_t).
+
+2.2 Composite Corruption Process C(·)
+The observed signal is:
+
+\mathbf{x}_t = C(\mathbf{z}_t, t) = c_K(\dots c_2(c_1(\mathbf{z}_t, t), t)\dots)
+
+where each c_k is a physiologically motivated transformation. We define a three-component model:
+
+1. Chronic Attenuation c_1 (Glial Encapsulation):
+   c_1(\mathbf{z}, t) = \mathbf{z} \odot (\mathbf{1} - \boldsymbol{\gamma}(t)), \quad \gamma_i(t) = \gamma_{i}^{max}(1 - e^{-t/\tau_i})
+   where \odot is Hadamard product, \boldsymbol{\gamma}(t) \in [0, 1]^N models per-channel signal attenuation, and \tau_i is a time constant fitted from histology.
+2. Spatial Blurring c_2 (Signal Bleed & Neuronal Migration):
+   c_2(\mathbf{z}', t) = \mathbf{K}(t) * \mathbf{z}'
+   Here, * denotes spatial convolution across the electrode array index. \mathbf{K}(t) is a smoothing kernel with bandwidth increasing monotonically with t, simulating loss of spatial specificity.
+3. Non-Stationary Mixing c_3 (Plastic Re-mapping):
+   c_3(\mathbf{z}'', t) = (\mathbf{I} + \alpha(t) \mathbf{M}) \mathbf{z}''
+   \mathbf{M} is a sparse, random mixing matrix. \alpha(t) is a bounded random walk, \alpha(t) \in [0, \alpha_{max}], introducing stochastic, nonlinear drift.
+
+This model C(\cdot, t) provides a strong, parametric prior for the expected structure of neural drift.
+
+3. The AdaTCN-v2 Architecture
+
+3.1 Stabilization Pathway: Denoising Autoencoder with Anchored Regularization
+To recover \mathbf{z}_t from \mathbf{x}_t, we employ a DAE. The encoder \text{Enc}_{\boldsymbol{\psi}}: \mathbb{R}^N \to \mathbb{R}^L and decoder \text{Dec}_{\boldsymbol{\omega}}: \mathbb{R}^L \to \mathbb{R}^N are trained to minimize:
+
+\mathcal{L}_{DAE}(\boldsymbol{\psi}, \boldsymbol{\omega}) = \mathbb{E}_{\mathbf{z} \sim \mathcal{D}} \left[ \| \mathbf{z} - \text{Dec}_{\boldsymbol{\omega}}(\text{Enc}_{\boldsymbol{\psi}}(C(\mathbf{z}, t))) \|_2^2 \right]
+
+where t is sampled from a distribution mimicking the implant lifetime.
+
+To prevent the encoder from "forgetting" a useful initial mapping during online adaptation, we introduce Anchored Latent Regularization. After initial calibration, we store a reference set \mathcal{Z}_{ref} = \{\text{Enc}_{\boldsymbol{\psi}_0}(\mathbf{x}_{ref}^{(i)})\}. During subsequent fine-tuning of \boldsymbol{\psi}, we augment the loss:
+
+\mathcal{L}_{total} = \mathcal{L}_{DAE} + \mu \cdot \mathbb{E}_{\mathbf{z}_{ref} \sim \mathcal{Z}_{ref}} \left[ \| \text{Enc}_{\boldsymbol{\psi}}(\mathbf{x}_{current}) - \mathbf{z}_{ref} \|_2^2 \right]
+
+The hyperparameter \mu controls the stability-plasticity trade-off, penalizing excessive deviation from the established functional map.
+
+3.2 Decoding Pathway: Hybrid TCN-ELM
+The stabilized latent code \mathbf{z}_t is processed by a temporal model to predict intent.
+
+· Temporal Convolutional Network (TCN): A stack of dilated causal convolutional layers extracts temporal features.
+  \mathbf{h}_t^{(l)} = \text{ReLU}(\mathbf{W}^{(l)} *_d \mathbf{h}_{t}^{(l-1)} + \mathbf{b}^{(l)})
+  The dilation d increases exponentially with depth l, providing a large receptive field R. The final output \mathbf{h}_t encapsulates the temporal context.
+· Extreme Learning Machine (ELM) Layer: For efficient adaptation, the final mapping to intent uses a randomized feature expansion.
+  \mathbf{a}_t = g(\mathbf{W}_{rand} \mathbf{h}_t + \mathbf{b}_{rand}), \quad \hat{\mathbf{i}}_t = \mathbf{W}_{out} \mathbf{a}_t
+  \mathbf{W}_{rand}, \mathbf{b}_{rand} are randomly initialized and frozen. All adaptability is concentrated in the output layer \mathbf{W}_{out} \in \mathbb{R}^{M \times L_{elm}}.
+
+3.3 The Dual-Loop Adaptation Protocol
+The system operates via two distinct, mathematically defined loops:
+
+1. Slow, Unsupervised Loop (Drift Compensation):
+   · Trigger: Continuous operation.
+   · Action: Minimize \mathcal{L}_{total} w.r.t. encoder parameters \boldsymbol{\psi} using a stream of unlabeled observations \{\mathbf{x}_t\}.
+   · Mathematical Goal: Adjust the embedding \text{Enc}_{\boldsymbol{\psi}} to keep the distribution of \mathbf{z}_t stationary despite C(\cdot, t).
+   · Output: Updated \boldsymbol{\psi}_{t+\Delta}. The decoder parameters (\boldsymbol{\omega}, \mathbf{W}_{out}) remain fixed.
+2. Fast, Supervised Loop (Task Re-calibration):
+   · Trigger: User-initiated, infrequent.
+   · Action: Given a small batch of new paired data \{(\mathbf{h}^{(j)}, \mathbf{i}^{(j)})\}_{j=1}^P, compute the optimal \mathbf{W}_{out} analytically via regularized least squares:
+   \mathbf{W}_{out}^* = \mathbf{I} \mathbf{A}^T (\mathbf{A} \mathbf{A}^T + \lambda \mathbf{I})^{-1}
+   where \mathbf{A} = [\mathbf{a}^{(1)}, ..., \mathbf{a}^{(P)}] is the matrix of ELM features.
+   · Mathematical Goal: Solve for the linear map that minimizes \|\mathbf{I} - \mathbf{W}_{out} \mathbf{A}\|_F^2 exactly in one step.
+   · Output: Updated \mathbf{W}_{out}^*. This step is computationally trivial.
+
+4. Theoretical Analysis & Discussion
+
+4.1 Innovation Summary
+
+1. Formalized Drift Prior: The corruption model C(\cdot, t) transforms drift modeling from ad-hoc augmentation to a parametric, physiology-informed process.
+2. Explicit Stability-Plasticity Control: The anchored loss term \mathcal{L}_{anchor} provides a direct mathematical mechanism to balance forgetting against adaptation, a critical advance over heuristic methods.
+3. Efficient Adaptation via Convexification: The hybrid TCN-ELM structure confines non-convex optimization to the TCN (trained rarely). Adaptation becomes a convex, analytic problem (solving for \mathbf{W}_{out}), guaranteeing efficiency and a global optimum for the new task map.
+
+4.2 Implications for BCI Theory
+This framework proposes a paradigm shift: decoders need not be universally adaptive. By separating signal stabilization (unsupervised, continuous) from intent decoding (supervised, episodic), the system aligns with practical clinical use. The user recalibrates only when they desire a change in function, not because the biology of their brain has changed.
+
+5. Conclusion
+
+We have presented AdaTCN-v2, a rigorous mathematical framework for a chronic BCI decoder. Its contributions are theoretical: a composite model of neural drift, a stabilized feature learning objective with an explicit forgetting constraint, and a decoder architecture that enables exact, one-step recalibration. This framework provides a clear mathematical blueprint for building BCIs that are not merely high-performing in idealized settings, but are inherently designed for stability in the face of the living, adapting brain. Future work must instantiate this theory in code and validate its axioms against experimental data, but the conceptual and mathematical foundation for a new class of drift-resilient neural decoders is hereby established.
