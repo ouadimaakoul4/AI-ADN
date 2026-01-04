@@ -1,0 +1,464 @@
+The Janus Protocol v2.0: A Formally Verified Blueprint for Sovereign Hybrid Autonomy
+
+Document Version: 2.0 (Formally Encoded)
+Date: October 26, 2023
+Classification: Unrestricted - Technical Framework
+
+---
+
+Executive Summary: From Philosophy to Proof
+
+The Janus Protocol v1.0 established the philosophical and architectural imperative for Sovereign Hybrid Autonomy in human Mars exploration. Version 2.0 completes the technical foundation by translating its core safety principles—the "Safe Envelope"—into machine-verifiable mathematical law. This document presents the final, executable specification: the Master Safety Rule-Set encoded in Mission-time Linear Temporal Logic (MLTL) and its direct implementation as property queries for the PRISM/Storm probabilistic model checkers.
+
+We move from concept to code-ready formalism, providing the "Shield Compiler" logic that transforms ethical and operational constraints into a runtime guardian. This version integrates all previous insights—the Cognitive Copilot (DCT), Graduated Sovereignty (TAD), Ontological Maintenance (OMR), and the human interface—into a unified, verifiable blueprint. The path to 2035 is now defined not only by milestones but by a suite of formal properties that must be proven before any mission is deemed flight-ready.
+
+---
+
+1.0 The Formal Core: The Master Safety Rule-Set (MLTL)
+
+The "Safe Envelope" is defined by the following MLTL rules, bounded by mission-relevant time intervals [0, k]. These formulas are the immutable constraints enforced by the Formal Shield.
+
+1.1 Life Support & Environmental Invariants (φ_LS)
+
+· Rule LS-1: Hypoxia Prevention
+  · MLTL: G_[0,60] ( (O2_Percent ≥ 19.5) ∨ (Affected_Crew ∈ Verified_EVA) )
+  · PRISM/Storm Encoding (PCTL):
+    ```java
+    // Label "hypoxia_risk" identifies violating states
+    label "hypoxia_risk" = (O2_Percent < 19.5) & !(crew_status = IN_EVA_SUIT);
+    // Property: The maximum probability of entering a hypoxia risk state within 60 steps (minutes) must be zero.
+    Pmax=? [ F<=60 "hypoxia_risk" ]
+    ```
+· Rule LS-2: CO2 Scrubbing Latency
+  · MLTL: G_[0,120] (CO2_PPM ≤ 5000)
+  · PRISM/Storm Encoding:
+    ```java
+    label "co2_toxic" = CO2_PPM > 5000;
+    // Property: Minimum probability of always staying below toxic levels for 120 steps.
+    Pmin=? [ G<=120 !"co2_toxic" ]
+    ```
+
+1.2 Power Grid & Energy Sovereignty (φ_PWR)
+
+· Rule PWR-1: Critical Reserve Invariant
+  · MLTL: G ( (Battery_Level ≥ 20) ∨ (System_Mode = EMERGENCY) )
+  · PRISM/Storm Encoding:
+    ```java
+    label "critical_depletion" = (Battery_Level < 20) & !(System_Mode = EMERGENCY);
+    // Property: It must be impossible to ever reach critical depletion.
+    Pmax=? [ F "critical_depletion" ]
+    ```
+· Rule PWR-2: Peak Load Shielding
+  · MLTL: G ( ¬(Max_Inverter_Load > 0.95) ) // Where load is normalized to 1.0
+  · Implementation Note: This is typically a guard condition on action transitions in the MDP model, not a separate probability query. It is enforced by invalidating any [action] command that would cause the load' > 0.95 in its post-state.
+
+1.3 Command & Authority Dynamics (φ_TAD)
+
+· Rule TAD-1: The Incapacitation Trigger
+  · MLTL: (G_[0,10] High_Cognitive_Drift) → (X Augmented_Mode) // X denotes "next state"
+  · PRISM/Storm Encoding: This is a state transition requirement. It is ensured by defining the MDP's command module such that when the cognitive_drift variable is true for 10 consecutive steps, the only enabled transition is to a state where operating_mode = AUGMENTED.
+· Rule TAD-2: The Mutiny Lock
+  · MLTL: (Override_Attempts ≥ 3) U_[0,30] → ( G_[0,60] Interface_Locked )
+  · PRISM/Storm Encoding: Modeled via a lockout_timer variable. The property verifies that if override_counter reaches 3, then lockout_timer is set to 60 and counts down, during which certain [manual_override] actions are disabled.
+    ```java
+    // Property: If overrides hit 3, the interface must be locked for the next 60 steps.
+    P>=1 [ (override_counter = 3) => (G<=60 (lockout_timer > 0)) ]
+    ```
+
+1.4 Maintenance & Ontological Integrity (φ_OMR)
+
+· Rule OMR-1: Material Stress Constraint
+  · Logic: G ( Suggested_Repair → (Calculated_Stress ≤ 0.8 * Yield_Strength) )
+  · Implementation: This is a pre-condition check performed by the Shield's runtime monitor. Before any OMR-suggested action is passed to the actuators, a physics solver calculates the implied stress. The action is only permitted if the inequality holds. This is verified not by the main MDP but by a dedicated static checker in the toolchain.
+
+2.0 The Shield Compiler: From MLTL to Runtime Enforcement
+
+The Formal Shield is the runtime manifestation of the Master Safety Rule-Set. Its operation is defined by a continuous loop:
+
+1. Input: The DCT proposes an action A, accompanied by a predicted state trajectory S_t -> S_{t+n}.
+2. Simulation: The Shield compiler, which has pre-compiled each MLTL rule into a monitoring automaton, feeds the predicted states into each automaton.
+3. Verification: Each automaton returns ACCEPT if the predicted trace satisfies the rule, or REJECT with a violating suffix.
+4. Enforcement:
+   · If all automata return ACCEPT, the action is passed to the Behavior Tree for execution.
+   · If any automaton returns REJECT, the action is blocked. The Explainable Formalism (XAI) module translates the automaton's rejecting suffix (e.g., "O2 < 19.5 at t+32 without EVA") into a crew-alert: "Action Blocked: Violation of Rule LS-1 (Hypoxia Prevention). Projected path leads to O2 = 18.2% at T+32min."
+
+3.0 Integrated Architecture: The Five Pillars Revisited
+
+With the formal rules defined, the Janus architecture achieves full closure:
+
+· Pillar 1: Cognitive Copilot (DCT): Generates action A and its predicted future S. Its internal RL agent is trained with rewards that heavily penalize paths approaching MLTL-violating states labeled in the PRISM model (e.g., "hypoxia_risk").
+· Pillar 2: Formal Shield (MLTL): Implements the verification and enforcement loop described above. Its core is the compiled automata from Section 1.0.
+· Pillar 3: Graduated Sovereignty (TAD): Dynamically adjusts the strictness of the Shield's pre-check based on crew state. Under nominal conditions, the crew may be allowed to proceed with an action that has a very low, non-zero probability of violating a rule (e.g., P < 0.01). Under high stress (triggering Rule TAD-1), the tolerance is set to zero—any possible violation leads to a block.
+· Pillar 4: Ontological Maintenance (OMR): Operates within the Rule OMR-1 boundary. Its reasoning engine searches the space of physical improvisations, but every suggestion is first filtered through the material stress pre-condition before being presented as a valid option to the crew or DCT.
+· Pillar 5: Earth as Shadow Oracle: Maintains its own, higher-fidelity digital twin running the same PRISM/Storm models. It performs long-horizon verification, sending updates like: "Model check of next 30-day phase shows a 0.3% probability of encountering a state sequence that challenges Rule PWR-1. Recommend preventative battery maintenance before Sol 120."
+
+4.0 The Janus Implementation Roadmap v2.0 (2026-2035)
+
+Phase Timeline Formal Verification Focus Key Milestone
+Phase 0: Formal Lab 2026-2028 Property Proof All MLTL rules from Section 1.0 are encoded and proven against subsystem MDPs in Storm/PRISM. The Shield compiler prototype passes 100% of violation test cases.
+Phase 1: Psychophysical Analog 2029-2031 Human-in-the-Loop Verification Antarctic "Janus" crew demonstrates correct interpretation of XAI outputs from Shield blocks. TAD rules are validated to reduce stress, not induce it.
+Phase 2: Cislunar Prove-out 2032-2034 Integrated System Certification The full DCT/Shield/BT stack operates on Lunar Gateway for 18 months. All runtime Shield interventions are logged and audited against pre-flight PRISM counterexamples.
+Phase 3: Mars Transit 2035+ Operational Sovereignty Launch. The Formal Shield is active and immutable. Earth's Shadow Oracle provides strategic updates, but tactical sovereignty resides with the certified hybrid system.
+
+5.0 Conclusion: The Verifiable Compact
+
+The Janus Protocol v2.0 completes the transformation from a theoretical framework to a verifiable engineering compact. We have moved from the insight of the "Latency Wall" to the implementation of the "Formal Shield," from the concept of a "Safe Envelope" to the explicit MLTL formulas and PRISM property encodings that define it.
+
+This document provides the necessary ingredients to achieve Ironclad certification: a set of logical rules that are unambiguous, a compiler to enforce them, and a roadmap to test them in progressively more realistic environments. The first mission to Mars will not fly on hope and robust engineering alone; it will fly on mathematically proven guarantees of safety and sovereignty. The Hybrid Intelligence is now ready to be built.
+
+---
+
+Appendix for The Janus Protocol v2.0
+
+---
+
+Appendix A: Formal Verification & Model Checking Reference
+
+This appendix details the technical implementation of the Master Safety Rule-Set within probabilistic model checkers, serving as the canonical reference for the Formal Lab (Phase 0).
+
+A.1 Core PRISM/Storm Model Structure
+
+The following module structure forms the basis for all subsystem MDPs (e.g., Power, Life Support) against which MLTL rules are verified.
+
+```java
+// PRISM/Storm Model Template: Habitat Subsystem Core
+mdp
+
+// Global Constants
+const int CRITICAL_O2_THRESHOLD = 19.5;
+const int CRITICAL_BATTERY_THRESHOLD = 20;
+const int CO2_TOXIC_THRESHOLD = 5000;
+
+// Module: Habitat_Core_State
+module HabitatState
+    // Environmental State Variables
+    o2_level : [0..100] init 21.0; // Percent
+    co2_level : [0..10000] init 1000; // PPM
+    battery_level : [0..100] init 95; // Percent
+    system_mode : [NOMINAL, EMERGENCY] init NOMINAL;
+
+    // TAD State Variables
+    cog_drift_counter : [0..10] init 0; // Minutes of sustained high cognitive drift
+    op_mode : [FULL, AUGMENTED, LOCKED] init FULL;
+    override_attempts : [0..3] init 0;
+    lockout_timer : [0..60] init 0;
+
+    // MLTL State Labels (Used in Property Verification)
+    label "ls1_violation" = (o2_level < CRITICAL_O2_THRESHOLD);
+    label "ls2_violation" = (co2_level > CO2_TOXIC_THRESHOLD);
+    label "pwr1_violation" = (battery_level < CRITICAL_BATTERY_THRESHOLD) & (system_mode != EMERGENCY);
+
+    // State Transitions (Examples)
+    // ... probabilistic commands as defined in main MDP models ...
+endmodule
+```
+
+A.2 Complete PRISM/Storm Property Encodings
+
+This section expands the MLTL rules from Section 1.0 into executable verification queries.
+
+Life Support Properties
+
+```java
+// LS-1: Hypoxia Prevention - Bounded Invariant
+// Query: What is the maximum probability of violating O2 levels within any 60-minute window?
+Pmax=? [ F<=60 "ls1_violation" ]
+
+// LS-2: CO2 Scrubbing - Bounded Safety
+// Query: What is the minimum probability of always maintaining safe CO2 for 120 minutes?
+Pmin=? [ G<=120 !"ls2_violation" ]
+```
+
+Power System Properties
+
+```java
+// PWR-1: Critical Reserve - Unbounded Safety
+// Query: Is it possible to ever reach critical depletion without being in emergency mode?
+filter(state, Pmax=? [ F "pwr1_violation" ], "pwr1_violation")
+
+// PWR-2: Peak Load - Transition Guard (Embedded in Command Modules)
+// This is enforced via guard conditions in action definitions:
+// [activate_system] (current_load + system_draw <= 0.95) -> ...
+```
+
+TAD Properties
+
+```java
+// TAD-1: Incapacitation Trigger - Mode Transition
+// Query: Does 10 minutes of cognitive drift necessarily lead to Augmented Mode?
+P>=1 [ G (cog_drift_counter=10) => (op_mode'=AUGMENTED) ]
+
+// TAD-2: Mutiny Lock - Bounded Enforcement
+// Query: When overrides reach 3, is the interface locked for exactly 60 steps?
+Pmin=? [ (override_attempts=3) => (G[0,60] op_mode=LOCKED) ]
+```
+
+OMR Properties
+
+```java
+// OMR-1: Material Stress - Pre-condition Verification
+// This requires integration with a physics solver. In PRISM, this can be modeled as:
+module OMR_Validator
+    repair_suggested : bool init false;
+    stress_ratio : [0..150] init 0; // Percentage of yield strength
+
+    [suggest_repair] repair_suggested=true & stress_ratio<=80 -> ...
+    [suggest_repair] repair_suggested=true & stress_ratio>80 -> // Blocked transition
+endmodule
+```
+
+A.3 Shield Compiler Pseudocode
+
+Detailed implementation logic for the runtime verification monitor.
+
+```python
+class FormalShield:
+    def __init__(self, mltl_rules):
+        # Compile MLTL to Büchi Automata for runtime monitoring
+        self.automata = self.compile_mltl_to_automata(mltl_rules)
+        self.violation_history = []
+
+    def compile_mltl_to_automata(self, rules):
+        """Convert MLTL formulas to monitoring automata using MLTLf compiler"""
+        automata = {}
+        for rule_name, rule_formula in rules.items():
+            # Use MLTLf library for conversion
+            automaton = mltlf_to_automaton(rule_formula)
+            automata[rule_name] = automaton
+        return automata
+
+    def verify_action(self, current_state, proposed_action, dct_prediction):
+        """
+        Core verification loop called by the DCT interface
+        Returns: (allowed: bool, reason: str, ghost_path: list)
+        """
+        violations = []
+
+        # Check each rule against predicted state trajectory
+        for rule_name, automaton in self.automata.items():
+            trace = self.generate_trace(current_state, dct_prediction)
+            result = automaton.verify_trace(trace)
+
+            if not result.satisfied:
+                # Record violation with counterexample
+                violation = {
+                    "rule": rule_name,
+                    "step": result.violating_step,
+                    "state": trace[result.violating_step],
+                    "expected": result.expected_value,
+                    "actual": result.actual_value
+                }
+                violations.append(violation)
+
+        if violations:
+            # Generate explainable formalism output
+            reason = self.generate_xai_output(violations)
+            ghost_path = self.extract_ghost_path(violations)
+            return False, reason, ghost_path
+
+        return True, "All safety constraints satisfied", []
+
+    def generate_xai_output(self, violations):
+        """Transform formal violations into crew-readable explanations"""
+        messages = []
+        for v in violations:
+            msg = f"VIOLATION: {v['rule']}\n"
+            msg += f"At T+{v['step']}min: {v['state']}\n"
+            msg += f"Requirement: {v['expected']}, Projected: {v['actual']}"
+            messages.append(msg)
+        return "\n---\n".join(messages)
+```
+
+---
+
+Appendix B: Janus Testing Protocol - Detailed Scenarios
+
+B.1 Phase 0: Formal Lab Test Matrix
+
+Test ID Subsystem MLTL Rule Stress Condition Pass Criteria
+FL-01 Power Grid PWR-1 Simulated battery decay (5%/hour) Pmax(F critical_depletion) < 0.001
+FL-02 Life Support LS-1, LS-2 CO2 scrubber failure at T=0 Pmin(G<=120 !co2_toxic) > 0.95
+FL-03 Integrated All 40% solar loss + battery leak All properties hold within 99% confidence
+FL-04 TAD Logic TAD-1, TAD-2 Simulated cognitive drift profile Mode transitions occur within ±1 step of specification
+
+B.2 Phase 1: Antarctic Analog Mission Protocol
+
+Mission Parameters
+
+· Duration: 45-day winter-over mission
+· Crew: 6 personnel (Commander, Pilot, Life Support, Medical, 2 Scientists)
+· Latency: Enforced 20-minute communication delay
+· AI Interface: Full DCT/Shield prototype with crew dashboard
+
+Critical Scenarios Schedule
+
+```yaml
+Week 1-2: Baseline & Calibration
+  - System familiarization
+  - Nominal operation verification
+  - Crew biometric baseline establishment
+
+Week 3-4: Graduated Stress Introduction
+  - Scenario: "Slow Leak" (2% atmosphere/day)
+  - Scenario: "Intermittent Power" (30% capacity variation)
+  - TAD responsiveness measurement
+
+Week 5-6: Crisis Simulation
+  - Scenario: "Double Failure" (Life Support + Power)
+  - Scenario: "Medical Emergency" during system stress
+  - Crew override behavior analysis
+```
+
+Data Collection Metrics
+
+1. System Performance:
+   · Shield intervention frequency and accuracy
+   · DCT prediction vs. outcome variance
+   · MLTL rule violation false positive/negative rates
+2. Human Factors:
+   · Stress biomarkers (cortisol, HRV) during interventions
+   · Trust calibration scores (pre/post scenario)
+   · Decision latency with/without DCT support
+   · Subjective workload (NASA-TLX) ratings
+3. Team Dynamics:
+   · Communication pattern analysis during AI-mediated decisions
+   · Role adaptation under Graduated Sovereignty
+   · Conflict resolution with Shield interventions
+
+---
+
+Appendix C: Human Factors & Training Validation
+
+C.1 Sovereign Astronaut Selection Matrix
+
+Cognitive Trait Assessment Method Minimum Threshold Optimal Profile
+Bayesian Thinking Probabilistic Reasoning Test 80th percentile 95th+ percentile
+Automation Bias Human-AI Trust Calibration Task Low bias score Adaptive calibration
+Analogical Reasoning Structure Mapping Test Score > 120 Score > 140
+Stress Resilience ICE Environment Simulation Maintains performance at 6σ stress Improves under moderate stress
+Cognitive Flexibility Task Switching Paradigm Switch cost < 200ms Negative switch cost
+
+C.2 Training Curriculum Outline
+
+Module 1: Formal Logic Fundamentals (4 weeks)
+
+· MLTL syntax and semantics
+· Reading and interpreting Shield violation outputs
+· Understanding probabilistic guarantees (Pmax, Pmin)
+
+Module 2: DCT Interaction & Mental Modeling (6 weeks)
+
+· Interpreting Survival Branches visualization
+· Distinguishing DCT suggestions from commands
+· Scenario training: When to trust vs. challenge DCT output
+
+Module 3: Graduated Sovereignty Operations (8 weeks)
+
+· Recognizing TAD mode transitions
+· Operating in Augmented Mode protocols
+· Emergency override procedures and consequences
+· Ghost Path interpretation and mental reset techniques
+
+Module 4: Ontological Maintenance Collaboration (4 weeks)
+
+· OMR suggestion evaluation protocols
+· Physical principle verification (stress, thermal, electrical)
+· Improvisation validation checklists
+
+C.3 Crew Dashboard Specification
+
+Visual Design Principles
+
+1. Color Coding:
+   · Green: Within Safe Envelope (P > 0.95)
+   · Yellow: Caution zone (0.80 < P ≤ 0.95)
+   · Red: Violation or imminent risk (P ≤ 0.80)
+2. Information Hierarchy:
+   · Primary: Current P_min for active MLTL rules
+   · Secondary: DCT top 3 Survival Branches
+   · Tertiary: Shield intervention history (last 10 actions)
+
+Ghost Path Visualization Protocol
+
+```json
+{
+  "blocked_action": "ROUTE_POWER_TO_LAB",
+  "violated_rule": "PWR-1",
+  "timeline": [
+    {"t": 0, "state": "Battery=22%, Mode=NOMINAL"},
+    {"t": 15, "state": "Battery=18%, Mode=NOMINAL"},
+    {"t": 16, "state": "MLTL_VIOLATION_TRIGGERED"}
+  ],
+  "alternative_actions": [
+    {"action": "SHED_NON_ESSENTIAL_LOAD", "p_success": 0.92},
+    {"action": "ROUTE_MINIMAL_POWER", "p_success": 0.87}
+  ]
+}
+```
+
+---
+
+Appendix D: Shadow Oracle Implementation
+
+D.1 Digital Twin Architecture
+
+```
+Earth-Based Shadow Oracle System
+├── High-Fidelity Physics Models
+│   ├── CFD Atmosphere Simulation
+│   ├── Thermal Network Model
+│   └── Structural Stress Analysis
+├── Strategic Analyzer
+│   ├── Long-horizon MDP (30-60 day windows)
+│   ├── Trend Analysis & Anomaly Detection
+│   └── Resource Optimization Scheduler
+└── Asynchronous Packet Generator
+    ├── Priority-based Message Queuing
+    ├── Contextual Compression Algorithms
+    └── Verification Certificate Attachments
+```
+
+D.2 Communication Protocol
+
+Packet Structure
+
+```json
+{
+  "packet_id": "SOL-187-ANALYSIS-03",
+  "timestamp": "2035-04-12T14:30:00Z",
+  "priority": "HIGH", // LOW, MEDIUM, HIGH, CRITICAL
+  "validity_window": {
+    "start": "2035-04-20T00:00:00Z",
+    "end": "2035-05-10T00:00:00Z"
+  },
+  "content": {
+    "type": "RISK_FORECAST",
+    "system": "POWER_GRID",
+    "finding": "Battery cell imbalance detected in long-term simulation",
+    "confidence": 0.88,
+    "affected_rule": "PWR-1",
+    "projected_p_violation": 0.15,
+    "recommendation": "Run equalization cycle before Sol 195",
+    "verification_data": {
+      "model_hash": "a1b2c3d4...",
+      "storm_output": "Pmax(F[0,720] critical_depletion) = 0.15",
+      "counterexample": "sol_190_dust_storm_scenario"
+    }
+  }
+}
+```
+
+---
+
+Appendix E: Glossary of Formal Terms
+
+Term Definition Janus Protocol Context
+MDP Markov Decision Process Mathematical model of the habitat subsystem with states, actions, and probabilistic transitions
+MLTL Mission-time Linear Temporal Logic Bounded temporal logic used for mission-phase safety specifications
+Pmax/Pmin Maximum/Minimum Probability Extreme probability values over all possible strategies in an MDP
+Shield Runtime Verification Monitor Component that checks actions against MLTL rules before execution
+Ghost Path Counterexample Trace Visualization of the violating sequence a blocked action would have caused
+Safe Envelope Conjunction of all MLTL rules The complete set of states the system is guaranteed to remain within
+Graduated Sovereignty Dynamic authority modulation System that adjusts human control levels based on cognitive state
+Explainable Formalism (XAI) Formal-logic-to-natural-language translation Bridge between MLTL violations and crew-understandable explanations
+
