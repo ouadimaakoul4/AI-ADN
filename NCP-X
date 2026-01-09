@@ -1,0 +1,166 @@
+NCP-X (Nexus Control Propulsor - Experimental) Final Simulation Blueprint
+
+Document Version: 5.0 (Uncertainty-Aware Modeling Framework)
+Classification: Theoretical Research & Simulation Model
+Date: 2026-01-10
+Issuing Authority: Advanced Propulsion Analysis Group
+
+Core Declaration: This document defines a computational proving ground for autonomous propulsion. All components are high-fidelity models with explicitly labeled confidence levels, forming a closed-loop simulation to test the core hypothesis that intelligent control can overcome internalized design penalties. No physical hardware exists.
+
+---
+
+1. Executive Summary: The Simulation Hypothesis
+
+The NCP-X is a theory of operation, instantiated in code. Its purpose is to test whether a propulsion system governed by a POMDP, inferring hidden degradation from synthetic sensors, can achieve greater simulated mission reliability (P_success > 99%) than a traditional redline-shutdown controller, despite being burdened by the high thermodynamic density and partial observability of a monolithic design.
+
+The framework's credibility is governed by a triage system:
+
+· 🔵 Validated Model: Foundational physics with low uncertainty.
+· 🟡 Parametric Model: Empirical correlations scaled to extreme regimes; medium uncertainty.
+· 🔴 Hypothetical Model: Novel formulations based on literature extrapolation; high uncertainty.
+
+Final Benchmark: In 10,000 Monte Carlo runs of the simulated 480-second Mars ascent, the NCP-X autonomous controller must exceed a 99% success rate, outperforming a traditional controller by a minimum of 10 percentage points.
+
+---
+
+2. Foundational Physics & Thermodynamic Models
+
+2.1 Propellant State & Combustion
+
+· Transcritical Methane EOS: Peng-Robinson equation. (P = RT/(V_m - b) - aα/(V_m² + 2bV_m - b²)). Status: 🔵. Well-established for hydrocarbons.
+· Pseudo-Critical Properties: Sharp peaks in c_p and k modeled with Gaussian/exponential enhancement factors. Status: 🔵. Phenomenon is well-documented.
+· Main Combustion Equilibrium: Adiabatic flame temperature T_c and properties via NASA CEA look-up tables for p_c, O/F. Status: 🔵. Industry standard.
+
+2.2 Full-Flow Staged Combustion Cycle
+
+· Preburner & Mass/Energy Balance: ṁ_o,pb*h_o + ṁ_f,pb*h_f = (ṁ_o,pb+ṁ_f,pb)*h_out + Q_loss. Status: 🔵.
+· Turbopump Performance: Pump maps (ψ, φ, η) extrapolated from published data. Turbine efficiency η_turb as function of expansion ratio. Status: 🟡. Scaling to 350-bar discharge is a key uncertainty.
+· Thrust Chamber Performance: F = ṁ*v_e + (p_e-p_a)A_e, mass flow via throat condition. Status: 🔵.
+
+2.3 Regenerative Cooling & Heat Transfer
+
+· Gas-Side Heat Flux: Bartz correlation h_g = 0.026/D_t^0.2 * (μ^0.2 c_p/Pr^0.6) * (p_c/c*)^0.8 * (D_t/R_c)^0.1. Status: 🟡. Requires real-gas correction factor Φ at 350 bar, introducing +/- 30% uncertainty.
+· Wall Conduction: 1D steady-state solution for temperature profile. Status: 🔵.
+· Coolant-Side (Transcritical): Nusselt correlation with pseudo-critical enhancement E(T,p). Status: 🟡. Microgravity and high-acceleration effects are not fully modeled.
+· Critical Heat Flux (CHF): Zuber-type correlation for vertical channels. Status: 🟡. Threshold is a hard failure limit in simulation.
+
+---
+
+3. Structural & Material Degradation Models
+
+3.1 Monolithic Chamber Mechanics
+
+· Thermal Stress: σ_θ = [Eα/(1-ν)] * [1/r² ∫ T r dr + (r²+r_i²)/(r²(r_o²-r_i²)) ∫ T r dr - T(r)]. Status: 🔵.
+· Low-Cycle Fatigue (LCF): Coffin-Manson relation: Δε_plastic/2 = ε_f' (2N_f)^c. Status: 🔵. Includes Mars cold-start transient strain Δε_therm(t).
+· Creep-Rupture: Larson-Miller Parameter: P_LM = T(log t_r + C). Status: 🔵.
+
+3.2 High-Pressure Degradation (The Critical Unknowns)
+
+· TBC Erosion: d(δ_TBC)/dt = -k_eros * ρ_g^0.5 * v_g^2.5. Status: 🟡. Rate constant k_eros scaled from plasma-arc jet data.
+· High-Pressure Oxidation: dx_ox/dt = k_l0 * exp(-Q_l/RT) * (p_O2)^m. Status: 🔴. This is the highest-risk model. Constants m and Q_l at p_O2 > 100 bar are literature extrapolations. The proposed DOE is required to transition this to 🟡.
+· Coking: ṁ_coke = A_c * p_CH4 * exp(-E_c/(R T_w)). Status: 🟡. Considered a slow, secondary process.
+
+---
+
+4. The Perception Layer: Neural Cluster Decoupler (NCD)
+
+4.1 Synthetic Sensor & Noise Generation
+
+· Process: The physics simulator generates a ground-truth state S_true. A sensor model adds Gaussian noise 𝒩(μ, σ) to performance parameters (e.g., p_c ± 2 bar).
+· Acoustic Emission (AE) Synthesis: AE_raw(t) = FFT^{-1}[ Σ_Cluster_Noise + Spallation_Event(δ_TBC) ]. Status: 🤖 (ML Model). Noise profile includes broadband roar and turbopump harmonics.
+
+4.2 Temporal Fusion Transformer (TFT) Architecture
+
+· Purpose: A denoising autoencoder that maps 33 channels of AE_raw(t) to a clean signal for a target engine.
+· Input: (batch, 33, time_seq). Includes spatial embedding for engine position.
+· Core: Multi-head self-attention layers followed by convolutional decoder.
+· Output: Residual Anomaly Energy E_res(t). Status: 🤖. Trained entirely on synthetic data pairs (AE_raw, clean_event).
+
+4.3 MISO Delay-and-Sum Beamformer
+
+· Process: Time-aligns signals based on known engine geometry and sound speed in structure (v_s ≈ 5000 m/s): y_target(t) = Σ_j w_j * x_j(t + τ_ij).
+· Status: 🟡. Physics is sound (🔵), but effectiveness depends on accurate modeling of wave propagation in the monolithic block, which is complex (🟡).
+
+---
+
+5. The Intelligence Layer: POMDP Control Core
+
+5.1 Formal POMDP Definition (S, A, O, T, Ω, R, γ)
+
+· States S: Hidden degradation states (e.g., [δ_TBC, x_ox, ω_fatigue]).
+· Actions A: Continuous vector [throttle, ΔO/F, ITC_power, coolant_override].
+· Observations O: Noisy sensor outputs O_sim(t), including E_res from NCD.
+· Transition Model T(s'|s,a): Defined by the physics models in Sections 2 & 3. This is the simulator's internal truth. Status: 🟡/🔴. Credibility depends on constituent models.
+· Observation Model Ω(o|s',a): A learned neural network. Estimates probability of sensor reading o given true state s'. Status: 🤖. Trained on millions of (S_true, O_sim) pairs from the simulator.
+· Reward R(s,a): R = w1*R_perf + w2*R_health + w3*R_mission - w4*R_penalty. Includes exponential penalty for high p_O2 and T_wall.
+
+5.2 Belief State & The Bayesian Filter
+
+The controller maintains a probability distribution b_t(s) over hidden states, updated via:
+b_{t+1}(s') ∝ Ω(o_{t+1} | s', a_t) • Σ_s T(s' | s, a_t) • b_t(s)
+This fuses the NCD's anomaly detection with model-based predictions.
+
+5.3 Multi-Agent Reinforcement Learning (MARL)
+
+· Setup: 33 parallel instances of the simulator, coupled acoustically and thermally via view factors F_ij.
+· Architecture: Centralized Training, Decentralized Execution (CTDE). A global critic learns cooperative strategies; each engine runs a local actor π_i(a_i | o_i, b_i(s)).
+· Differentiated Policies: Inner-ring engines weight R_health more; outer-ring engines weight R_perf more to compensate.
+· The "Firebreak" Protocol: A hard-coded sequence triggered by a high-confidence breach belief (P(S_4) > 0.8) to isolate a failing engine and shield its neighbors.
+
+---
+
+6. Integrated Software Stack & Validation
+
+6.1 The Simulation Stack
+
+Layer Component Tech Stack Status
+Physics Core Thermodynamic, Structural, Degradation Models C++, Python (NumPy) 🔵/🟡/🔴
+Perception NCD (TFT + Beamformer) PyTorch 🤖
+Estimation Bayesian POMDP Filter JAX, NumPy 🤖
+Coordination Cluster State Manager Python 🟡
+Decision Multi-Agent SAC Policy PyTorch, RLlib 🤖
+
+6.2 Credibility Assessment & Validation Metrics
+
+· Internal Consistency: Cycle closure error < 0.5%. Wall temperature prediction within +/- 150K of extrapolated data.
+· NCD Performance: >90% detection rate of synthetic spallation events at SNR < -60 dB.
+· Policy Benchmark: Primary Success Criterion: P_success(NCP-X) - P_success(Redline) >= +10% in Monte Carlo.
+
+---
+
+7. Path to De-Risking & Physical Reality
+
+7.1 Critical Path: Transitioning 🔴 to 🟡
+
+The single most important action is executing the High-Pressure Oxidation DOE:
+
+1. Objective: Empirically determine m and Q_l at p_O2 = 100-400 bar, T = 900-1300 K.
+2. Outcome: Replace literature extrapolations with fitted constants and uncertainty bounds.
+3. Ripple Effect: Recalibrates the Transition Model T(s'|s,a), the Observation Model Ω, and requires retraining the POMDP policy. This work transitions the largest 🔴 to a quantified 🟡.
+
+7.2 The "Iron Bird" Hardware-in-the-Loop (HIL) Phase
+
+· Purpose: Test the AI stack against real-world latency using actual flight computers and actuators connected to the real-time simulator.
+· Key Test: "Time-to-Truth" must be < 150ms for the control loop (sensor → NCD → POMDP → actuator command).
+· Success Criterion: 99.9% mission success rate in HIL with fault injection.
+
+7.3 Final Implementation Roadmap
+
+1. Complete DOE & Model Recalibration. (Transition 🔴→🟡)
+2. HIL Testing & Latency Validation. (Validate 🤖 stack)
+3. Sub-Scale Component Hot Fire. (First physical validation of coupled models)
+4. Full System Demonstration.
+
+---
+
+8. Conclusion: The Blueprint as a Falsifiable Hypothesis
+
+The NCP-X Final Blueprint is not a construction document. It is a detailed, uncertainty-quantified proposal for a computational experiment. Its value lies in providing a complete, self-consistent framework to test a revolutionary approach to engine control. The explicit labeling of 🔴🟡🔵 forces rigorous confrontation with knowledge gaps and directs research resources to where they are most needed: empirically resolving the high-pressure oxidation frontier.
+
+By following this plan, the outcome will be unambiguous: either the autonomous framework demonstrably achieves its reliability target in high-fidelity simulation, justifying a massive investment in physical development, or it reveals fundamental flaws in the concept, saving equal resources. This is the essence of simulation-first design.
+
+---
+
+END OF BLUEPRINT
+
+"All models are wrong, but some are useful. We quantify how wrong, so others may decide how useful."
