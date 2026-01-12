@@ -1,0 +1,5211 @@
+The AIADN Project: Final Implementation Blueprint
+
+A Complete, Step-by-Step Technical Guide for Building the Adaptive Intelligence Distributed Network in Rust
+
+Executive Summary & Project Vision
+
+AIADN (Advanced Intelligence Adaptive Distributed Network) is a bio-inspired computational architecture that creates emergent intelligence through the interaction of 108 specialized "Capsules." This document provides the definitive, complete implementation guide for realizing this architecture as a high-performance Rust simulation, validated through the "Dynamic Urban Pulse" logistics challenge.
+
+Core Innovation
+
+AIADN moves beyond classical multi-agent systems by implementing three foundational axioms:
+
+1. Local Competence: Each Capsule functions as an Active Inference agent, continuously minimizing its variational free energy.
+2. Relational Causality: Intelligence emerges from dynamic Pin connections, not centralized control.
+3. Harmonic Perturbation: Global coordination uses Φ-modulated phase synchronization to navigate exploration-exploitation cycles.
+
+This implementation transforms mathematical formalism into executable code, creating a system that can anticipate urban logistics disruptions and self-organize new solutions.
+
+---
+
+Phase 0: Foundation & Setup (Week 1)
+
+1. Development Environment & Toolchain
+
+```bash
+# Install Rust with specific toolchain for reproducibility
+rustup install nightly-2024-03-01
+rustup default nightly-2024-03-01
+rustup component add rust-src clippy rustfmt
+
+# Create project with workspaces for separation of concerns
+cargo new aiadn --lib
+cd aiadn
+mkdir -p crates/{core, capsules, nucleus, environment, visualization, simulation}
+mkdir -p benches tests
+
+# Create Cargo.toml for workspace
+cat > Cargo.toml << 'EOF'
+[workspace]
+members = [
+    "crates/core",
+    "crates/capsules", 
+    "crates/nucleus",
+    "crates/environment",
+    "crates/visualization",
+    "crates/simulation"
+]
+
+[workspace.dependencies]
+rand = "0.8.5"
+serde = { version = "1.0", features = ["derive"] }
+rayon = "1.7.0"
+once_cell = "1.18.0"
+tokio = { version = "1.0", features = ["full"] }
+nalgebra = "0.32.0"
+statrs = "0.16.0"
+petgraph = "0.6.0"
+chrono = "0.4.0"
+indicatif = "0.17.0"
+anyhow = "1.0"
+thiserror = "1.0"
+lazy_static = "1.4.0"
+crossbeam = "0.8.0"
+dashmap = "5.0.0"
+parking_lot = "0.12.0"
+tracing = "0.1.0"
+tracing-subscriber = "0.3.0"
+plotters = "0.3.0"
+EOF
+
+# Initialize each crate
+for crate in core capsules nucleus environment visualization simulation; do
+  cat > crates/$crate/Cargo.toml << EOF
+[package]
+name = "aiadn-$crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = { workspace = true }
+serde = { workspace = true }
+rayon = { workspace = true }
+once_cell = { workspace = true }
+tokio = { workspace = true }
+nalgebra = { workspace = true }
+statrs = { workspace = true }
+petgraph = { workspace = true }
+chrono = { workspace = true }
+indicatif = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+lazy_static = { workspace = true }
+crossbeam = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+plotters = { workspace = true }
+EOF
+  
+  mkdir -p crates/$crate/src
+  touch crates/$crate/src/lib.rs
+done
+```
+
+2. Project Architecture & Dependency Map
+
+Critical Rust Crates Selection:
+
+· Simulation Engine: simcore (discrete-event simulation framework)
+· Concurrency: tokio (async runtime for capsule actors)
+· Mathematics: nalgebra (linear algebra for belief states), statrs (statistical distributions)
+· Data Processing: polars (DataFrame implementation for metrics)
+· Visualization: plotters (pure Rust plotting library)
+· Graph: petgraph
+· Progress: indicatif
+· Error Handling: anyhow, thiserror
+· Concurrency Utils: crossbeam, dashmap, parking_lot
+· Logging: tracing, tracing-subscriber
+
+---
+
+Phase 1: Core Mathematical Foundation (Week 2-3)
+
+crates/core/src/lib.rs
+
+```rust
+pub mod inference;
+pub mod resonance;
+pub mod types;
+
+pub use inference::BeliefState;
+pub use resonance::{ResonanceEngine, PHI, NUM_CAPSULES};
+pub use types::*;
+```
+
+1. Active Inference Implementation (crates/core/src/inference.rs)
+
+```rust
+use nalgebra::{DMatrix, DVector, Dyn};
+use serde::{Deserialize, Serialize};
+use statrs::distribution::{ContinuousCDF, MultivariateNormal, Normal};
+use std::fmt;
+use lazy_static::lazy_static;
+
+/// Fixed observation noise precision
+const OBSERVATION_PRECISION: f64 = 1.0;
+
+lazy_static! {
+    static ref PRIOR_PRECISION: DMatrix<f64> = DMatrix::identity(1, 1) * 0.1;
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BeliefState {
+    pub mu: DVector<f64>,
+    pub lambda: DMatrix<f64>,
+    pub g: DVector<f64>,
+    pub dimension: usize,
+}
+
+impl fmt::Debug for BeliefState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "BeliefState(dim={}, mu_norm={:.3})", 
+               self.dimension, self.mu.norm())
+    }
+}
+
+impl BeliefState {
+    pub fn new(state_dim: usize, initial_mu: f64, initial_lambda: f64, goal: f64) -> Self {
+        Self {
+            mu: DVector::from_element(state_dim, initial_mu),
+            lambda: DMatrix::identity(state_dim, state_dim) * initial_lambda,
+            g: DVector::from_element(state_dim, goal),
+            dimension: state_dim,
+        }
+    }
+    
+    pub fn from_vectors(mu: DVector<f64>, lambda: DMatrix<f64>, g: DVector<f64>) -> Self {
+        let dimension = mu.len();
+        Self {
+            mu,
+            lambda,
+            g,
+            dimension,
+        }
+    }
+
+    pub fn observation_likelihood(&self, observation: &DVector<f64>) -> f64 {
+        if observation.len() != self.dimension {
+            return f64::NEG_INFINITY;
+        }
+        
+        let residual = observation - &self.mu;
+        let precision_matrix = DMatrix::identity(self.dimension, self.dimension) * OBSERVATION_PRECISION;
+        
+        // -log p(o|μ) = 0.5 * [(o-μ)^T Σ^{-1} (o-μ) + log|Σ| + n log(2π)]
+        let mahalanobis = (&residual.transpose() * &precision_matrix * &residual)[(0, 0)];
+        0.5 * (mahalanobis + (self.dimension as f64) * (2.0 * std::f64::consts::PI).ln())
+    }
+
+    pub fn kullback_leibler_divergence(&self, other: &BeliefState) -> f64 {
+        if self.dimension != other.dimension {
+            return f64::INFINITY;
+        }
+        
+        // Simple approximation for diagonal covariance
+        let mut kl = 0.0;
+        for i in 0..self.dimension {
+            let mu_diff = self.mu[i] - other.mu[i];
+            let var_ratio = other.lambda[(i, i)] / self.lambda[(i, i)];
+            kl += 0.5 * (var_ratio + mu_diff * mu_diff * other.lambda[(i, i)] - 1.0 - var_ratio.ln());
+        }
+        kl
+    }
+
+    pub fn free_energy(&self, observation: &DVector<f64>) -> f64 {
+        let accuracy = self.observation_likelihood(observation);
+        let complexity = self.complexity_term();
+        accuracy + complexity
+    }
+    
+    fn complexity_term(&self) -> f64 {
+        // KL from prior p(μ|g) = N(g, I)
+        let mut complexity = 0.0;
+        for i in 0..self.dimension {
+            let mu_diff = self.mu[i] - self.g[i];
+            complexity += 0.5 * (mu_diff * mu_diff + 1.0 - self.lambda[(i, i)].ln());
+        }
+        complexity
+    }
+
+    pub fn accuracy_gradient(&self, observation: &DVector<f64>) -> DVector<f64> {
+        let residual = &self.mu - observation;
+        DMatrix::identity(self.dimension, self.dimension) * OBSERVATION_PRECISION * residual
+    }
+
+    pub fn complexity_gradient(&self) -> DVector<f64> {
+        let mut gradient = DVector::zeros(self.dimension);
+        for i in 0..self.dimension {
+            gradient[i] = self.lambda[(i, i)] * (self.mu[i] - self.g[i]);
+        }
+        gradient
+    }
+
+    pub fn free_energy_gradient(&self, observation: &DVector<f64>) -> DVector<f64> {
+        self.accuracy_gradient(observation) + self.complexity_gradient()
+    }
+
+    pub fn update(&mut self, observation: &DVector<f64>, learning_rate: f64) {
+        if observation.len() != self.dimension {
+            return;
+        }
+        
+        let gradient = self.free_energy_gradient(observation);
+        
+        // Simple update for diagonal precision matrix
+        for i in 0..self.dimension {
+            if self.lambda[(i, i)] > 1e-10 {
+                self.mu[i] -= learning_rate * gradient[i] / self.lambda[(i, i)];
+            }
+        }
+    }
+    
+    pub fn predict(&self, steps: usize) -> DVector<f64> {
+        // Simple prediction: move toward goal
+        let mut prediction = self.mu.clone();
+        let step_size = 0.1;
+        for _ in 0..steps {
+            for i in 0..prediction.len() {
+                let diff = self.g[i] - prediction[i];
+                prediction[i] += step_size * diff;
+            }
+        }
+        prediction
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_belief_state_creation() {
+        let belief = BeliefState::new(3, 0.5, 1.0, 1.0);
+        assert_eq!(belief.dimension, 3);
+        assert_relative_eq!(belief.mu.norm_squared(), 0.75, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_free_energy_calculation() {
+        let belief = BeliefState::new(2, 0.0, 1.0, 0.0);
+        let observation = DVector::from_vec(vec![0.1, -0.1]);
+        let fe = belief.free_energy(&observation);
+        assert!(fe >= 0.0);
+    }
+
+    #[test]
+    fn test_belief_update() {
+        let mut belief = BeliefState::new(2, 0.0, 1.0, 1.0);
+        let observation = DVector::from_vec(vec![0.5, 0.5]);
+        let initial_mu = belief.mu.clone();
+        
+        belief.update(&observation, 0.1);
+        
+        // Should move toward observation and goal
+        assert!(belief.mu[0] != initial_mu[0]);
+    }
+}
+```
+
+2. Harmonic Resonance System (crates/core/src/resonance.rs)
+
+```rust
+use std::f64::consts::PI;
+use serde::{Deserialize, Serialize};
+
+pub const PHI: f64 = 1.618033988749895;
+pub const NUM_CAPSULES: usize = 108;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResonanceEngine {
+    pub base_frequency: f64,
+    pub perturbation_amplitude: f64,
+    pub phi_frequency: f64,
+    pub current_time: f64,
+    pub time_step: f64,
+}
+
+impl ResonanceEngine {
+    pub fn new(base_freq: f64, alpha: f64, dt: f64) -> Self {
+        Self {
+            base_frequency: base_freq,
+            perturbation_amplitude: alpha,
+            phi_frequency: base_freq * PHI,
+            current_time: 0.0,
+            time_step: dt,
+        }
+    }
+
+    pub fn tick(&mut self) {
+        self.current_time += self.time_step;
+    }
+
+    pub fn capsule_phase(&self, capsule_id: usize) -> f64 {
+        (2.0 * PI * capsule_id as f64) / (PHI * NUM_CAPSULES as f64)
+    }
+
+    pub fn global_wave(&self) -> f64 {
+        let base = (2.0 * PI * self.base_frequency * self.current_time).sin();
+        let perturbation = self.perturbation_amplitude * 
+                          (2.0 * PI * self.phi_frequency * self.current_time).sin();
+        base + perturbation
+    }
+
+    pub fn alignment(&self, capsule_id: usize) -> f64 {
+        let capsule_phase = self.capsule_phase(capsule_id);
+        let global_wave = self.global_wave();
+        let global_phase = global_wave.atan2(1.0);
+        (capsule_phase - global_phase).cos()
+    }
+    
+    pub fn get_phase_for_capsule(&self, capsule_id: usize) -> f64 {
+        let alignment = self.alignment(capsule_id);
+        let capsule_phase = self.capsule_phase(capsule_id);
+        capsule_phase + alignment * 0.1
+    }
+    
+    pub fn in_receptive_phase(&self, capsule_id: usize) -> bool {
+        self.alignment(capsule_id) > 0.3
+    }
+    
+    pub fn get_current_phase_state(&self) -> PhaseState {
+        let wave = self.global_wave();
+        if wave > 0.7 {
+            PhaseState::Convergent
+        } else if wave < -0.7 {
+            PhaseState::Divergent
+        } else {
+            PhaseState::Transition
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PhaseState {
+    Convergent,
+    Divergent,
+    Transition,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_resonance_engine() {
+        let mut engine = ResonanceEngine::new(1.0, 0.2, 0.1);
+        assert_eq!(engine.phi_frequency, PHI);
+        
+        let phase = engine.capsule_phase(0);
+        assert!(phase >= 0.0 && phase <= 2.0 * PI);
+        
+        engine.tick();
+        assert_eq!(engine.current_time, 0.1);
+        
+        let wave = engine.global_wave();
+        assert!(wave >= -1.2 && wave <= 1.2);
+    }
+    
+    #[test]
+    fn test_phase_alignment() {
+        let engine = ResonanceEngine::new(1.0, 0.1, 0.1);
+        let alignment = engine.alignment(0);
+        assert!(alignment >= -1.0 && alignment <= 1.0);
+    }
+}
+```
+
+crates/core/src/types.rs
+
+```rust
+use nalgebra::{DMatrix, DVector};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Observation {
+    pub data: DVector<f64>,
+    pub timestamp: usize,
+    pub source: ObservationSource,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ObservationSource {
+    Environment(usize),
+    Capsule(usize),
+    Nucleus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Action {
+    Wait,
+    Move(usize, usize),  // from, to
+    AllocateResource(f64),
+    Broadcast(Vec<u8>),
+    AdjustParameter(String, f64),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CapsuleMessage {
+    BeliefUpdate { capsule_id: usize, mu: DVector<f64> },
+    ResourceRequest { amount: f64, priority: f64 },
+    Alert { severity: f64, data: Vec<u8> },
+    PhaseSync { phase: f64 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NucleusCommand {
+    PhaseReset,
+    FrequencyAdjust(f64),
+    PerturbationSet(f64),
+    ResourceAllocation(HashMap<usize, f64>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    pub total_steps: usize,
+    pub dt: f64,
+    pub capsule_count: usize,
+    pub base_frequency: f64,
+    pub perturbation_alpha: f64,
+    pub learning_rate: f64,
+    pub salience_threshold: f64,
+    pub drone_count: usize,
+}
+```
+
+---
+
+Phase 2: Capsule System Implementation (Week 4-5)
+
+crates/capsules/src/lib.rs
+
+```rust
+pub mod capsule;
+pub mod pins;
+pub mod specialties;
+
+pub use capsule::Capsule;
+pub use pins::{PinConnection, PinNetwork};
+pub use specialties::{CapsuleSpecialty, SpecialtyType};
+```
+
+1. Capsule Architecture (crates/capsules/src/capsule.rs)
+
+```rust
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use nalgebra::DVector;
+use serde::{Deserialize, Serialize};
+
+use aiadn_core::inference::BeliefState;
+use aiadn_core::resonance::{ResonanceEngine, NUM_CAPSULES};
+use aiadn_core::types::{Observation, Action, CapsuleMessage, ObservationSource};
+
+use super::pins::{PinConnection, PinNetwork};
+use super::specialties::{CapsuleSpecialty, SpecialtyType};
+
+#[derive(Debug, Clone)]
+pub struct CapsuleConfig {
+    pub id: usize,
+    pub learning_rate: f64,
+    pub salience_threshold: f64,
+    pub initial_belief_state: BeliefState,
+    pub specialty: CapsuleSpecialty,
+}
+
+#[derive(Debug)]
+pub struct Capsule {
+    // Identity and State
+    pub id: usize,
+    pub belief: BeliefState,
+    pub phase_offset: f64,
+    
+    // Cognitive Parameters
+    pub learning_rate: f64,
+    pub salience_threshold: f64,
+    pub recent_salience: Vec<f64>,
+    
+    // Social Network (Pins)
+    pub incoming_pins: HashMap<usize, PinConnection>,
+    pub outgoing_pins: HashMap<usize, PinConnection>,
+    
+    // Communication Channels
+    pub mailbox: Arc<Mutex<mpsc::Receiver<CapsuleMessage>>>,
+    pub broadcast_tx: mpsc::Sender<CapsuleMessage>,
+    
+    // Specialization
+    pub specialty: CapsuleSpecialty,
+    
+    // History
+    pub action_history: Vec<Action>,
+    pub message_history: Vec<CapsuleMessage>,
+    pub step_counter: usize,
+}
+
+impl Capsule {
+    pub fn new(config: CapsuleConfig, broadcast_tx: mpsc::Sender<CapsuleMessage>) -> (Self, mpsc::Sender<CapsuleMessage>) {
+        let (message_tx, message_rx) = mpsc::channel(100);
+        
+        let capsule = Self {
+            id: config.id,
+            belief: config.initial_belief_state,
+            phase_offset: 0.0,
+            learning_rate: config.learning_rate,
+            salience_threshold: config.salience_threshold,
+            recent_salience: Vec::new(),
+            incoming_pins: HashMap::new(),
+            outgoing_pins: HashMap::new(),
+            mailbox: Arc::new(Mutex::new(message_rx)),
+            broadcast_tx,
+            specialty: config.specialty,
+            action_history: Vec::new(),
+            message_history: Vec::new(),
+            step_counter: 0,
+        };
+        
+        (capsule, message_tx)
+    }
+    
+    pub async fn cognitive_cycle(
+        &mut self, 
+        observation: &Observation,
+        resonance: &ResonanceEngine,
+        network: &mut PinNetwork,
+    ) -> Action {
+        self.step_counter += 1;
+        
+        // 1. PHASE-GATED ACTIVATION
+        let alignment = resonance.alignment(self.id);
+        if !resonance.in_receptive_phase(self.id) {
+            return Action::Wait;
+        }
+        
+        // 2. SPECIALTY-BASED OBSERVATION PROCESSING
+        let processed_obs = self.specialty.process_observation(&observation.data);
+        let specialty_observation = Observation {
+            data: processed_obs,
+            timestamp: observation.timestamp,
+            source: ObservationSource::Capsule(self.id),
+        };
+        
+        // 3. BELIEF UPDATE (Active Inference)
+        let mod_learning_rate = self.learning_rate * alignment;
+        self.belief.update(&specialty_observation.data, mod_learning_rate);
+        
+        // 4. PROCESS INCOMING MESSAGES
+        self.process_messages().await;
+        
+        // 5. COMPUTE SALIENCE
+        let salience = self.compute_salience(&specialty_observation.data);
+        self.recent_salience.push(salience);
+        if self.recent_salience.len() > 10 {
+            self.recent_salience.remove(0);
+        }
+        
+        // 6. PLAN ACTION (Expected Free Energy Minimization)
+        let action = self.plan_action(&specialty_observation);
+        
+        // 7. UPDATE PIN CONNECTIONS
+        self.update_pin_weights(network, salience);
+        
+        // 8. BROADCAST IF SALIENT
+        if salience > self.salience_threshold {
+            self.broadcast_state().await;
+        }
+        
+        // 9. RECORD ACTION
+        self.action_history.push(action.clone());
+        
+        action
+    }
+    
+    async fn process_messages(&mut self) {
+        let mut mailbox = self.mailbox.lock().await;
+        while let Ok(message) = mailbox.try_recv() {
+            self.message_history.push(message.clone());
+            
+            // Process different message types
+            match message {
+                CapsuleMessage::BeliefUpdate { capsule_id, mu } => {
+                    self.process_belief_update(capsule_id, mu);
+                }
+                CapsuleMessage::ResourceRequest { amount, priority } => {
+                    // Handle resource request
+                }
+                CapsuleMessage::Alert { severity, data } => {
+                    // Handle alert
+                }
+                CapsuleMessage::PhaseSync { phase } => {
+                    self.phase_offset = phase;
+                }
+            }
+        }
+    }
+    
+    fn process_belief_update(&mut self, source_id: usize, mu: DVector<f64>) {
+        // Update belief based on other capsule's belief
+        let weight = self.get_pin_weight(source_id);
+        if weight > 0.1 {
+            // Blend beliefs
+            for i in 0..self.belief.dimension {
+                if i < mu.len() {
+                    self.belief.mu[i] = self.belief.mu[i] * (1.0 - weight) + mu[i] * weight;
+                }
+            }
+        }
+    }
+    
+    fn plan_action(&self, observation: &Observation) -> Action {
+        // Simple action planning based on belief and specialty
+        let predicted_state = self.belief.predict(1);
+        
+        match self.specialty.specialty_type {
+            SpecialtyType::TrafficPrediction => {
+                // Predict congestion and suggest reroute
+                let avg_congestion: f64 = predicted_state.iter().sum::<f64>() / predicted_state.len() as f64;
+                if avg_congestion > 0.7 {
+                    Action::Broadcast(vec![1, self.id as u8]) // Alert code
+                } else {
+                    Action::Wait
+                }
+            }
+            SpecialtyType::RouteOptimization => {
+                // Suggest optimized route
+                Action::AdjustParameter("route_efficiency".to_string(), 0.8)
+            }
+            SpecialtyType::EnergyManagement => {
+                // Allocate energy resources
+                Action::AllocateResource(0.5)
+            }
+            SpecialtyType::CrisisResponse => {
+                // Crisis response action
+                let crisis_level: f64 = observation.data.iter().sum::<f64>() / observation.data.len() as f64;
+                if crisis_level > 0.8 {
+                    Action::Broadcast(vec![2, self.id as u8]) // Crisis alert
+                } else {
+                    Action::Wait
+                }
+            }
+            _ => Action::Wait,
+        }
+    }
+    
+    fn compute_salience(&self, observation: &DVector<f64>) -> f64 {
+        // Compute how surprising/important this observation is
+        let free_energy = self.belief.free_energy(observation);
+        let base_salience = (-free_energy).exp(); // Convert to [0,1] range
+        
+        // Adjust by specialty expertise
+        base_salience * self.specialty.expertise_level
+    }
+    
+    fn update_pin_weights(&mut self, network: &mut PinNetwork, salience: f64) {
+        // Update outgoing connections based on recent interactions
+        for (target_id, connection) in &mut self.outgoing_pins {
+            connection.update(salience, self.learning_rate, self.step_counter);
+            network.update_connection(self.id, *target_id, salience, self.learning_rate, self.step_counter);
+        }
+    }
+    
+    async fn broadcast_state(&self) {
+        let message = CapsuleMessage::BeliefUpdate {
+            capsule_id: self.id,
+            mu: self.belief.mu.clone(),
+        };
+        
+        let _ = self.broadcast_tx.send(message).await;
+    }
+    
+    fn get_pin_weight(&self, source_id: usize) -> f64 {
+        self.incoming_pins
+            .get(&source_id)
+            .map(|conn| conn.weight)
+            .unwrap_or(0.0)
+    }
+    
+    pub fn add_outgoing_pin(&mut self, target_id: usize, initial_weight: f64) {
+        let connection = PinConnection::new(target_id, initial_weight, 0.05);
+        self.outgoing_pins.insert(target_id, connection);
+    }
+    
+    pub fn add_incoming_pin(&mut self, source_id: usize, initial_weight: f64) {
+        let connection = PinConnection::new(source_id, initial_weight, 0.05);
+        self.incoming_pins.insert(source_id, connection);
+    }
+    
+    pub fn get_recent_salience_avg(&self) -> f64 {
+        if self.recent_salience.is_empty() {
+            return 0.0;
+        }
+        self.recent_salience.iter().sum::<f64>() / self.recent_salience.len() as f64
+    }
+    
+    pub fn prune_weak_pins(&mut self, threshold: f64) {
+        self.outgoing_pins.retain(|_, conn| !conn.should_prune(threshold));
+        self.incoming_pins.retain(|_, conn| !conn.should_prune(threshold));
+    }
+}
+
+// Helper function to create capsules with specialties
+pub fn create_capsules(
+    count: usize, 
+    broadcast_tx: mpsc::Sender<CapsuleMessage>,
+) -> (Vec<Capsule>, Vec<mpsc::Sender<CapsuleMessage>>) {
+    let specialties = super::specialties::create_specialty_distribution(count);
+    
+    let mut capsules = Vec::with_capacity(count);
+    let mut message_txs = Vec::with_capacity(count);
+    
+    for i in 0..count {
+        let config = CapsuleConfig {
+            id: i,
+            learning_rate: 0.01 + (i % 5) as f64 * 0.002,
+            salience_threshold: 0.3 + (i % 3) as f64 * 0.05,
+            initial_belief_state: BeliefState::new(3, 0.5, 1.0, 1.0),
+            specialty: specialties[i].clone(),
+        };
+        
+        let (capsule, message_tx) = Capsule::new(config, broadcast_tx.clone());
+        capsules.push(capsule);
+        message_txs.push(message_tx);
+    }
+    
+    (capsules, message_txs)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapsuleMetrics {
+    pub free_energy: f64,
+    pub coherence_contribution: f64,
+    pub task_success: bool,
+}
+```
+
+2. Pin Connection System (crates/capsules/src/pins.rs)
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use aiadn_core::types::CapsuleMessage;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PinConnection {
+    pub target_id: usize,
+    pub weight: f64,           
+    pub decay_rate: f64,       
+    pub last_updated: usize,   
+    pub bandwidth: f64,        
+    pub message_history: Vec<(usize, f64)>, 
+}
+
+impl PinConnection {
+    pub fn new(target_id: usize, initial_weight: f64, decay_rate: f64) -> Self {
+        Self {
+            target_id,
+            weight: initial_weight,
+            decay_rate,
+            last_updated: 0,
+            bandwidth: 1.0,
+            message_history: Vec::new(),
+        }
+    }
+    
+    pub fn update(&mut self, salience: f64, learning_rate: f64, current_step: usize) {
+        let steps_since_update = (current_step - self.last_updated) as f64;
+        let time_decay = self.decay_rate * steps_since_update;
+        
+        // Hebbian update with decay
+        self.weight = (self.weight * (1.0 - time_decay) + learning_rate * salience)
+            .clamp(0.0, 1.0);
+        
+        self.last_updated = current_step;
+        self.message_history.push((current_step, salience));
+        
+        // Keep only recent history
+        if self.message_history.len() > 100 {
+            self.message_history.remove(0);
+        }
+    }
+    
+    pub fn should_prune(&self, threshold: f64) -> bool {
+        self.weight < threshold
+    }
+    
+    pub fn get_recent_salience(&self, window: usize) -> f64 {
+        if self.message_history.is_empty() {
+            return 0.0;
+        }
+        
+        let recent: Vec<f64> = self.message_history
+            .iter()
+            .rev()
+            .take(window)
+            .map(|(_, s)| *s)
+            .collect();
+        
+        recent.iter().sum::<f64>() / recent.len() as f64
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PinNetwork {
+    pub connections: HashMap<usize, HashMap<usize, PinConnection>>,
+    pub global_threshold: f64,
+}
+
+impl PinNetwork {
+    pub fn new() -> Self {
+        Self {
+            connections: HashMap::new(),
+            global_threshold: 0.1,
+        }
+    }
+    
+    pub fn add_connection(&mut self, from: usize, to: usize, initial_weight: f64) {
+        let connection = PinConnection::new(to, initial_weight, 0.05);
+        self.connections
+            .entry(from)
+            .or_insert_with(HashMap::new)
+            .insert(to, connection);
+    }
+    
+    pub fn update_connection(&mut self, from: usize, to: usize, salience: f64, learning_rate: f64, step: usize) {
+        if let Some(from_connections) = self.connections.get_mut(&from) {
+            if let Some(connection) = from_connections.get_mut(&to) {
+                connection.update(salience, learning_rate, step);
+            }
+        }
+    }
+    
+    pub fn prune_weak_connections(&mut self) {
+        let threshold = self.global_threshold;
+        
+        for connections in self.connections.values_mut() {
+            connections.retain(|_, conn| !conn.should_prune(threshold));
+        }
+        
+        // Remove empty entries
+        self.connections.retain(|_, conns| !conns.is_empty());
+    }
+    
+    pub fn get_connection_weight(&self, from: usize, to: usize) -> Option<f64> {
+        self.connections
+            .get(&from)
+            .and_then(|conns| conns.get(&to))
+            .map(|conn| conn.weight)
+    }
+    
+    pub fn get_outgoing_connections(&self, capsule_id: usize) -> Vec<PinConnection> {
+        self.connections
+            .get(&capsule_id)
+            .map(|conns| conns.values().cloned().collect())
+            .unwrap_or_default()
+    }
+    
+    pub fn get_incoming_connections(&self, capsule_id: usize) -> Vec<PinConnection> {
+        let mut incoming = Vec::new();
+        
+        for (from, connections) in &self.connections {
+            if let Some(conn) = connections.get(&capsule_id) {
+                let mut conn_clone = conn.clone();
+                conn_clone.target_id = *from; // Store source as target for incoming view
+                incoming.push(conn_clone);
+            }
+        }
+        
+        incoming
+    }
+}
+```
+
+crates/capsules/src/specialties.rs
+
+```rust
+use serde::{Deserialize, Serialize};
+use nalgebra::DVector;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SpecialtyType {
+    TrafficPrediction,
+    RouteOptimization,
+    EnergyManagement,
+    CrisisResponse,
+    LogisticsCoordination,
+    DemandForecasting,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CapsuleSpecialty {
+    pub specialty_type: SpecialtyType,
+    pub expertise_level: f64,
+    pub domain_parameters: Vec<f64>,
+    pub performance_history: Vec<f64>,
+}
+
+impl CapsuleSpecialty {
+    pub fn new(specialty_type: SpecialtyType, expertise: f64) -> Self {
+        let domain_parameters = match specialty_type {
+            SpecialtyType::TrafficPrediction => vec![0.5, 0.3, 0.2], // weights for different factors
+            SpecialtyType::RouteOptimization => vec![0.7, 0.2, 0.1],
+            SpecialtyType::EnergyManagement => vec![0.4, 0.4, 0.2],
+            SpecialtyType::CrisisResponse => vec![0.8, 0.1, 0.1],
+            SpecialtyType::LogisticsCoordination => vec![0.3, 0.4, 0.3],
+            SpecialtyType::DemandForecasting => vec![0.6, 0.3, 0.1],
+        };
+        
+        Self {
+            specialty_type,
+            expertise_level: expertise,
+            domain_parameters,
+            performance_history: Vec::new(),
+        }
+    }
+    
+    pub fn process_observation(&self, observation: &DVector<f64>) -> DVector<f64> {
+        match self.specialty_type {
+            SpecialtyType::TrafficPrediction => self.predict_traffic(observation),
+            SpecialtyType::RouteOptimization => self.optimize_route(observation),
+            SpecialtyType::EnergyManagement => self.manage_energy(observation),
+            SpecialtyType::CrisisResponse => self.assess_crisis(observation),
+            SpecialtyType::LogisticsCoordination => self.coordinate_logistics(observation),
+            SpecialtyType::DemandForecasting => self.forecast_demand(observation),
+        }
+    }
+    
+    fn predict_traffic(&self, observation: &DVector<f64>) -> DVector<f64> {
+        // Simple prediction model
+        let mut prediction = observation.clone();
+        for i in 0..prediction.len() {
+            prediction[i] = prediction[i] * self.domain_parameters[0] 
+                + self.expertise_level * self.domain_parameters[1];
+        }
+        prediction
+    }
+    
+    fn optimize_route(&self, observation: &DVector<f64>) -> DVector<f64> {
+        // Simple optimization: reduce values by expertise
+        observation.map(|x| x * (1.0 - self.expertise_level * 0.1))
+    }
+    
+    fn manage_energy(&self, observation: &DVector<f64>) -> DVector<f64> {
+        observation.map(|x| x * (0.5 + self.expertise_level * 0.5))
+    }
+    
+    fn assess_crisis(&self, observation: &DVector<f64>) -> DVector<f64> {
+        // Amplify signals for crisis detection
+        observation.map(|x| x * (1.0 + self.expertise_level))
+    }
+    
+    fn coordinate_logistics(&self, observation: &DVector<f64>) -> DVector<f64> {
+        // Balance signals
+        let avg: f64 = observation.iter().sum::<f64>() / observation.len() as f64;
+        DVector::from_element(observation.len(), avg)
+    }
+    
+    fn forecast_demand(&self, observation: &DVector<f64>) -> DVector<f64> {
+        // Trend extrapolation
+        let mut forecast = observation.clone();
+        let trend = self.expertise_level * 0.2;
+        for i in 0..forecast.len() {
+            forecast[i] = forecast[i] * (1.0 + trend);
+        }
+        forecast
+    }
+    
+    pub fn update_performance(&mut self, success: bool) {
+        let performance = if success { 1.0 } else { 0.0 };
+        self.performance_history.push(performance);
+        
+        // Update expertise based on recent performance
+        if self.performance_history.len() > 10 {
+            let recent_avg: f64 = self.performance_history
+                .iter()
+                .rev()
+                .take(10)
+                .sum::<f64>() / 10.0;
+            self.expertise_level = (self.expertise_level * 0.9 + recent_avg * 0.1).clamp(0.0, 1.0);
+        }
+    }
+}
+
+pub fn create_specialty_distribution(count: usize) -> Vec<CapsuleSpecialty> {
+    let mut specialties = Vec::with_capacity(count);
+    
+    let specialty_types = [
+        (SpecialtyType::TrafficPrediction, 36),
+        (SpecialtyType::RouteOptimization, 36),
+        (SpecialtyType::EnergyManagement, 18),
+        (SpecialtyType::CrisisResponse, 18),
+    ];
+    
+    let mut type_counter = 0;
+    let mut type_index = 0;
+    
+    for i in 0..count {
+        if type_counter >= specialty_types[type_index].1 {
+            type_index = (type_index + 1) % specialty_types.len();
+            type_counter = 0;
+        }
+        
+        let specialty_type = specialty_types[type_index].0.clone();
+        let expertise = 0.5 + (i as f64 % 10.0) / 20.0; // Varying expertise levels
+        
+        specialties.push(CapsuleSpecialty::new(specialty_type, expertise));
+        type_counter += 1;
+    }
+    
+    specialties
+}
+```
+
+---
+
+Phase 3: Nucleus & Global Coordination (Week 6-7)
+
+crates/nucleus/src/lib.rs
+
+```rust
+pub mod controller;
+pub mod metrics;
+
+pub use controller::Nucleus;
+pub use metrics::{MAEBEMetrics, StagnationDetector};
+```
+
+1. Nucleus Controller (crates/nucleus/src/controller.rs)
+
+```rust
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex, RwLock};
+use nalgebra::DMatrix;
+use serde::{Deserialize, Serialize};
+use plotters::prelude::*;
+
+use aiadn_core::resonance::{ResonanceEngine, PhaseState};
+use aiadn_core::types::{NucleusCommand, CapsuleMessage, CapsuleMetrics};
+
+use super::metrics::{MAEBEMetrics, StagnationDetector};
+
+#[derive(Debug, Clone)]
+pub struct NucleusConfig {
+    pub perturbation_alpha: f64,
+    pub base_frequency: f64,
+    pub resource_radius: f64,
+    pub min_alpha: f64,
+    pub max_alpha: f64,
+}
+
+impl Default for NucleusConfig {
+    fn default() -> Self {
+        Self {
+            perturbation_alpha: 0.2,
+            base_frequency: 1.0,
+            resource_radius: 2.5,
+            min_alpha: 0.1,
+            max_alpha: 0.9,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Nucleus {
+    // Control Parameters
+    pub perturbation_alpha: f64,
+    pub base_frequency: f64,
+    pub resource_radius: f64,
+    pub min_alpha: f64,
+    pub max_alpha: f64,
+    
+    // Monitoring State
+    pub maebe_metrics: MAEBEMetrics,
+    pub stagnation_detector: StagnationDetector,
+    pub history_buffer: VecDeque<SystemState>,
+    
+    // Resource Allocation Field
+    pub resource_field: DMatrix<f64>,
+    
+    // Communication
+    pub command_tx: mpsc::Sender<NucleusCommand>,
+    pub metrics_rx: mpsc::Receiver<CapsuleMetrics>,
+    
+    // Resonance Engine
+    pub resonance: ResonanceEngine,
+    
+    // State
+    pub current_step: usize,
+    pub phase_state: PhaseState,
+    pub crisis_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemState {
+    pub step: usize,
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub perturbation_alpha: f64,
+    pub resource_allocation: f64,
+}
+
+impl Nucleus {
+    pub fn new(
+        config: NucleusConfig,
+        command_tx: mpsc::Sender<NucleusCommand>,
+        metrics_rx: mpsc::Receiver<CapsuleMetrics>,
+    ) -> Self {
+        let resonance = ResonanceEngine::new(config.base_frequency, config.perturbation_alpha, 0.1);
+        
+        // Initialize resource field for 108 capsules
+        let resource_field = DMatrix::from_element(12, 9, 1.0); // 12x9 grid approximation
+        
+        Self {
+            perturbation_alpha: config.perturbation_alpha,
+            base_frequency: config.base_frequency,
+            resource_radius: config.resource_radius,
+            min_alpha: config.min_alpha,
+            max_alpha: config.max_alpha,
+            maebe_metrics: MAEBEMetrics::new(),
+            stagnation_detector: StagnationDetector::new(50, 0.85),
+            history_buffer: VecDeque::with_capacity(1000),
+            resource_field,
+            command_tx,
+            metrics_rx,
+            resonance,
+            current_step: 0,
+            phase_state: PhaseState::Transition,
+            crisis_mode: false,
+        }
+    }
+    
+    pub async fn control_cycle(&mut self, capsules: &[CapsuleMetrics]) {
+        self.current_step += 1;
+        self.resonance.tick();
+        self.phase_state = self.resonance.get_current_phase_state();
+        
+        // 1. COLLECT METRICS
+        let metrics = self.collect_metrics(capsules).await;
+        
+        // 2. UPDATE MAEBE METRICS
+        self.maebe_metrics.update(&metrics, self.current_step);
+        
+        // 3. CHECK FOR STAGNATION
+        let is_stagnant = self.stagnation_detector.evaluate(
+            self.maebe_metrics.coherence,
+            self.maebe_metrics.global_free_energy_gradient,
+            self.maebe_metrics.task_success_rate,
+        );
+        
+        // 4. ADAPTIVE RESPONSE
+        if is_stagnant {
+            self.trigger_divergent_pulse().await;
+        } else if self.crisis_mode || self.maebe_metrics.in_crisis() {
+            self.trigger_crisis_response().await;
+        } else {
+            self.maintain_convergent_flow().await;
+        }
+        
+        // 5. UPDATE RESOURCE FIELD
+        self.update_resource_field();
+        
+        // 6. BROADCAST GLOBAL STATE
+        self.broadcast_phase().await;
+        
+        // 7. RECORD STATE
+        self.record_state();
+    }
+    
+    async fn collect_metrics(&mut self, capsules: &[CapsuleMetrics]) -> NucleusMetrics {
+        let mut metrics = NucleusMetrics::default();
+        
+        for capsule_metrics in capsules {
+            metrics.total_free_energy += capsule_metrics.free_energy;
+            metrics.coherence_sum += capsule_metrics.coherence_contribution;
+            metrics.task_successes += if capsule_metrics.task_success { 1 } else { 0 };
+        }
+        
+        metrics.coherence = metrics.coherence_sum / capsules.len() as f64;
+        metrics.global_free_energy = metrics.total_free_energy / capsules.len() as f64;
+        metrics.task_success_rate = metrics.task_successes as f64 / capsules.len() as f64;
+        
+        metrics
+    }
+    
+    async fn trigger_divergent_pulse(&mut self) {
+        println!("NUCLEUS[{}]: Triggering divergent pulse (Γ = {:.2})", 
+                self.current_step,
+                self.stagnation_detector.current_gamma);
+        
+        // Ramp up perturbation
+        self.perturbation_alpha = (self.perturbation_alpha * 1.5).min(self.max_alpha);
+        self.resonance.perturbation_amplitude = self.perturbation_alpha;
+        
+        // Increase frequency for rapid exploration
+        self.base_frequency *= 1.2;
+        self.resonance.base_frequency = self.base_frequency;
+        
+        // Broaden resource allocation
+        self.resource_radius *= 1.5;
+        
+        // Send reset signal to capsules
+        let _ = self.command_tx.send(NucleusCommand::PhaseReset).await;
+    }
+    
+    async fn trigger_crisis_response(&mut self) {
+        println!("NUCLEUS[{}]: Crisis response activated", self.current_step);
+        self.crisis_mode = true;
+        
+        // Increase frequency and reduce perturbation for focused response
+        self.base_frequency *= 1.5;
+        self.perturbation_alpha = self.min_alpha;
+        self.resonance.base_frequency = self.base_frequency;
+        self.resonance.perturbation_amplitude = self.perturbation_alpha;
+        
+        // Allocate emergency resources
+        let allocation: HashMap<usize, f64> = (0..108)
+            .map(|i| (i, if i < 36 { 2.0 } else { 1.0 })) // Priority to first 36 capsules
+            .collect();
+        
+        let _ = self.command_tx.send(NucleusCommand::ResourceAllocation(allocation)).await;
+    }
+    
+    async fn maintain_convergent_flow(&mut self) {
+        // Gradually reduce perturbation if too high
+        if self.perturbation_alpha > 0.3 {
+            self.perturbation_alpha *= 0.95;
+            self.resonance.perturbation_amplitude = self.perturbation_alpha;
+        }
+        
+        // Reset crisis mode if active
+        if self.crisis_mode && self.maebe_metrics.coherence > 0.8 {
+            self.crisis_mode = false;
+        }
+    }
+    
+    fn update_resource_field(&mut self) {
+        // Simple resource field update based on capsule activity
+        for i in 0..self.resource_field.nrows() {
+            for j in 0..self.resource_field.ncols() {
+                let capsule_id = i * self.resource_field.ncols() + j;
+                if capsule_id < 108 {
+                    // Resource decays over time but can be replenished by nucleus
+                    self.resource_field[(i, j)] = (self.resource_field[(i, j)] * 0.99)
+                        .max(0.1)
+                        .min(3.0);
+                }
+            }
+        }
+    }
+    
+    async fn broadcast_phase(&mut self) {
+        let wave = self.resonance.global_wave();
+        let command = if wave > 0.0 {
+            NucleusCommand::FrequencyAdjust(1.1)
+        } else {
+            NucleusCommand::FrequencyAdjust(0.9)
+        };
+        
+        let _ = self.command_tx.send(command).await;
+    }
+    
+    fn record_state(&mut self) {
+        let state = SystemState {
+            step: self.current_step,
+            coherence: self.maebe_metrics.coherence,
+            global_free_energy: self.maebe_metrics.global_free_energy,
+            perturbation_alpha: self.perturbation_alpha,
+            resource_allocation: self.resource_field.sum() / (self.resource_field.nrows() * self.resource_field.ncols()) as f64,
+        };
+        
+        self.history_buffer.push_back(state);
+        if self.history_buffer.len() > 1000 {
+            self.history_buffer.pop_front();
+        }
+    }
+    
+    pub fn get_state_history(&self) -> Vec<SystemState> {
+        self.history_buffer.iter().cloned().collect()
+    }
+    
+    pub fn create_maebe_plot(&self, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let root = BitMapBackend::new(filename, (800, 600)).into_drawing_area();
+        root.fill(&WHITE)?;
+        
+        let mut chart = ChartBuilder::on(&root)
+            .caption("MAEBE Metrics Over Time", ("sans-serif", 30))
+            .margin(10)
+            .x_label_area_size(30)
+            .y_label_area_size(30)
+            .build_cartesian_2d(0..self.current_step, 0.0..1.0)?;
+            
+        chart.configure_mesh().draw()?;
+        
+        // Plot coherence
+        let coherence_points: Vec<(usize, f64)> = self.maebe_metrics.history
+            .iter()
+            .map(|snap| (snap.step, snap.coherence))
+            .collect();
+        
+        chart.draw_series(LineSeries::new(
+            coherence_points,
+            &RED,
+        ))?.label("Coherence")
+           .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &RED));
+        
+        // Plot perturbation alpha
+        let alpha_points: Vec<(usize, f64)> = self.history_buffer
+            .iter()
+            .map(|state| (state.step, state.perturbation_alpha))
+            .collect();
+        
+        chart.draw_series(LineSeries::new(
+            alpha_points,
+            &BLUE,
+        ))?.label("Perturbation α")
+           .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
+        
+        chart.configure_series_labels()
+            .background_style(&WHITE.mix(0.8))
+            .border_style(&BLACK)
+            .draw()?;
+        
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct NucleusMetrics {
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub task_success_rate: f64,
+    pub coherence_sum: f64,
+    pub total_free_energy: f64,
+    pub task_successes: usize,
+}
+```
+
+2. MAEBE Metrics System (crates/nucleus/src/metrics.rs)
+
+```rust
+use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+use nalgebra::DMatrix;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MAEBEMetrics {
+    // Core Metrics
+    pub coherence: f64,           
+    pub goal_synergy: f64,        
+    pub dynamic_entropy: f64,     
+    pub global_free_energy: f64,  
+    pub global_free_energy_gradient: f64,
+    pub task_success_rate: f64,
+    
+    // Derived Metrics
+    pub structural_plasticity: f64,  
+    pub anticipatory_coherence: f64, 
+    pub efficiency_ratio: f64,       
+    // Time Series
+    pub history: Vec<MetricSnapshot>,
+    
+    // Internal State
+    prev_free_energy: f64,
+    prev_adjacency: Option<DMatrix<f64>>,
+    coherence_history: VecDeque<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricSnapshot {
+    pub step: usize,
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub dynamic_entropy: f64,
+    pub structural_plasticity: f64,
+}
+
+impl Default for MAEBEMetrics {
+    fn default() -> Self {
+        Self {
+            coherence: 1.0,
+            goal_synergy: 0.0,
+            dynamic_entropy: 0.0,
+            global_free_energy: 0.0,
+            global_free_energy_gradient: 0.0,
+            task_success_rate: 0.0,
+            structural_plasticity: 0.0,
+            anticipatory_coherence: 0.0,
+            efficiency_ratio: 1.0,
+            history: Vec::new(),
+            prev_free_energy: 0.0,
+            prev_adjacency: None,
+            coherence_history: VecDeque::with_capacity(100),
+        }
+    }
+}
+
+impl MAEBEMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn update(&mut self, metrics: &NucleusMetrics, step: usize) {
+        // Update core metrics
+        self.coherence = metrics.coherence;
+        self.global_free_energy = metrics.global_free_energy;
+        self.task_success_rate = metrics.task_success_rate;
+        
+        // Calculate gradient
+        self.global_free_energy_gradient = self.global_free_energy - self.prev_free_energy;
+        self.prev_free_energy = self.global_free_energy;
+        
+        // Update history
+        self.coherence_history.push_back(self.coherence);
+        if self.coherence_history.len() > 100 {
+            self.coherence_history.pop_front();
+        }
+        
+        // Calculate anticipatory coherence (correlation with future success)
+        if self.coherence_history.len() > 10 {
+            self.anticipatory_coherence = self.calculate_anticipatory_coherence();
+        }
+        
+        // Record snapshot
+        let snapshot = MetricSnapshot {
+            step,
+            coherence: self.coherence,
+            global_free_energy: self.global_free_energy,
+            dynamic_entropy: self.dynamic_entropy,
+            structural_plasticity: self.structural_plasticity,
+        };
+        self.history.push(snapshot);
+        
+        // Keep history manageable
+        if self.history.len() > 1000 {
+            self.history.remove(0);
+        }
+    }
+    
+    pub fn calculate_coherence_from_capsules(capsules: &[CapsuleState]) -> f64 {
+        if capsules.len() < 2 {
+            return 1.0;
+        }
+        
+        let mut total_similarity = 0.0;
+        let mut count = 0;
+        
+        for i in 0..capsules.len() {
+            for j in (i + 1)..capsules.len() {
+                if let Some(weight) = capsules[i].get_connection_weight(j) {
+                    if weight > 0.1 {
+                        let similarity = capsules[i].belief_similarity(&capsules[j]);
+                        total_similarity += similarity * weight;
+                        count += 1;
+                    }
+                }
+            }
+        }
+        
+        if count > 0 {
+            total_similarity / count as f64
+        } else {
+            0.5
+        }
+    }
+    
+    pub fn calculate_dynamic_entropy(adjacency: &DMatrix<f64>) -> f64 {
+        if adjacency.is_empty() {
+            return 0.0;
+        }
+        
+        // Normalize to get probability distribution
+        let total: f64 = adjacency.iter().sum();
+        if total == 0.0 {
+            return 0.0;
+        }
+        
+        let mut entropy = 0.0;
+        for &value in adjacency.iter() {
+            if value > 0.0 {
+                let p = value / total;
+                entropy -= p * p.log2();
+            }
+        }
+        
+        entropy
+    }
+    
+    fn calculate_anticipatory_coherence(&self) -> f64 {
+        if self.coherence_history.len() < 10 {
+            return 0.0;
+        }
+        
+        // Simple correlation of coherence with future task success
+        let recent_coherence: Vec<f64> = self.coherence_history.iter().take(5).cloned().collect();
+        let avg_coherence: f64 = recent_coherence.iter().sum::<f64>() / recent_coherence.len() as f64;
+        
+        // Higher coherence should predict better future performance
+        avg_coherence * 0.8
+    }
+    
+    pub fn in_crisis(&self) -> bool {
+        // Crisis detection logic
+        self.coherence < 0.3 || self.task_success_rate < 0.2
+    }
+    
+    pub fn get_recent_trend(&self, window: usize) -> f64 {
+        if self.history.len() < window {
+            return 0.0;
+        }
+        
+        let recent: Vec<&MetricSnapshot> = self.history.iter().rev().take(window).collect();
+        let first = recent.first().unwrap().coherence;
+        let last = recent.last().unwrap().coherence;
+        
+        last - first
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StagnationDetector {
+    pub window_size: usize,
+    pub gamma_threshold: f64,
+    pub max_stagnation_steps: usize,
+    pub current_gamma: f64,
+    stagnation_counter: usize,
+    coherence_buffer: VecDeque<f64>,
+    free_energy_buffer: VecDeque<f64>,
+}
+
+impl StagnationDetector {
+    pub fn new(window_size: usize, gamma_threshold: f64) -> Self {
+        Self {
+            window_size,
+            gamma_threshold,
+            max_stagnation_steps: 20,
+            current_gamma: 0.0,
+            stagnation_counter: 0,
+            coherence_buffer: VecDeque::with_capacity(window_size),
+            free_energy_buffer: VecDeque::with_capacity(window_size),
+        }
+    }
+    
+    pub fn evaluate(&mut self, coherence: f64, free_energy_gradient: f64, task_success: f64) -> bool {
+        // Update buffers
+        self.coherence_buffer.push_back(coherence);
+        self.free_energy_buffer.push_back(free_energy_gradient.abs());
+        
+        if self.coherence_buffer.len() > self.window_size {
+            self.coherence_buffer.pop_front();
+            self.free_energy_buffer.pop_front();
+        }
+        
+        // Calculate stagnation gamma: Γ = C_Ψ / |∇F_global|
+        if free_energy_gradient.abs() > 1e-10 {
+            self.current_gamma = coherence / free_energy_gradient.abs();
+        } else {
+            self.current_gamma = if coherence > 0.0 { 100.0 } else { 0.0 };
+        }
+        
+        // Check for stagnation
+        let is_stagnant = self.current_gamma > self.gamma_threshold && task_success < 0.5;
+        
+        if is_stagnant {
+            self.stagnation_counter += 1;
+        } else {
+            self.stagnation_counter = 0;
+        }
+        
+        // Only trigger if stagnation persists
+        is_stagnant && self.stagnation_counter >= 3
+    }
+    
+    pub fn is_stagnant(&self) -> bool {
+        self.stagnation_counter >= self.max_stagnation_steps
+    }
+    
+    pub fn reset(&mut self) {
+        self.stagnation_counter = 0;
+        self.coherence_buffer.clear();
+        self.free_energy_buffer.clear();
+    }
+}
+
+// Types needed for metrics calculation
+#[derive(Debug, Clone)]
+pub struct CapsuleState {
+    pub id: usize,
+    pub belief: aiadn_core::inference::BeliefState,
+    pub outgoing_connections: std::collections::HashMap<usize, f64>,
+}
+
+impl CapsuleState {
+    pub fn get_connection_weight(&self, other_id: usize) -> Option<f64> {
+        self.outgoing_connections.get(&other_id).copied()
+    }
+    
+    pub fn belief_similarity(&self, other: &CapsuleState) -> f64 {
+        // Simple cosine similarity between belief vectors
+        let dot_product: f64 = self.belief.mu.iter().zip(other.belief.mu.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        
+        let norm_a = self.belief.mu.norm();
+        let norm_b = other.belief.mu.norm();
+        
+        if norm_a > 0.0 && norm_b > 0.0 {
+            dot_product / (norm_a * norm_b)
+        } else {
+            0.0
+        }
+    }
+}
+```
+
+---
+
+Phase 4: Environment & Simulation (Week 8-9)
+
+crates/environment/src/lib.rs
+
+```rust
+pub mod city;
+pub mod drones;
+
+pub use city::UrbanGrid;
+pub use drones::{DeliveryDrone, DroneStatus};
+```
+
+1. Urban Environment (crates/environment/src/city.rs)
+
+```rust
+use std::collections::{BinaryHeap, HashMap};
+use petgraph::graph::{Graph, NodeIndex};
+use petgraph::visit::EdgeRef;
+use serde::{Deserialize, Serialize};
+use rand::Rng;
+
+const CITY_SIZE_KM: f64 = 10.0;
+const NUM_SECTORS: usize = 108;
+const SECTOR_RADIUS: f64 = 0.5;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CitySector {
+    pub id: usize,
+    pub center: (f64, f64),
+    pub capacity: usize,
+    pub current_drones: usize,
+    pub congestion: f64,
+    pub demand_level: f64,
+    pub connections: Vec<usize>,
+    pub functional: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RoadEdge {
+    pub distance: f64,
+    pub base_capacity: f64,
+    pub current_flow: f64,
+    pub is_functional: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduledEvent {
+    pub step: usize,
+    pub event_type: EventType,
+    pub sectors: Vec<usize>,
+    pub severity: f64,
+}
+
+impl PartialEq for ScheduledEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.step == other.step
+    }
+}
+
+impl Eq for ScheduledEvent {}
+
+impl PartialOrd for ScheduledEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        other.step.partial_cmp(&self.step) // Reverse for max-heap
+    }
+}
+
+impl Ord for ScheduledEvent {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.step.cmp(&self.step)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum EventType {
+    BridgeCollapse,
+    TrafficJam,
+    PowerOutage,
+    WeatherEvent,
+}
+
+pub struct UrbanGrid {
+    pub sectors: Vec<CitySector>,
+    pub graph: Graph<usize, RoadEdge>,
+    pub node_indices: HashMap<usize, NodeIndex>,
+    pub scheduled_events: BinaryHeap<ScheduledEvent>,
+    pub step_counter: usize,
+}
+
+impl UrbanGrid {
+    pub fn new() -> Self {
+        let mut sectors = Vec::with_capacity(NUM_SECTORS);
+        let mut graph = Graph::new();
+        let mut node_indices = HashMap::new();
+        
+        // Create hexagonal grid approximation
+        let rows = 9;
+        let cols = 12;
+        
+        for i in 0..NUM_SECTORS {
+            let row = i / cols;
+            let col = i % cols;
+            
+            // Hexagonal coordinates
+            let x = col as f64 * 0.866 * SECTOR_RADIUS * 2.0;
+            let mut y = row as f64 * SECTOR_RADIUS * 1.5;
+            if col % 2 == 1 {
+                y += SECTOR_RADIUS * 0.75;
+            }
+            
+            let node_idx = graph.add_node(i);
+            node_indices.insert(i, node_idx);
+            
+            let connections = Self::compute_adjacent_hexagonal(i, rows, cols);
+            
+            sectors.push(CitySector {
+                id: i,
+                center: (x, y),
+                capacity: 50,
+                current_drones: 0,
+                congestion: 0.0,
+                demand_level: 0.0,
+                connections,
+                functional: true,
+            });
+        }
+        
+        // Add edges between connected sectors
+        for (i, sector) in sectors.iter().enumerate() {
+            let from_idx = node_indices[&i];
+            for &neighbor in &sector.connections {
+                if i < neighbor {
+                    let distance = Self::sector_distance(&sectors[i], &sectors[neighbor]);
+                    let capacity = if distance < 1.5 { 30.0 } else { 15.0 };
+                    
+                    let to_idx = node_indices[&neighbor];
+                    graph.add_edge(from_idx, to_idx, RoadEdge {
+                        distance,
+                        base_capacity: capacity,
+                        current_flow: 0.0,
+                        is_functional: true,
+                    });
+                }
+            }
+        }
+        
+        let mut scheduled_events = BinaryHeap::new();
+        // Schedule bridge collapse at step 500
+        scheduled_events.push(ScheduledEvent {
+            step: 500,
+            event_type: EventType::BridgeCollapse,
+            sectors: vec![42, 67],
+            severity: 0.9,
+        });
+        
+        Self {
+            sectors,
+            graph,
+            node_indices,
+            scheduled_events,
+            step_counter: 0,
+        }
+    }
+    
+    fn compute_adjacent_hexagonal(id: usize, rows: usize, cols: usize) -> Vec<usize> {
+        let row = id / cols;
+        let col = id % cols;
+        let mut neighbors = Vec::new();
+        
+        // Hexagonal adjacency patterns
+        let directions = vec![
+            (0, -1), (0, 1),
+            (-1, 0), (1, 0),
+            (-1, if col % 2 == 0 { -1 } else { 1 }),
+            (1, if col % 2 == 0 { -1 } else { 1 }),
+        ];
+        
+        for (dr, dc) in directions {
+            let new_row = row as isize + dr;
+            let new_col = col as isize + dc;
+            
+            if new_row >= 0 && new_row < rows as isize && 
+               new_col >= 0 && new_col < cols as isize {
+                let neighbor_id = (new_row as usize) * cols + new_col as usize;
+                if neighbor_id < NUM_SECTORS {
+                    neighbors.push(neighbor_id);
+                }
+            }
+        }
+        
+        neighbors
+    }
+    
+    fn sector_distance(a: &CitySector, b: &CitySector) -> f64 {
+        let dx = a.center.0 - b.center.0;
+        let dy = a.center.1 - b.center.1;
+        (dx * dx + dy * dy).sqrt()
+    }
+    
+    pub fn update(&mut self, drones: &[DeliveryDrone]) {
+        self.step_counter += 1;
+        
+        // Update sector drone counts and congestion
+        for sector in &mut self.sectors {
+            sector.current_drones = 0;
+            sector.congestion = 0.0;
+        }
+        
+        for drone in drones {
+            if drone.status == DroneStatus::EnRoute || drone.status == DroneStatus::Delivering {
+                if drone.current_sector < self.sectors.len() {
+                    self.sectors[drone.current_sector].current_drones += 1;
+                }
+            }
+        }
+        
+        // Update congestion based on drone density
+        for sector in &mut self.sectors {
+            let density = sector.current_drones as f64 / sector.capacity as f64;
+            sector.congestion = density.min(1.0);
+        }
+        
+        // Update demand using power law distribution
+        let mut rng = rand::thread_rng();
+        for sector in &mut self.sectors {
+            // Power law demand with alpha = 2.5
+            let u: f64 = rng.gen_range(0.0..1.0);
+            let demand = (1.0 - u).powf(-1.0 / 2.5).min(100.0);
+            sector.demand_level = demand / 100.0; // Normalize to [0, 1]
+        }
+        
+        // Process scheduled events
+        while let Some(event) = self.scheduled_events.peek() {
+            if event.step == self.step_counter {
+                let event = self.scheduled_events.pop().unwrap();
+                self.process_event(event);
+            } else if event.step > self.step_counter {
+                break;
+            }
+        }
+    }
+    
+    fn process_event(&mut self, event: ScheduledEvent) {
+        match event.event_type {
+            EventType::BridgeCollapse => {
+                if event.sectors.len() >= 2 {
+                    let sector_a = event.sectors[0];
+                    let sector_b = event.sectors[1];
+                    self.trigger_bridge_collapse(sector_a, sector_b);
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    pub fn trigger_bridge_collapse(&mut self, sector_a: usize, sector_b: usize) {
+        println!("ENVIRONMENT[{}]: Bridge collapsed between sectors {} and {}", 
+                self.step_counter, sector_a, sector_b);
+        
+        // Find and disable the edge between these sectors
+        if let (Some(&node_a), Some(&node_b)) = (self.node_indices.get(&sector_a), self.node_indices.get(&sector_b)) {
+            if let Some(edge_idx) = self.graph.find_edge(node_a, node_b) {
+                if let Some(edge) = self.graph.edge_weight_mut(edge_idx) {
+                    edge.is_functional = false;
+                    edge.current_flow = 0.0;
+                }
+            }
+        }
+        
+        // Create shockwave effect
+        let adjacent_a = self.sectors[sector_a].connections.clone();
+        let adjacent_b = self.sectors[sector_b].connections.clone();
+        
+        for &sector_id in &event.sectors {
+            if sector_id < self.sectors.len() {
+                self.sectors[sector_id].congestion = (self.sectors[sector_id].congestion + event.severity).min(1.0);
+                self.sectors[sector_id].demand_level = (self.sectors[sector_id].demand_level * 1.5).min(1.0);
+                self.sectors[sector_id].functional = false;
+            }
+        }
+        
+        // Affect adjacent sectors
+        let affected = adjacent_a.iter().chain(adjacent_b.iter()).cloned().collect::<Vec<_>>();
+        
+        for sector_id in affected {
+            if sector_id < self.sectors.len() {
+                self.sectors[sector_id].congestion = (self.sectors[sector_id].congestion + event.severity * 0.5).min(1.0);
+            }
+        }
+    }
+    
+    pub fn get_sector_observation(&self, sector_id: usize) -> Vec<f64> {
+        if sector_id >= self.sectors.len() {
+            return vec![0.0; 5];
+        }
+        
+        let sector = &self.sectors[sector_id];
+        vec![
+            sector.congestion,
+            sector.demand_level,
+            sector.current_drones as f64 / sector.capacity as f64,
+            if sector.functional { 1.0 } else { 0.0 },
+            self.compute_connectivity(sector_id),
+        ]
+    }
+    
+    fn compute_connectivity(&self, sector_id: usize) -> f64 {
+        if let Some(&node_idx) = self.node_indices.get(&sector_id) {
+            let functional_edges = self.graph.edges(node_idx)
+                .filter(|edge| edge.weight().is_functional)
+                .count();
+            functional_edges as f64 / 8.0 // Max possible connections
+        } else {
+            0.0
+        }
+    }
+    
+    pub fn find_shortest_path(&self, from: usize, to: usize) -> Option<Vec<usize>> {
+        if from == to {
+            return Some(vec![from]);
+        }
+        
+        let (Some(&from_node), Some(&to_node)) = (self.node_indices.get(&from), self.node_indices.get(&to)) else {
+            return None;
+        };
+        
+        // Simple BFS for path finding
+        use petgraph::visit::{Bfs, EdgeRef};
+        
+        let mut visited = vec![false; self.graph.node_count()];
+        let mut predecessor = vec![None; self.graph.node_count()];
+        let mut queue = std::collections::VecDeque::new();
+        
+        visited[from_node.index()] = true;
+        queue.push_back(from_node);
+        
+        while let Some(node) = queue.pop_front() {
+            if node == to_node {
+                // Reconstruct path
+                let mut path = Vec::new();
+                let mut current = to_node;
+                
+                while current != from_node {
+                    path.push(self.graph[current]);
+                    if let Some(pred) = predecessor[current.index()] {
+                        current = pred;
+                    } else {
+                        return None;
+                    }
+                }
+                path.push(from);
+                path.reverse();
+                return Some(path);
+            }
+            
+            for edge in self.graph.edges(node) {
+                if !edge.weight().is_functional {
+                    continue;
+                }
+                
+                let neighbor = edge.target();
+                if !visited[neighbor.index()] {
+                    visited[neighbor.index()] = true;
+                    predecessor[neighbor.index()] = Some(node);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        
+        None
+    }
+}
+```
+
+2. Drone Agent Model (crates/environment/src/drones.rs)
+
+```rust
+use serde::{Deserialize, Serialize};
+use rand::Rng;
+
+use super::city::UrbanGrid;
+
+const DRONE_SPEED: f64 = 20.0; // km/h
+const BATTERY_DRAIN_RATE: f64 = 0.05; // per hour
+const SECTOR_RADIUS: f64 = 0.5; 
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeliveryPayload {
+    pub size: f64,
+    pub priority: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum DroneStatus {
+    Idle,
+    EnRoute,
+    Delivering,
+    Charging,
+    Delivered,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeliveryDrone {
+    pub id: usize,
+    pub position: (f64, f64),
+    pub destination: Option<usize>,
+    pub battery: f64,
+    pub payload: Option<DeliveryPayload>,
+    pub current_sector: usize,
+    pub route: Vec<usize>,
+    pub status: DroneStatus,
+    pub total_travel_time: f64,
+}
+
+impl DeliveryDrone {
+    pub fn new(id: usize, environment: &UrbanGrid) -> Self {
+        let mut rng = rand::thread_rng();
+        let start_sector = rng.gen_range(0..environment.sectors.len());
+        let position = environment.sectors[start_sector].center;
+        
+        Self {
+            id,
+            position,
+            destination: None,
+            battery: 1.0,
+            payload: None,
+            current_sector: start_sector,
+            route: Vec::new(),
+            status: DroneStatus::Idle,
+            total_travel_time: 0.0,
+        }
+    }
+    
+    pub fn update(&mut self, dt: f64, environment: &UrbanGrid) {
+        self.total_travel_time += dt;
+        
+        match self.status {
+            DroneStatus::EnRoute => {
+                if self.route.is_empty() {
+                    self.status = DroneStatus::Delivering;
+                    return;
+                }
+                
+                // Move toward next sector
+                let next_sector = self.route[0];
+                let target = environment.sectors[next_sector].center;
+                
+                let dx = target.0 - self.position.0;
+                let dy = target.1 - self.position.1;
+                let distance = (dx * dx + dy * dy).sqrt();
+                
+                if distance < 0.01 {
+                    self.route.remove(0);
+                    self.current_sector = next_sector;
+                    return;
+                }
+                
+                let direction = (dx / distance, dy / distance);
+                let move_dist = DRONE_SPEED * dt;
+                
+                if move_dist >= distance {
+                    self.position = target;
+                    self.route.remove(0);
+                    self.current_sector = next_sector;
+                } else {
+                    self.position.0 += direction.0 * move_dist;
+                    self.position.1 += direction.1 * move_dist;
+                }
+                
+                // Battery consumption
+                self.battery = (self.battery - BATTERY_DRAIN_RATE * dt).max(0.0);
+                
+                if self.battery <= 0.2 {
+                    self.status = DroneStatus::Charging;
+                }
+            }
+            DroneStatus::Delivering => {
+                // Simulate delivery time
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < 0.1 {
+                    self.status = DroneStatus::Delivered;
+                    self.payload = None;
+                }
+            }
+            DroneStatus::Charging => {
+                // Charge battery
+                self.battery = (self.battery + 0.3 * dt).min(1.0);
+                if self.battery >= 0.8 {
+                    self.status = DroneStatus::Idle;
+                }
+            }
+            DroneStatus::Idle => {
+                // Assign new task if available
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < 0.05 {
+                    let dest = rng.gen_range(0..environment.sectors.len());
+                    self.destination = Some(dest);
+                    if let Some(path) = environment.find_shortest_path(self.current_sector, dest) {
+                        self.route = path[1..].to_vec();
+                        self.status = DroneStatus::EnRoute;
+                        self.payload = Some(DeliveryPayload {
+                            size: rng.gen_range(1.0..5.0),
+                            priority: rng.gen_range(0.0..1.0),
+                        });
+                    }
+                }
+            }
+            DroneStatus::Delivered => {
+                // Return to idle
+                self.status = DroneStatus::Idle;
+            }
+        }
+    }
+    
+    pub fn distance_to(&self, target: (f64, f64)) -> f64 {
+        let dx = self.position.0 - target.0;
+        let dy = self.position.1 - target.1;
+        (dx * dx + dy * dy).sqrt()
+    }
+    
+    pub fn report_arrival(&self, _environment: &UrbanGrid) {
+        // Would report to capsule
+    }
+}
+```
+
+---
+
+Phase 5: Simulation Engine Integration (Week 10-11)
+
+crates/simulation/src/lib.rs
+
+```rust
+pub mod engine;
+pub mod config;
+
+pub use engine::AIADNSimulation;
+pub use config::SimulationConfig;
+```
+
+1. Main Simulation Loop (crates/simulation/src/engine.rs)
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::sync::{mpsc, RwLock};
+use rayon::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
+use anyhow::Result;
+
+use aiadn_core::{
+    inference::BeliefState,
+    resonance::{ResonanceEngine, NUM_CAPSULES},
+    types::{Observation, ObservationSource, SimulationConfig as CoreConfig},
+};
+
+use aiadn_capsules::{Capsule, create_capsules, pins::PinNetwork};
+use aiadn_nucleus::{Nucleus, NucleusConfig};
+use aiadn_environment::{UrbanGrid, DeliveryDrone, DroneStatus};
+
+#[derive(Debug)]
+pub struct SimulationMetrics {
+    pub step: usize,
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub task_success_rate: f64,
+    pub total_latency: f64,
+    pub energy_efficiency: f64,
+    pub recovery_time: Option<usize>,
+    pub crisis_detected: bool,
+    pub divergent_pulses: usize,
+}
+
+#[derive(Debug)]
+pub struct SimulationResults {
+    pub metrics_history: Vec<SimulationMetrics>,
+    pub final_coherence: f64,
+    pub average_latency: f64,
+    pub crisis_recovery_time: Option<usize>,
+    pub divergent_pulses: usize,
+    pub total_steps: usize,
+    pub execution_time: std::time::Duration,
+}
+
+pub struct AIADNSimulation {
+    // Core Systems
+    pub capsules: Vec<Capsule>,
+    pub capsule_message_txs: Vec<mpsc::Sender<CapsuleMessage>>,
+    pub nucleus: Nucleus,
+    pub environment: Arc<RwLock<UrbanGrid>>,
+    pub resonance: ResonanceEngine,
+    pub pin_network: PinNetwork,
+    
+    // Simulation State
+    pub config: CoreConfig,
+    pub step: usize,
+    pub is_running: bool,
+    pub crisis_triggered: bool,
+    
+    // Drones
+    pub drones: Vec<DeliveryDrone>,
+    
+    // Metrics
+    pub metrics_log: Vec<SimulationMetrics>,
+    
+    // Communication Channels
+    pub broadcast_tx: mpsc::Sender<CapsuleMessage>,
+    pub broadcast_rx: mpsc::Receiver<CapsuleMessage>,
+    pub nucleus_command_tx: mpsc::Sender<NucleusCommand>,
+    pub nucleus_command_rx: mpsc::Receiver<NucleusCommand>,
+}
+
+impl AIADNSimulation {
+    pub async fn new(config: CoreConfig) -> Result<Self> {
+        println!("Initializing AIADN Simulation...");
+        
+        // Create communication channels
+        let (broadcast_tx, broadcast_rx) = mpsc::channel(1000);
+        let (nucleus_command_tx, nucleus_command_rx) = mpsc::channel(100);
+        let (metrics_tx, metrics_rx) = mpsc::channel(100);
+        
+        // Create environment
+        let environment = Arc::new(RwLock::new(UrbanGrid::new()));
+        
+        // Create resonance engine
+        let resonance = ResonanceEngine::new(
+            config.base_frequency,
+            config.perturbation_alpha,
+            config.dt,
+        );
+        
+        // Create capsules
+        let (mut capsules, capsule_message_txs) = create_capsules(
+            config.capsule_count,
+            broadcast_tx.clone(),
+        );
+        
+        // Create nucleus
+        let nucleus_config = NucleusConfig {
+            perturbation_alpha: config.perturbation_alpha,
+            base_frequency: config.base_frequency,
+            resource_radius: 2.5,
+            min_alpha: 0.1,
+            max_alpha: 0.9,
+        };
+        
+        let nucleus = Nucleus::new(
+            nucleus_config,
+            nucleus_command_tx.clone(),
+            metrics_rx,
+        );
+        
+        // Create drones
+        let env_read = environment.read().await;
+        let mut drones = Vec::with_capacity(config.drone_count);
+        for i in 0..config.drone_count {
+            drones.push(DeliveryDrone::new(i, &env_read));
+        }
+        drop(env_read);
+        
+        // Initialize pin network
+        let mut pin_network = PinNetwork::new();
+        let mut rng = rand::thread_rng();
+        for i in 0..capsules.len() {
+            for j in 0..capsules.len() {
+                if i != j && rng.gen::<f64>() < 0.1 {
+                    pin_network.add_connection(i, j, rng.gen_range(0.1..0.5));
+                    capsules[i].add_outgoing_pin(j, rng.gen_range(0.1..0.5));
+                    capsules[j].add_incoming_pin(i, rng.gen_range(0.1..0.5));
+                }
+            }
+        }
+        
+        Ok(Self {
+            capsules,
+            capsule_message_txs,
+            nucleus,
+            environment,
+            resonance,
+            pin_network,
+            config,
+            step: 0,
+            is_running: false,
+            crisis_triggered: false,
+            drones,
+            metrics_log: Vec::new(),
+            broadcast_tx,
+            broadcast_rx,
+            nucleus_command_tx,
+            nucleus_command_rx,
+        })
+    }
+    
+    pub async fn run_full_scenario(&mut self) -> Result<SimulationResults> {
+        println!("Starting AIADN Urban Pulse Simulation");
+        println!("=======================================");
+        println!("Configuration:");
+        println!("  Steps: {}", self.config.total_steps);
+        println!("  Capsules: {}", self.config.capsule_count);
+        println!("  Drones: {}", self.drones.len());
+        println!("  Base Frequency: {:.2}", self.config.base_frequency);
+        println!("=======================================");
+        
+        let start_time = Instant::now();
+        self.is_running = true;
+        
+        // Create progress bar
+        let pb = ProgressBar::new(self.config.total_steps as u64);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+        
+        // Pre-simulation warmup (100 steps)
+        println!("Warmup phase (100 steps)...");
+        self.run_steps(100).await?;
+        
+        // Main simulation
+        println!("Main simulation phase...");
+        for step in 100..self.config.total_steps {
+            self.step = step;
+            self.resonance.tick();
+            
+            // 1. UPDATE ENVIRONMENT
+            self.update_environment().await;
+            
+            // 2. CRISIS INJECTION AT STEP 500
+            if step == 500 && !self.crisis_triggered {
+                self.trigger_bridge_collapse(42, 67).await;
+                self.crisis_triggered = true;
+                println!("\n=== CRISIS EVENT: Bridge Collapse at Step {} ===", step);
+            }
+            
+            // 3. UPDATE DRONES
+            self.update_drones().await;
+            
+            // 4. UPDATE CAPSULES (Parallel)
+            self.update_capsules_parallel().await;
+            
+            // 5. UPDATE NUCLEUS
+            self.update_nucleus().await;
+            
+            // 6. COLLECT METRICS
+            self.collect_metrics().await;
+            
+            // 7. UPDATE PROGRESS
+            pb.set_position(step as u64);
+            
+            // Progress reporting every 100 steps
+            if step % 100 == 0 {
+                let metrics = self.metrics_log.last().unwrap();
+                println!("\nStep {}: C_Ψ={:.3}, F={:.3}, Success={:.1}%", 
+                        step, 
+                        metrics.coherence,
+                        metrics.global_free_energy,
+                        metrics.task_success_rate * 100.0);
+            }
+        }
+        
+        pb.finish_with_message("Simulation complete!");
+        
+        let execution_time = start_time.elapsed();
+        let results = self.finalize_simulation(execution_time).await?;
+        
+        println!("\nSimulation Results:");
+        println!("  Total Steps: {}", results.total_steps);
+        println!("  Execution Time: {:?}", results.execution_time);
+        println!("  Final Coherence: {:.3}", results.final_coherence);
+        println!("  Average Latency: {:.2}", results.average_latency);
+        println!("  Divergent Pulses: {}", results.divergent_pulses);
+        
+        if let Some(recovery_time) = results.crisis_recovery_time {
+            println!("  Crisis Recovery Time: {} steps", recovery_time);
+        }
+        
+        Ok(results)
+    }
+    
+    async fn run_steps(&mut self, steps: usize) -> Result<()> {
+        for _ in 0..steps {
+            self.step += 1;
+            self.resonance.tick();
+            self.update_environment().await;
+            self.update_drones().await;
+            self.update_capsules_parallel().await;
+            self.update_nucleus().await;
+            self.collect_metrics().await;
+        }
+        Ok(())
+    }
+    
+    async fn update_environment(&mut self) {
+        let mut env = self.environment.write().await;
+        env.update(&self.drones);
+    }
+    
+    async fn trigger_bridge_collapse(&mut self, sector_a: usize, sector_b: usize) {
+        let mut env = self.environment.write().await;
+        env.trigger_bridge_collapse(sector_a, sector_b);
+    }
+    
+    async fn update_drones(&mut self) {
+        let env = self.environment.read().await;
+        
+        for drone in &mut self.drones {
+            drone.update(self.config.dt, &env);
+        }
+    }
+    
+    async fn update_capsules_parallel(&mut self) {
+        let env = self.environment.read().await;
+        let resonance = self.resonance.clone();
+        let mut pin_network = self.pin_network.clone();
+        
+        // Collect observations for each capsule
+        let observations: Vec<Observation> = (0..self.capsules.len())
+            .map(|i| {
+                let sector_id = i % env.sectors.len();
+                let data = env.get_sector_observation(sector_id);
+                Observation {
+                    data: nalgebra::DVector::from_vec(data),
+                    timestamp: self.step,
+                    source: ObservationSource::Environment(sector_id),
+                }
+            })
+            .collect();
+        
+        // Process capsules in parallel using rayon
+        let capsule_updates: Vec<_> = self.capsules
+            .par_iter_mut()
+            .enumerate()
+            .map(|(i, capsule) | {
+                let observation = &observations[i];
+                
+                // Run cognitive cycle
+                let action = tokio::runtime::Handle::current()
+                    .block_on(capsule.cognitive_cycle(observation, &resonance, &mut pin_network));
+                
+                (i, capsule.get_recent_salience_avg(), action)
+            })
+            .collect();
+        
+        self.pin_network = pin_network;
+        
+        // Update capsule metrics
+        for (i, salience, _) in capsule_updates {
+            // Could send metrics to nucleus here
+        }
+    }
+    
+    async fn update_nucleus(&mut self) {
+        // Collect capsule metrics
+        let capsule_metrics: Vec<_> = self.capsules
+            .iter()
+            .map(|capsule| {
+                aiadn_nucleus::controller::CapsuleMetrics {
+                    free_energy: capsule.belief.free_energy(&DVector::zeros(capsule.belief.dimension)),
+                    coherence_contribution: capsule.get_recent_salience_avg(),
+                    task_success: rand::random::<f64>() > 0.5, // Simplified
+                }
+            })
+            .collect();
+        
+        // Run nucleus control cycle
+        self.nucleus.control_cycle(&capsule_metrics).await;
+    }
+    
+    async fn collect_metrics(&mut self) {
+        let env = self.environment.read().await;
+        
+        // Calculate current metrics
+        let active_drones = self.drones.iter()
+            .filter(|d| d.status == DroneStatus::EnRoute || d.status == DroneStatus::Delivering)
+            .count();
+        
+        let successful_deliveries = self.drones.iter()
+            .filter(|d| d.status == DroneStatus::Delivered)
+            .count();
+        
+        let total_latency: f64 = self.drones.iter()
+            .map(|d| d.total_travel_time)
+            .sum();
+        
+        let metrics = SimulationMetrics {
+            step: self.step,
+            coherence: self.nucleus.maebe_metrics.coherence,
+            global_free_energy: self.nucleus.maebe_metrics.global_free_energy,
+            task_success_rate: successful_deliveries as f64 / self.drones.len() as f64,
+            total_latency,
+            energy_efficiency: active_drones as f64 / self.drones.len() as f64,
+            recovery_time: if self.crisis_triggered && self.step > 500 {
+                Some(self.step - 500)
+            } else {
+                None
+            },
+            crisis_detected: self.crisis_triggered,
+            divergent_pulses: self.nucleus.stagnation_detector.stagnation_counter,
+        };
+        
+        self.metrics_log.push(metrics);
+    }
+    
+    async fn finalize_simulation(&self, execution_time: std::time::Duration) -> Result<SimulationResults> {
+        let final_metrics = self.metrics_log.last().unwrap();
+        
+        let average_latency = self.metrics_log
+            .iter()
+            .map(|m| m.total_latency)
+            .sum::<f64>() / self.metrics_log.len() as f64;
+        
+        let crisis_recovery_time = if self.crisis_triggered {
+            // Find when coherence recovered to > 0.8 after crisis
+            let post_crisis = self.metrics_log
+                .iter()
+                .skip_while(|m| m.step < 500)
+                .position(|m| m.coherence > 0.8)
+                .map(|pos| pos + 1) // Steps to recovery
+        } else {
+            None
+        };
+        
+        let divergent_pulses = self.nucleus.stagnation_detector.stagnation_counter;
+        
+        Ok(SimulationResults {
+            metrics_history: self.metrics_log.clone(),
+            final_coherence: final_metrics.coherence,
+            average_latency,
+            crisis_recovery_time,
+            divergent_pulses,
+            total_steps: self.step,
+            execution_time,
+        })
+    }
+    
+    pub fn print_summary(&self) {
+        println!("\n=== AIADN Simulation Summary ===");
+        println!("Total Steps: {}", self.step);
+        println!("Capsules: {}", self.capsules.len());
+        println!("Drones: {}", self.drones.len());
+        println!("Crisis Triggered: {}", self.crisis_triggered);
+        
+        if let Some(last_metrics) = self.metrics_log.last() {
+            println!("\nFinal Metrics:");
+            println!("  Coherence (C_Ψ): {:.3}", last_metrics.coherence);
+            println!("  Global Free Energy: {:.3}", last_metrics.global_free_energy);
+            println!("  Task Success Rate: {:.1}%", last_metrics.task_success_rate * 100.0);
+            println!("  Energy Efficiency: {:.1}%", last_metrics.energy_efficiency * 100.0);
+        }
+    }
+}
+
+// Type aliases for communication
+type CapsuleMessage = aiadn_core::types::CapsuleMessage;
+type NucleusCommand = aiadn_core::types::NucleusCommand;
+```
+
+2. Configuration System (crates/simulation/src/config.rs)
+
+```rust
+use serde::{Deserialize, Serialize};
+use aiadn_core::types::SimulationConfig as CoreConfig;
+```
+
+---
+
+Phase 6: Visualization & Analysis (Week 12)
+
+1. Real-time Dashboard (crates/visualization/src/dashboard.rs)
+
+```rust
+use plotters::prelude::*;
+use plotters_canvas::CanvasBackend;
+
+pub struct SimulationDashboard {
+    // MAEBE Plane (C_Ψ vs E_C)
+    maebe_plot: PlotArea,
+    
+    // Network Graph Visualization
+    network_graph: GraphVisualizer,
+    
+    // Urban Grid Map
+    city_map: CityMapOverlay,
+    
+    // Time Series Charts
+    metric_charts: HashMap<String, TimeSeriesChart>,
+    
+    // Performance Metrics
+    performance_panel: MetricsPanel,
+}
+
+impl SimulationDashboard {
+    pub fn update(&mut self, simulation: &AIADNSimulation) {
+        // 1. Update MAEBE Plane
+        self.update_maebe_plane(
+            simulation.metrics_log.coherence_history(),
+            simulation.metrics_log.entropy_history()
+        );
+        
+        // 2. Update Network Graph
+        let adjacency = simulation.compute_adjacency_matrix();
+        self.network_graph.update(adjacency);
+        
+        // 3. Update Urban Map
+        self.city_map.update(
+            &simulation.environment,
+            &simulation.capsules
+        );
+        
+        // 4. Update Time Series
+        for (name, history) in simulation.metrics_log.all_histories() {
+            if let Some(chart) = self.metric_charts.get_mut(&name) {
+                chart.add_point(simulation.step, history.last().unwrap());
+            }
+        }
+        
+        // 5. Render to screen
+        self.render();
+    }
+    
+    /// Create MAEBE plane visualization
+    fn update_maebe_plane(&mut self, coherence: &[f64], entropy: &[f64]) {
+        let root = BitMapBackend::new("maebe_plane.png", (800, 600)).into_drawing_area();
+        root.fill(&WHITE).unwrap();
+        
+        let mut chart = ChartBuilder::on(&root)
+            .caption("AIADN Convergence-Divergence Cycle", ("sans-serif", 30))
+            .margin(10)
+            .x_label_area_size(30)
+            .y_label_area_size(30)
+            .build_cartesian_2d(0.0..1.0, 0.0..1.0)
+            .unwrap();
+            
+        chart.configure_mesh().draw().unwrap();
+        
+        // Plot trajectory with color-coded time
+        chart.draw_series(
+            coherence.iter().zip(entropy.iter())
+                .enumerate()
+                .map(|(i, (&c, &e))| {
+                    let color = Palette99::pick(i).mix(0.7);
+                    Circle::new((c, e), 3, color.filled())
+                })
+        ).unwrap();
+        
+        // Mark critical events
+        chart.draw_series(
+            [500].iter().map(|&step| {
+                let idx = step.min(coherence.len() - 1);
+                Cross::new((coherence[idx], entropy[idx]), 10, RED)
+            })
+        ).unwrap();
+    }
+}
+```
+
+2. Results Analysis (crates/visualization/src/analysis.rs)
+
+```rust
+pub struct SimulationAnalysis {
+    pub results: SimulationResults,
+    pub baseline: BaselineComparison,
+    pub statistical_tests: StatisticalReport,
+}
+
+impl SimulationAnalysis {
+    /// Generate comprehensive analysis report
+    pub fn generate_report(&self) -> AnalysisReport {
+        let mut report = AnalysisReport::new();
+        
+        // 1. Axiom Validation
+        report.add_section("Axiom Validation", || {
+            vec![
+                ("Local Competence", self.validate_axiom_1()),
+                ("Relational Causality", self.validate_axiom_2()),
+                ("Harmonic Perturbation", self.validate_axiom_3()),
+            ]
+        });
+        
+        // 2. Performance Comparison
+        report.add_section("Performance Metrics", || {
+            vec![
+                ("Total Latency", self.results.total_latency),
+                ("Energy Efficiency", self.results.energy_efficiency),
+                ("Crisis Recovery Time", self.results.recovery_time),
+                ("vs Centralized A*", self.baseline.improvement_ratio),
+            ]
+        });
+        
+        // 3. Emergent Behavior Analysis
+        report.add_section("Emergent Intelligence", || {
+            vec![
+                ("Anticipatory Actions", self.count_anticipatory_actions()),
+                ("Structural Plasticity", self.measure_plasticity()),
+                ("Information Velocity", self.calculate_information_velocity()),
+                ("Innovation Index", self.compute_innovation_index()),
+            ]
+        });
+        
+        // 4. Statistical Significance
+        report.add_section("Statistical Validation", || {
+            vec![
+                ("Stationarity Test", self.stationarity_test()),
+                ("Granger Causality", self.granger_causality_test()),
+                ("Phase Transition Detection", self.detect_phase_transitions()),
+            ]
+        });
+        
+        report
+    }
+    
+    /// Validate Axiom 1: Local Competence
+    fn validate_axiom_1(&self) -> ValidationResult {
+        // Check if capsules minimize their free energy
+        let free_energy_trend = self.results.free_energy_history();
+        let is_minimizing = free_energy_trend.windows(2)
+            .map(|w| w[1] - w[0])
+            .filter(|&d| d < 0.0)
+            .count() as f64 / free_energy_trend.len() as f64;
+            
+        ValidationResult {
+            axiom: "Local Competence",
+            metric: is_minimizing,
+            threshold: 0.7,
+            passed: is_minimizing > 0.7,
+            evidence: free_energy_trend,
+        }
+    }
+}
+```
+
+---
+
+Phase 7: Testing & Validation (Week 13)
+
+1. Test Suite (crates/simulation/tests/integration.rs)
+
+```rust
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use tokio::test;
+    
+    #[test]
+    async fn test_bridge_collapse_recovery() {
+        // Setup
+        let mut sim = AIADNSimulation::new_with_config("test_config.yaml").await;
+        
+        // Run pre-crisis
+        sim.run_steps(495).await.unwrap();
+        let pre_crisis_metrics = sim.metrics_log.clone();
+        
+        // Trigger crisis
+        sim.trigger_bridge_collapse(42, 67).await;
+        
+        // Run post-crisis
+        sim.run_steps(200).await.unwrap();
+        let post_crisis_metrics = sim.metrics_log.clone();
+        
+        // Assertions
+        assert!(pre_crisis_metrics.coherence() > 0.85,
+                "Should have high pre-crisis coherence");
+                
+        assert!(post_crisis_metrics.recovery_time() < 100,
+                "Should recover within 100 steps");
+                
+        assert!(post_crisis_metrics.coherence() > 0.8,
+                "Should re-converge after crisis");
+                
+        assert!(post_crisis_metrics.task_success() > 0.75,
+                "Should maintain task performance");
+    }
+    
+    #[test]
+    async fn test_stagnation_detection_and_response() {
+        let mut sim = AIADNSimulation::new();
+        
+        // Force stagnation by fixing environment
+        sim.environment.lock().await.freeze_dynamics();
+        
+        // Run until stagnation detected
+        let mut stagnation_detected = false;
+        for _ in 0..200 {
+            sim.run_step().await.unwrap();
+            if sim.nucleus.lock().await.stagnation_detector.is_stagnant() {
+                stagnation_detected = true;
+                break;
+            }
+        }
+        
+        assert!(stagnation_detected, "Should detect stagnation");
+        assert!(sim.nucleus.lock().await.perturbation_alpha > 0.5,
+                "Should increase perturbation in response");
+    }
+    
+    #[test]
+    fn test_maebe_metric_calculation() {
+        let capsules = create_test_capsules(108);
+        let metrics = MAEBEMetrics::calculate_all(&capsules);
+        
+        assert!(metrics.coherence >= 0.0 && metrics.coherence <= 1.0);
+        assert!(metrics.goal_synergy >= -1.0 && metrics.goal_synergy <= 1.0);
+        assert!(metrics.dynamic_entropy >= 0.0);
+        
+        // Test conservation properties
+        let total_belief: f64 = capsules.iter()
+            .map(|c| c.belief.mu.sum())
+            .sum();
+        assert!((total_belief - 108.0).abs() < 0.01,
+                "Belief should be conserved");
+    }
+}
+```
+
+2. Benchmark Suite (benches/performance.rs)
+
+```rust
+use criterion::{criterion_group, criterion_main, Criterion, black_box};
+use aiadn_core::resonance::ResonanceEngine;
+use aiadn_capsules::Capsule;
+use aiadn_core::inference::BeliefState;
+use nalgebra::DVector;
+use aiadn_core::types::Observation;
+use aiadn_capsules::pins::PinNetwork;
+
+fn bench_capsule_cognitive_cycle(c: &mut Criterion) {
+    let mut capsule = Capsule::new(CapsuleConfig {
+        id: 0,
+        learning_rate: 0.01,
+        salience_threshold: 0.3,
+        initial_belief_state: BeliefState::new(3, 0.5, 1.0, 1.0),
+        specialty: CapsuleSpecialty::new(SpecialtyType::TrafficPrediction, 0.5),
+    }, mpsc::channel(100).0).0;
+    
+    let observation = Observation {
+        data: DVector::from_vec(vec![0.5, 0.5, 0.5]),
+        timestamp: 0,
+        source: ObservationSource::Environment(0),
+    };
+    
+    let resonance = ResonanceEngine::new(1.0, 0.1, 0.1);
+    
+    let mut pin_network = PinNetwork::new();
+    
+    c.bench_function("capsule_cognitive_cycle", |b| {
+        b.iter(|| {
+            tokio::runtime::Handle::current().block_on(capsule.cognitive_cycle(
+                black_box(&observation),
+                black_box(&resonance),
+                black_box(&mut pin_network),
+            ));
+        });
+    });
+}
+
+fn bench_parallel_108_capsules(c: &mut Criterion) {
+    let broadcast_tx = mpsc::channel(100).0;
+    let (capsules, _) = create_capsules(108, broadcast_tx);
+    
+    let observations: Vec<Observation> = (0..108)
+        .map(|_| Observation {
+            data: DVector::from_vec(vec![0.5, 0.5, 0.5]),
+            timestamp: 0,
+            source: ObservationSource::Environment(0),
+        })
+        .collect();
+    
+    let resonance = ResonanceEngine::new(1.0, 0.1, 0.1);
+    
+    c.bench_function("parallel_108_capsules", |b| {
+        b.iter(|| {
+            capsules.par_iter().zip(observations.par_iter()).map(|(capsule, obs)| {
+                let mut local_capsule = capsule.clone();
+                let mut local_network = PinNetwork::new();
+                tokio::runtime::Handle::current().block_on(local_capsule.cognitive_cycle(
+                    black_box(obs),
+                    black_box(&resonance),
+                    black_box(&mut local_network),
+                ))
+            }).collect::<Vec<_>>();
+        });
+    });
+}
+
+criterion_group!(benches, bench_capsule_cognitive_cycle, bench_parallel_108_capsules);
+criterion_main!(benches);
+```
+
+---
+
+Project Timeline & Milestones
+
+```mermaid
+gantt
+    title AIADN Implementation Timeline (13 Weeks)
+    dateFormat  YYYY-MM-DD
+    section Foundation
+    Environment Setup           :2024-01-01, 7d
+    Core Math Implementation   :2024-01-08, 14d
+    section Core Systems
+    Capsule Implementation     :2024-01-22, 14d
+    Nucleus System             :2024-02-05, 14d
+    section Simulation
+    Environment Model          :2024-02-19, 14d
+    Engine Integration         :2024-03-04, 14d
+    section Analysis
+    Visualization System       :2024-03-18, 14d
+    Testing & Validation       :2024-04-01, 14d
+    section Finalization
+    Documentation              :2024-04-15, 7d
+    Performance Optimization   :2024-04-22, 7d
+```
+
+---
+
+
+1. Primary Validation Metrics
+
+1. Crisis Recovery: System re-converges within 100 steps post bridge collapse
+2. Performance Superiority: 15% better latency/efficiency vs centralized baseline
+3. Emergent Anticipation: >30% of congestion events anticipated before physical manifestation
+4. Structural Plasticity: Adjacency matrix change rate >0.3 during divergent phases
+
+2. Scientific Contributions
+
+1. First Implementation of Active Inference in large-scale distributed AI
+2. Empirical Validation of bio-inspired synchronization in computational systems
+3. Novel Metric Framework (MAEBE) for evaluating emergent intelligence
+4. Open-source Reference Implementation for distributed AI research
+
+
+---
+
+Conclusion 
+
+This blueprint provides a complete, implementable path from mathematical theory to functioning simulation. The AIADN project represents a significant advancement in distributed AI, moving beyond traditional multi-agent systems to create truly emergent, adaptive intelligence.
+
+
+
+```rust
+use aiadn_simulation::{AIADNSimulation, SimulationConfig};
+use aiadn_core::types::SimulationConfig as CoreConfig;
+use tokio;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("AIADN Project - Dynamic Urban Pulse Simulation");
+    println!("===============================================\n");
+    
+    // Configuration
+    let config = CoreConfig {
+        total_steps: 1000,
+        dt: 0.1,
+        capsule_count: 108,
+        base_frequency: 1.0,
+        perturbation_alpha: 0.2,
+        learning_rate: 0.01,
+        salience_threshold: 0.3,
+        drone_count: 500,
+    };
+    
+    // Create and run simulation
+    let mut simulation = AIADNSimulation::new(config).await?;
+    let results = simulation.run_full_scenario().await?;
+    
+    // Print results
+    simulation.print_summary();
+    
+    // Create visualization
+    simulation.nucleus.create_maebe_plot("maebe_plot.png")?;
+    println!("MAEBE plot saved to maebe_plot.png");
+    
+    // Validate axioms
+    validate_axioms(&results);
+    
+    Ok(())
+}
+
+fn validate_axioms(results: &aiadn_simulation::engine::SimulationResults) {
+    println!("\n=== Axiom Validation ===");
+    
+    // Axiom 1: Local Competence (Capsules minimize free energy)
+    let fe_trend: Vec<f64> = results.metrics_history
+        .iter()
+        .map(|m| m.global_free_energy)
+        .collect();
+    
+    let decreasing_count = fe_trend.windows(2)
+        .filter(|w| w[1] < w[0])
+        .count();
+    
+    let minimization_ratio = decreasing_count as f64 / (fe_trend.len() - 1) as f64;
+    println!("Axiom 1 - Local Competence:");
+    println!("  Free energy minimization ratio: {:.1}%", minimization_ratio * 100.0);
+    println!("  Validation: {}", if minimization_ratio > 0.7 { "PASSED" } else { "FAILED" });
+    
+    // Axiom 2: Relational Causality (Network adapts to crisis)
+    let crisis_recovery = results.crisis_recovery_time.unwrap_or(0);
+    println!("\nAxiom 2 - Relational Causality:");
+    println!("  Crisis recovery time: {} steps", crisis_recovery);
+    println!("  Validation: {}", if crisis_recovery > 0 && crisis_recovery < 100 { "PASSED" } else { "FAILED" });
+    
+    // Axiom 3: Harmonic Perturbation (Divergent pulses occur)
+    println!("\nAxiom 3 - Harmonic Perturbation:");
+    println!("  Divergent pulses: {}", results.divergent_pulses);
+    println!("  Validation: {}", if results.divergent_pulses > 0 { "PASSED" } else { "FAILED" });
+    
+    // Success Criteria
+    println!("\n=== Success Criteria ===");
+    println!("1. Crisis Recovery < 100 steps: {}", 
+             if crisis_recovery < 100 { "✓" } else { "✗" });
+    println!("2. Final Coherence > 0.8: {}", 
+             if results.final_coherence > 0.8 { "✓" } else { "✗" });
+    println!("3. Divergent Pulses > 0: {}", 
+             if results.divergent_pulses > 0 { "✓" } else { "✗" });
+}
+```
+############################################
+AIADN Project: Complete Implementation Package
+
+############################################
+1. Project Root Setup
+
+Cargo.toml (Workspace):
+
+```toml
+[workspace]
+members = [
+    "crates/core",
+    "crates/capsules", 
+    "crates/nucleus",
+    "crates/environment",
+    "crates/simulation",
+    "cli"
+]
+
+[workspace.dependencies]
+rand = "0.8.5"
+serde = { version = "1.0", features = ["derive"] }
+rayon = "1.7.0"
+once_cell = "1.18.0"
+tokio = { version = "1.37", features = ["full"] }
+nalgebra = "0.32.0"
+statrs = "0.16.0"
+petgraph = "0.6.0"
+chrono = "0.4.0"
+indicatif = "0.17.0"
+anyhow = "1.0"
+thiserror = "1.0"
+lazy_static = "1.4.0"
+crossbeam = "0.8.0"
+dashmap = "5.0.0"
+parking_lot = "0.12.0"
+tracing = "0.1.0"
+tracing-subscriber = "0.3.0"
+plotters = "0.3.0"
+clap = { version = "4.0", features = ["derive"] }
+```
+
+2. Core Mathematical Foundation
+
+crates/core/Cargo.toml:
+
+```toml
+[package]
+name = "aiadn-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = { workspace = true }
+serde = { workspace = true }
+nalgebra = { workspace = true }
+statrs = { workspace = true }
+lazy_static = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5.0"
+```
+
+crates/core/src/lib.rs:
+
+```rust
+pub mod inference;
+pub mod resonance;
+pub mod types;
+
+pub use inference::BeliefState;
+pub use resonance::{ResonanceEngine, PHI, NUM_CAPSULES, PhaseState};
+pub use types::*;
+```
+
+crates/core/src/types.rs:
+
+```rust
+use nalgebra::{DMatrix, DVector};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Observation {
+    pub data: DVector<f64>,
+    pub timestamp: usize,
+    pub source: ObservationSource,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ObservationSource {
+    Environment(usize),
+    Capsule(usize),
+    Nucleus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Action {
+    Wait,
+    Move(usize, usize),
+    AllocateResource(f64),
+    Broadcast(Vec<u8>),
+    AdjustParameter(String, f64),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CapsuleMessage {
+    BeliefUpdate { capsule_id: usize, mu: DVector<f64> },
+    ResourceRequest { amount: f64, priority: f64 },
+    Alert { severity: f64, data: Vec<u8> },
+    PhaseSync { phase: f64 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum NucleusCommand {
+    PhaseReset,
+    FrequencyAdjust(f64),
+    PerturbationSet(f64),
+    ResourceAllocation(HashMap<usize, f64>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CapsuleMetrics {
+    pub free_energy: f64,
+    pub coherence_contribution: f64,
+    pub task_success: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    pub total_steps: usize,
+    pub dt: f64,
+    pub capsule_count: usize,
+    pub base_frequency: f64,
+    pub perturbation_alpha: f64,
+    pub learning_rate: f64,
+    pub salience_threshold: f64,
+    pub drone_count: usize,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            total_steps: 1000,
+            dt: 0.1,
+            capsule_count: 108,
+            base_frequency: 1.0,
+            perturbation_alpha: 0.2,
+            learning_rate: 0.01,
+            salience_threshold: 0.3,
+            drone_count: 500,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AIADNError {
+    #[error("Invalid configuration: {0}")]
+    ConfigError(String),
+    #[error("Simulation error: {0}")]
+    SimulationError(String),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+```
+
+crates/core/src/inference.rs:
+
+```rust
+use nalgebra::{DMatrix, DVector};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use lazy_static::lazy_static;
+
+const OBSERVATION_PRECISION: f64 = 1.0;
+
+lazy_static! {
+    static ref PRIOR_PRECISION: DMatrix<f64> = DMatrix::identity(1, 1) * 0.1;
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BeliefState {
+    pub mu: DVector<f64>,
+    pub lambda: DMatrix<f64>,
+    pub g: DVector<f64>,
+    pub dimension: usize,
+}
+
+impl fmt::Debug for BeliefState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "BeliefState(dim={}, mu_norm={:.3})", 
+               self.dimension, self.mu.norm())
+    }
+}
+
+impl BeliefState {
+    pub fn new(state_dim: usize, initial_mu: f64, initial_lambda: f64, goal: f64) -> Self {
+        Self {
+            mu: DVector::from_element(state_dim, initial_mu),
+            lambda: DMatrix::identity(state_dim, state_dim) * initial_lambda,
+            g: DVector::from_element(state_dim, goal),
+            dimension: state_dim,
+        }
+    }
+    
+    pub fn from_vectors(mu: DVector<f64>, lambda: DMatrix<f64>, g: DVector<f64>) -> Self {
+        let dimension = mu.len();
+        Self {
+            mu,
+            lambda,
+            g,
+            dimension,
+        }
+    }
+
+    pub fn observation_likelihood(&self, observation: &DVector<f64>) -> f64 {
+        if observation.len() != self.dimension {
+            return f64::NEG_INFINITY;
+        }
+        
+        let residual = observation - &self.mu;
+        let precision_matrix = DMatrix::identity(self.dimension, self.dimension) * OBSERVATION_PRECISION;
+        
+        let mahalanobis = (&residual.transpose() * &precision_matrix * &residual)[(0, 0)];
+        0.5 * (mahalanobis + (self.dimension as f64) * (2.0 * std::f64::consts::PI).ln())
+    }
+
+    pub fn kullback_leibler_divergence(&self, other: &BeliefState) -> f64 {
+        if self.dimension != other.dimension {
+            return f64::INFINITY;
+        }
+        
+        let mut kl = 0.0;
+        for i in 0..self.dimension {
+            let mu_diff = self.mu[i] - other.mu[i];
+            let var_ratio = other.lambda[(i, i)] / self.lambda[(i, i)];
+            kl += 0.5 * (var_ratio + mu_diff * mu_diff * other.lambda[(i, i)] - 1.0 - var_ratio.ln());
+        }
+        kl
+    }
+
+    pub fn free_energy(&self, observation: &DVector<f64>) -> f64 {
+        let accuracy = self.observation_likelihood(observation);
+        let complexity = self.complexity_term();
+        accuracy + complexity
+    }
+    
+    fn complexity_term(&self) -> f64 {
+        let mut complexity = 0.0;
+        for i in 0..self.dimension {
+            let mu_diff = self.mu[i] - self.g[i];
+            complexity += 0.5 * (mu_diff * mu_diff + 1.0 - self.lambda[(i, i)].ln());
+        }
+        complexity
+    }
+
+    pub fn accuracy_gradient(&self, observation: &DVector<f64>) -> DVector<f64> {
+        let residual = &self.mu - observation;
+        DMatrix::identity(self.dimension, self.dimension) * OBSERVATION_PRECISION * residual
+    }
+
+    pub fn complexity_gradient(&self) -> DVector<f64> {
+        let mut gradient = DVector::zeros(self.dimension);
+        for i in 0..self.dimension {
+            gradient[i] = self.lambda[(i, i)] * (self.mu[i] - self.g[i]);
+        }
+        gradient
+    }
+
+    pub fn free_energy_gradient(&self, observation: &DVector<f64>) -> DVector<f64> {
+        self.accuracy_gradient(observation) + self.complexity_gradient()
+    }
+
+    pub fn update(&mut self, observation: &DVector<f64>, learning_rate: f64) {
+        if observation.len() != self.dimension {
+            return;
+        }
+        
+        let gradient = self.free_energy_gradient(observation);
+        
+        for i in 0..self.dimension {
+            if self.lambda[(i, i)] > 1e-10 {
+                self.mu[i] -= learning_rate * gradient[i] / self.lambda[(i, i)];
+            }
+        }
+    }
+    
+    pub fn predict(&self, steps: usize) -> DVector<f64> {
+        let mut prediction = self.mu.clone();
+        let step_size = 0.1;
+        for _ in 0..steps {
+            for i in 0..prediction.len() {
+                let diff = self.g[i] - prediction[i];
+                prediction[i] += step_size * diff;
+            }
+        }
+        prediction
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_belief_state_creation() {
+        let belief = BeliefState::new(3, 0.5, 1.0, 1.0);
+        assert_eq!(belief.dimension, 3);
+        assert_relative_eq!(belief.mu.norm_squared(), 0.75, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_free_energy_calculation() {
+        let belief = BeliefState::new(2, 0.0, 1.0, 0.0);
+        let observation = DVector::from_vec(vec![0.1, -0.1]);
+        let fe = belief.free_energy(&observation);
+        assert!(fe >= 0.0);
+    }
+}
+```
+
+crates/core/src/resonance.rs:
+
+```rust
+use std::f64::consts::PI;
+use serde::{Deserialize, Serialize};
+
+pub const PHI: f64 = 1.618033988749895;
+pub const NUM_CAPSULES: usize = 108;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResonanceEngine {
+    pub base_frequency: f64,
+    pub perturbation_amplitude: f64,
+    pub phi_frequency: f64,
+    pub current_time: f64,
+    pub time_step: f64,
+}
+
+impl ResonanceEngine {
+    pub fn new(base_freq: f64, alpha: f64, dt: f64) -> Self {
+        Self {
+            base_frequency: base_freq,
+            perturbation_amplitude: alpha,
+            phi_frequency: base_freq * PHI,
+            current_time: 0.0,
+            time_step: dt,
+        }
+    }
+
+    pub fn tick(&mut self) {
+        self.current_time += self.time_step;
+    }
+
+    pub fn capsule_phase(&self, capsule_id: usize) -> f64 {
+        (2.0 * PI * capsule_id as f64) / (PHI * NUM_CAPSULES as f64)
+    }
+
+    pub fn global_wave(&self) -> f64 {
+        let base = (2.0 * PI * self.base_frequency * self.current_time).sin();
+        let perturbation = self.perturbation_amplitude * 
+                          (2.0 * PI * self.phi_frequency * self.current_time).sin();
+        base + perturbation
+    }
+
+    pub fn alignment(&self, capsule_id: usize) -> f64 {
+        let capsule_phase = self.capsule_phase(capsule_id);
+        let global_wave = self.global_wave();
+        let global_phase = global_wave.atan2(1.0);
+        (capsule_phase - global_phase).cos()
+    }
+    
+    pub fn get_phase_for_capsule(&self, capsule_id: usize) -> f64 {
+        let alignment = self.alignment(capsule_id);
+        let capsule_phase = self.capsule_phase(capsule_id);
+        capsule_phase + alignment * 0.1
+    }
+    
+    pub fn in_receptive_phase(&self, capsule_id: usize) -> bool {
+        self.alignment(capsule_id) > 0.3
+    }
+    
+    pub fn get_current_phase_state(&self) -> PhaseState {
+        let wave = self.global_wave();
+        if wave > 0.7 {
+            PhaseState::Convergent
+        } else if wave < -0.7 {
+            PhaseState::Divergent
+        } else {
+            PhaseState::Transition
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum PhaseState {
+    Convergent,
+    Divergent,
+    Transition,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_resonance_engine() {
+        let mut engine = ResonanceEngine::new(1.0, 0.2, 0.1);
+        assert_eq!(engine.phi_frequency, PHI);
+        
+        let phase = engine.capsule_phase(0);
+        assert!(phase >= 0.0 && phase <= 2.0 * PI);
+        
+        engine.tick();
+        assert_eq!(engine.current_time, 0.1);
+        
+        let wave = engine.global_wave();
+        assert!(wave >= -1.2 && wave <= 1.2);
+    }
+}
+```
+
+3. Capsule System Implementation
+
+crates/capsules/Cargo.toml:
+
+```toml
+[package]
+name = "aiadn-capsules"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aiadn-core = { path = "../core" }
+rand = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+```
+
+crates/capsules/src/lib.rs:
+
+```rust
+pub mod capsule;
+pub mod pins;
+pub mod specialties;
+
+pub use capsule::{Capsule, CapsuleConfig, create_capsules};
+pub use pins::{PinConnection, PinNetwork};
+pub use specialties::{CapsuleSpecialty, SpecialtyType, create_specialty_distribution};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CapsuleError {
+    #[error("Capsule communication error: {0}")]
+    CommunicationError(String),
+    #[error("Capsule configuration error: {0}")]
+    ConfigError(String),
+}
+```
+
+crates/capsules/src/specialties.rs:
+
+```rust
+use serde::{Deserialize, Serialize};
+use nalgebra::DVector;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SpecialtyType {
+    TrafficPrediction,
+    RouteOptimization,
+    EnergyManagement,
+    CrisisResponse,
+    LogisticsCoordination,
+    DemandForecasting,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CapsuleSpecialty {
+    pub specialty_type: SpecialtyType,
+    pub expertise_level: f64,
+    pub domain_parameters: Vec<f64>,
+    pub performance_history: Vec<f64>,
+}
+
+impl CapsuleSpecialty {
+    pub fn new(specialty_type: SpecialtyType, expertise: f64) -> Self {
+        let domain_parameters = match specialty_type {
+            SpecialtyType::TrafficPrediction => vec![0.5, 0.3, 0.2],
+            SpecialtyType::RouteOptimization => vec![0.7, 0.2, 0.1],
+            SpecialtyType::EnergyManagement => vec![0.4, 0.4, 0.2],
+            SpecialtyType::CrisisResponse => vec![0.8, 0.1, 0.1],
+            SpecialtyType::LogisticsCoordination => vec![0.3, 0.4, 0.3],
+            SpecialtyType::DemandForecasting => vec![0.6, 0.3, 0.1],
+        };
+        
+        Self {
+            specialty_type,
+            expertise_level: expertise,
+            domain_parameters,
+            performance_history: Vec::new(),
+        }
+    }
+    
+    pub fn process_observation(&self, observation: &DVector<f64>) -> DVector<f64> {
+        match self.specialty_type {
+            SpecialtyType::TrafficPrediction => self.predict_traffic(observation),
+            SpecialtyType::RouteOptimization => self.optimize_route(observation),
+            SpecialtyType::EnergyManagement => self.manage_energy(observation),
+            SpecialtyType::CrisisResponse => self.assess_crisis(observation),
+            SpecialtyType::LogisticsCoordination => self.coordinate_logistics(observation),
+            SpecialtyType::DemandForecasting => self.forecast_demand(observation),
+        }
+    }
+    
+    fn predict_traffic(&self, observation: &DVector<f64>) -> DVector<f64> {
+        let mut prediction = observation.clone();
+        for i in 0..prediction.len() {
+            prediction[i] = prediction[i] * self.domain_parameters[0] 
+                + self.expertise_level * self.domain_parameters[1];
+        }
+        prediction
+    }
+    
+    fn optimize_route(&self, observation: &DVector<f64>) -> DVector<f64> {
+        observation.map(|x| x * (1.0 - self.expertise_level * 0.1))
+    }
+    
+    fn manage_energy(&self, observation: &DVector<f64>) -> DVector<f64> {
+        observation.map(|x| x * (0.5 + self.expertise_level * 0.5))
+    }
+    
+    fn assess_crisis(&self, observation: &DVector<f64>) -> DVector<f64> {
+        observation.map(|x| x * (1.0 + self.expertise_level))
+    }
+    
+    fn coordinate_logistics(&self, observation: &DVector<f64>) -> DVector<f64> {
+        let avg: f64 = observation.iter().sum::<f64>() / observation.len() as f64;
+        DVector::from_element(observation.len(), avg)
+    }
+    
+    fn forecast_demand(&self, observation: &DVector<f64>) -> DVector<f64> {
+        let mut forecast = observation.clone();
+        let trend = self.expertise_level * 0.2;
+        for i in 0..forecast.len() {
+            forecast[i] = forecast[i] * (1.0 + trend);
+        }
+        forecast
+    }
+    
+    pub fn update_performance(&mut self, success: bool) {
+        let performance = if success { 1.0 } else { 0.0 };
+        self.performance_history.push(performance);
+        
+        if self.performance_history.len() > 10 {
+            let recent_avg: f64 = self.performance_history
+                .iter()
+                .rev()
+                .take(10)
+                .sum::<f64>() / 10.0;
+            self.expertise_level = (self.expertise_level * 0.9 + recent_avg * 0.1).clamp(0.0, 1.0);
+        }
+    }
+}
+
+pub fn create_specialty_distribution(count: usize) -> Vec<CapsuleSpecialty> {
+    let mut specialties = Vec::with_capacity(count);
+    
+    let specialty_types = [
+        (SpecialtyType::TrafficPrediction, 36),
+        (SpecialtyType::RouteOptimization, 36),
+        (SpecialtyType::EnergyManagement, 18),
+        (SpecialtyType::CrisisResponse, 18),
+    ];
+    
+    let mut type_counter = 0;
+    let mut type_index = 0;
+    
+    for i in 0..count {
+        if type_counter >= specialty_types[type_index].1 {
+            type_index = (type_index + 1) % specialty_types.len();
+            type_counter = 0;
+        }
+        
+        let specialty_type = match type_index {
+            0 => SpecialtyType::TrafficPrediction,
+            1 => SpecialtyType::RouteOptimization,
+            2 => SpecialtyType::EnergyManagement,
+            3 => SpecialtyType::CrisisResponse,
+            _ => SpecialtyType::TrafficPrediction,
+        };
+        
+        let expertise = 0.5 + (i as f64 % 10.0) / 20.0;
+        
+        specialties.push(CapsuleSpecialty::new(specialty_type, expertise));
+        type_counter += 1;
+    }
+    
+    specialties
+}
+```
+
+crates/capsules/src/pins.rs:
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PinConnection {
+    pub target_id: usize,
+    pub weight: f64,
+    pub decay_rate: f64,
+    pub last_updated: usize,
+    pub bandwidth: f64,
+    pub message_history: Vec<(usize, f64)>,
+}
+
+impl PinConnection {
+    pub fn new(target_id: usize, initial_weight: f64, decay_rate: f64) -> Self {
+        Self {
+            target_id,
+            weight: initial_weight,
+            decay_rate,
+            last_updated: 0,
+            bandwidth: 1.0,
+            message_history: Vec::new(),
+        }
+    }
+    
+    pub fn update(&mut self, salience: f64, learning_rate: f64, current_step: usize) {
+        let steps_since_update = (current_step - self.last_updated) as f64;
+        let time_decay = self.decay_rate * steps_since_update;
+        
+        self.weight = (self.weight * (1.0 - time_decay) + learning_rate * salience)
+            .clamp(0.0, 1.0);
+        
+        self.last_updated = current_step;
+        self.message_history.push((current_step, salience));
+        
+        if self.message_history.len() > 100 {
+            self.message_history.remove(0);
+        }
+    }
+    
+    pub fn should_prune(&self, threshold: f64) -> bool {
+        self.weight < threshold
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PinNetwork {
+    pub connections: HashMap<usize, HashMap<usize, PinConnection>>,
+    pub global_threshold: f64,
+}
+
+impl PinNetwork {
+    pub fn new() -> Self {
+        Self {
+            connections: HashMap::new(),
+            global_threshold: 0.1,
+        }
+    }
+    
+    pub fn add_connection(&mut self, from: usize, to: usize, initial_weight: f64) {
+        let connection = PinConnection::new(to, initial_weight, 0.05);
+        self.connections
+            .entry(from)
+            .or_insert_with(HashMap::new)
+            .insert(to, connection);
+    }
+    
+    pub fn update_connection(&mut self, from: usize, to: usize, salience: f64, learning_rate: f64, step: usize) {
+        if let Some(from_connections) = self.connections.get_mut(&from) {
+            if let Some(connection) = from_connections.get_mut(&to) {
+                connection.update(salience, learning_rate, step);
+            }
+        }
+    }
+    
+    pub fn prune_weak_connections(&mut self) {
+        let threshold = self.global_threshold;
+        
+        for connections in self.connections.values_mut() {
+            connections.retain(|_, conn| !conn.should_prune(threshold));
+        }
+        
+        self.connections.retain(|_, conns| !conns.is_empty());
+    }
+}
+
+impl Default for PinNetwork {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+```
+
+crates/capsules/src/capsule.rs:
+
+```rust
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use nalgebra::DVector;
+use serde::{Deserialize, Serialize};
+use parking_lot::RwLock;
+
+use aiadn_core::inference::BeliefState;
+use aiadn_core::resonance::{ResonanceEngine, NUM_CAPSULES};
+use aiadn_core::types::{Observation, Action, CapsuleMessage, ObservationSource};
+
+use super::pins::{PinConnection, PinNetwork};
+use super::specialties::{CapsuleSpecialty, SpecialtyType};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapsuleConfig {
+    pub id: usize,
+    pub learning_rate: f64,
+    pub salience_threshold: f64,
+    pub initial_belief_state: BeliefState,
+    pub specialty: CapsuleSpecialty,
+}
+
+#[derive(Debug)]
+pub struct Capsule {
+    pub id: usize,
+    pub belief: BeliefState,
+    pub phase_offset: f64,
+    pub learning_rate: f64,
+    pub salience_threshold: f64,
+    pub recent_salience: Vec<f64>,
+    pub incoming_pins: HashMap<usize, PinConnection>,
+    pub outgoing_pins: HashMap<usize, PinConnection>,
+    pub mailbox: Arc<Mutex<mpsc::Receiver<CapsuleMessage>>>,
+    pub broadcast_tx: mpsc::Sender<CapsuleMessage>,
+    pub specialty: CapsuleSpecialty,
+    pub action_history: Vec<Action>,
+    pub message_history: Vec<CapsuleMessage>,
+    pub step_counter: usize,
+}
+
+impl Capsule {
+    pub fn new(config: CapsuleConfig, broadcast_tx: mpsc::Sender<CapsuleMessage>) -> (Self, mpsc::Sender<CapsuleMessage>) {
+        let (message_tx, message_rx) = mpsc::channel(100);
+        
+        let capsule = Self {
+            id: config.id,
+            belief: config.initial_belief_state,
+            phase_offset: 0.0,
+            learning_rate: config.learning_rate,
+            salience_threshold: config.salience_threshold,
+            recent_salience: Vec::new(),
+            incoming_pins: HashMap::new(),
+            outgoing_pins: HashMap::new(),
+            mailbox: Arc::new(Mutex::new(message_rx)),
+            broadcast_tx,
+            specialty: config.specialty,
+            action_history: Vec::new(),
+            message_history: Vec::new(),
+            step_counter: 0,
+        };
+        
+        (capsule, message_tx)
+    }
+    
+    pub async fn cognitive_cycle(
+        &mut self, 
+        observation: &Observation,
+        resonance: &ResonanceEngine,
+        network: &mut PinNetwork,
+    ) -> Action {
+        self.step_counter += 1;
+        
+        let alignment = resonance.alignment(self.id);
+        if !resonance.in_receptive_phase(self.id) {
+            return Action::Wait;
+        }
+        
+        let processed_obs = self.specialty.process_observation(&observation.data);
+        let specialty_observation = Observation {
+            data: processed_obs,
+            timestamp: observation.timestamp,
+            source: ObservationSource::Capsule(self.id),
+        };
+        
+        let mod_learning_rate = self.learning_rate * alignment;
+        self.belief.update(&specialty_observation.data, mod_learning_rate);
+        
+        self.process_messages().await;
+        
+        let salience = self.compute_salience(&specialty_observation.data);
+        self.recent_salience.push(salience);
+        if self.recent_salience.len() > 10 {
+            self.recent_salience.remove(0);
+        }
+        
+        let action = self.plan_action(&specialty_observation);
+        
+        self.update_pin_weights(network, salience);
+        
+        if salience > self.salience_threshold {
+            self.broadcast_state().await;
+        }
+        
+        self.action_history.push(action.clone());
+        
+        action
+    }
+    
+    async fn process_messages(&mut self) {
+        let mut mailbox = self.mailbox.lock().await;
+        while let Ok(message) = mailbox.try_recv() {
+            self.message_history.push(message.clone());
+            
+            match message {
+                CapsuleMessage::BeliefUpdate { capsule_id, mu } => {
+                    self.process_belief_update(capsule_id, mu);
+                }
+                CapsuleMessage::PhaseSync { phase } => {
+                    self.phase_offset = phase;
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    fn process_belief_update(&mut self, source_id: usize, mu: DVector<f64>) {
+        let weight = self.get_pin_weight(source_id);
+        if weight > 0.1 {
+            for i in 0..self.belief.dimension {
+                if i < mu.len() {
+                    self.belief.mu[i] = self.belief.mu[i] * (1.0 - weight) + mu[i] * weight;
+                }
+            }
+        }
+    }
+    
+    fn plan_action(&self, observation: &Observation) -> Action {
+        let predicted_state = self.belief.predict(1);
+        
+        match self.specialty.specialty_type {
+            SpecialtyType::TrafficPrediction => {
+                let avg_congestion: f64 = predicted_state.iter().sum::<f64>() / predicted_state.len() as f64;
+                if avg_congestion > 0.7 {
+                    Action::Broadcast(vec![1, self.id as u8])
+                } else {
+                    Action::Wait
+                }
+            }
+            SpecialtyType::CrisisResponse => {
+                let crisis_level: f64 = observation.data.iter().sum::<f64>() / observation.data.len() as f64;
+                if crisis_level > 0.8 {
+                    Action::Broadcast(vec![2, self.id as u8])
+                } else {
+                    Action::Wait
+                }
+            }
+            _ => Action::Wait,
+        }
+    }
+    
+    fn compute_salience(&self, observation: &DVector<f64>) -> f64 {
+        let free_energy = self.belief.free_energy(observation);
+        let base_salience = (-free_energy).exp();
+        base_salience * self.specialty.expertise_level
+    }
+    
+    fn update_pin_weights(&mut self, network: &mut PinNetwork, salience: f64) {
+        for (target_id, connection) in &mut self.outgoing_pins {
+            connection.update(salience, self.learning_rate, self.step_counter);
+            network.update_connection(self.id, *target_id, salience, self.learning_rate, self.step_counter);
+        }
+    }
+    
+    async fn broadcast_state(&self) {
+        let message = CapsuleMessage::BeliefUpdate {
+            capsule_id: self.id,
+            mu: self.belief.mu.clone(),
+        };
+        
+        let _ = self.broadcast_tx.send(message).await;
+    }
+    
+    fn get_pin_weight(&self, source_id: usize) -> f64 {
+        self.incoming_pins
+            .get(&source_id)
+            .map(|conn| conn.weight)
+            .unwrap_or(0.0)
+    }
+    
+    pub fn add_outgoing_pin(&mut self, target_id: usize, initial_weight: f64) {
+        let connection = PinConnection::new(target_id, initial_weight, 0.05);
+        self.outgoing_pins.insert(target_id, connection);
+    }
+    
+    pub fn add_incoming_pin(&mut self, source_id: usize, initial_weight: f64) {
+        let connection = PinConnection::new(source_id, initial_weight, 0.05);
+        self.incoming_pins.insert(source_id, connection);
+    }
+    
+    pub fn get_recent_salience_avg(&self) -> f64 {
+        if self.recent_salience.is_empty() {
+            return 0.0;
+        }
+        self.recent_salience.iter().sum::<f64>() / self.recent_salience.len() as f64
+    }
+}
+
+pub fn create_capsules(
+    count: usize, 
+    broadcast_tx: mpsc::Sender<CapsuleMessage>,
+) -> (Vec<Capsule>, Vec<mpsc::Sender<CapsuleMessage>>) {
+    let specialties = super::specialties::create_specialty_distribution(count);
+    
+    let mut capsules = Vec::with_capacity(count);
+    let mut message_txs = Vec::with_capacity(count);
+    
+    for i in 0..count {
+        let config = CapsuleConfig {
+            id: i,
+            learning_rate: 0.01 + (i % 5) as f64 * 0.002,
+            salience_threshold: 0.3 + (i % 3) as f64 * 0.05,
+            initial_belief_state: BeliefState::new(3, 0.5, 1.0, 1.0),
+            specialty: specialties[i].clone(),
+        };
+        
+        let (capsule, message_tx) = Capsule::new(config, broadcast_tx.clone());
+        capsules.push(capsule);
+        message_txs.push(message_tx);
+    }
+    
+    (capsules, message_txs)
+}
+```
+
+4. Nucleus System
+
+crates/nucleus/Cargo.toml:
+
+```toml
+[package]
+name = "aiadn-nucleus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aiadn-core = { path = "../core" }
+aiadn-capsules = { path = "../capsules" }
+rand = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+nalgebra = { workspace = true }
+plotters = { workspace = true }
+once_cell = { workspace = true }
+```
+
+crates/nucleus/src/lib.rs:
+
+```rust
+pub mod controller;
+pub mod metrics;
+
+pub use controller::Nucleus;
+pub use metrics::{MAEBEMetrics, StagnationDetector};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NucleusConfig {
+    pub perturbation_alpha: f64,
+    pub base_frequency: f64,
+    pub resource_radius: f64,
+    pub min_alpha: f64,
+    pub max_alpha: f64,
+}
+
+impl Default for NucleusConfig {
+    fn default() -> Self {
+        Self {
+            perturbation_alpha: 0.2,
+            base_frequency: 1.0,
+            resource_radius: 2.5,
+            min_alpha: 0.1,
+            max_alpha: 0.9,
+        }
+    }
+}
+```
+
+crates/nucleus/src/controller.rs:
+
+```rust
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use nalgebra::DMatrix;
+use serde::{Deserialize, Serialize};
+
+use aiadn_core::resonance::{ResonanceEngine, PhaseState};
+use aiadn_core::types::{NucleusCommand, CapsuleMetrics};
+
+use super::metrics::{MAEBEMetrics, StagnationDetector};
+use super::NucleusConfig;
+
+#[derive(Debug)]
+pub struct Nucleus {
+    pub perturbation_alpha: f64,
+    pub base_frequency: f64,
+    pub resource_radius: f64,
+    pub min_alpha: f64,
+    pub max_alpha: f64,
+    pub maebe_metrics: MAEBEMetrics,
+    pub stagnation_detector: StagnationDetector,
+    pub history_buffer: VecDeque<SystemState>,
+    pub resource_field: DMatrix<f64>,
+    pub command_tx: mpsc::Sender<NucleusCommand>,
+    pub resonance: ResonanceEngine,
+    pub current_step: usize,
+    pub phase_state: PhaseState,
+    pub crisis_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemState {
+    pub step: usize,
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub perturbation_alpha: f64,
+    pub resource_allocation: f64,
+}
+
+impl Nucleus {
+    pub fn new(
+        config: NucleusConfig,
+        command_tx: mpsc::Sender<NucleusCommand>,
+    ) -> Self {
+        let resonance = ResonanceEngine::new(config.base_frequency, config.perturbation_alpha, 0.1);
+        
+        let resource_field = DMatrix::from_element(12, 9, 1.0);
+        
+        Self {
+            perturbation_alpha: config.perturbation_alpha,
+            base_frequency: config.base_frequency,
+            resource_radius: config.resource_radius,
+            min_alpha: config.min_alpha,
+            max_alpha: config.max_alpha,
+            maebe_metrics: MAEBEMetrics::new(),
+            stagnation_detector: StagnationDetector::new(50, 0.85),
+            history_buffer: VecDeque::with_capacity(1000),
+            resource_field,
+            command_tx,
+            resonance,
+            current_step: 0,
+            phase_state: PhaseState::Transition,
+            crisis_mode: false,
+        }
+    }
+    
+    pub async fn control_cycle(&mut self, capsules: &[CapsuleMetrics]) {
+        self.current_step += 1;
+        self.resonance.tick();
+        self.phase_state = self.resonance.get_current_phase_state();
+        
+        let metrics = self.collect_metrics(capsules);
+        
+        self.maebe_metrics.update(&metrics, self.current_step);
+        
+        let is_stagnant = self.stagnation_detector.evaluate(
+            self.maebe_metrics.coherence,
+            self.maebe_metrics.global_free_energy_gradient,
+            self.maebe_metrics.task_success_rate,
+        );
+        
+        if is_stagnant {
+            self.trigger_divergent_pulse().await;
+        } else if self.crisis_mode || self.maebe_metrics.in_crisis() {
+            self.trigger_crisis_response().await;
+        } else {
+            self.maintain_convergent_flow().await;
+        }
+        
+        self.update_resource_field();
+        self.broadcast_phase().await;
+        self.record_state();
+    }
+    
+    fn collect_metrics(&self, capsules: &[CapsuleMetrics]) -> NucleusMetrics {
+        let mut metrics = NucleusMetrics::default();
+        
+        for capsule_metrics in capsules {
+            metrics.total_free_energy += capsule_metrics.free_energy;
+            metrics.coherence_sum += capsule_metrics.coherence_contribution;
+            metrics.task_successes += if capsule_metrics.task_success { 1 } else { 0 };
+        }
+        
+        metrics.coherence = metrics.coherence_sum / capsules.len() as f64;
+        metrics.global_free_energy = metrics.total_free_energy / capsules.len() as f64;
+        metrics.task_success_rate = metrics.task_successes as f64 / capsules.len() as f64;
+        
+        metrics
+    }
+    
+    async fn trigger_divergent_pulse(&mut self) {
+        println!("NUCLEUS[{}]: Triggering divergent pulse (Γ = {:.2})", 
+                self.current_step,
+                self.stagnation_detector.current_gamma);
+        
+        self.perturbation_alpha = (self.perturbation_alpha * 1.5).min(self.max_alpha);
+        self.resonance.perturbation_amplitude = self.perturbation_alpha;
+        
+        self.base_frequency *= 1.2;
+        self.resonance.base_frequency = self.base_frequency;
+        
+        self.resource_radius *= 1.5;
+        
+        let _ = self.command_tx.send(NucleusCommand::PhaseReset).await;
+    }
+    
+    async fn trigger_crisis_response(&mut self) {
+        println!("NUCLEUS[{}]: Crisis response activated", self.current_step);
+        self.crisis_mode = true;
+        
+        self.base_frequency *= 1.5;
+        self.perturbation_alpha = self.min_alpha;
+        self.resonance.base_frequency = self.base_frequency;
+        self.resonance.perturbation_amplitude = self.perturbation_alpha;
+        
+        let allocation: HashMap<usize, f64> = (0..108)
+            .map(|i| (i, if i < 36 { 2.0 } else { 1.0 }))
+            .collect();
+        
+        let _ = self.command_tx.send(NucleusCommand::ResourceAllocation(allocation)).await;
+    }
+    
+    async fn maintain_convergent_flow(&mut self) {
+        if self.perturbation_alpha > 0.3 {
+            self.perturbation_alpha *= 0.95;
+            self.resonance.perturbation_amplitude = self.perturbation_alpha;
+        }
+        
+        if self.crisis_mode && self.maebe_metrics.coherence > 0.8 {
+            self.crisis_mode = false;
+        }
+    }
+    
+    fn update_resource_field(&mut self) {
+        for i in 0..self.resource_field.nrows() {
+            for j in 0..self.resource_field.ncols() {
+                let capsule_id = i * self.resource_field.ncols() + j;
+                if capsule_id < 108 {
+                    self.resource_field[(i, j)] = (self.resource_field[(i, j)] * 0.99)
+                        .max(0.1)
+                        .min(3.0);
+                }
+            }
+        }
+    }
+    
+    async fn broadcast_phase(&mut self) {
+        let wave = self.resonance.global_wave();
+        let command = if wave > 0.0 {
+            NucleusCommand::FrequencyAdjust(1.1)
+        } else {
+            NucleusCommand::FrequencyAdjust(0.9)
+        };
+        
+        let _ = self.command_tx.send(command).await;
+    }
+    
+    fn record_state(&mut self) {
+        let state = SystemState {
+            step: self.current_step,
+            coherence: self.maebe_metrics.coherence,
+            global_free_energy: self.maebe_metrics.global_free_energy,
+            perturbation_alpha: self.perturbation_alpha,
+            resource_allocation: self.resource_field.sum() / (self.resource_field.nrows() * self.resource_field.ncols()) as f64,
+        };
+        
+        self.history_buffer.push_back(state);
+        if self.history_buffer.len() > 1000 {
+            self.history_buffer.pop_front();
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct NucleusMetrics {
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub task_success_rate: f64,
+    pub coherence_sum: f64,
+    pub total_free_energy: f64,
+    pub task_successes: usize,
+}
+```
+
+crates/nucleus/src/metrics.rs:
+
+```rust
+use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MAEBEMetrics {
+    pub coherence: f64,
+    pub goal_synergy: f64,
+    pub dynamic_entropy: f64,
+    pub global_free_energy: f64,
+    pub global_free_energy_gradient: f64,
+    pub task_success_rate: f64,
+    pub structural_plasticity: f64,
+    pub anticipatory_coherence: f64,
+    pub efficiency_ratio: f64,
+    pub history: Vec<MetricSnapshot>,
+    prev_free_energy: f64,
+    coherence_history: VecDeque<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricSnapshot {
+    pub step: usize,
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub dynamic_entropy: f64,
+    pub structural_plasticity: f64,
+}
+
+impl Default for MAEBEMetrics {
+    fn default() -> Self {
+        Self {
+            coherence: 1.0,
+            goal_synergy: 0.0,
+            dynamic_entropy: 0.0,
+            global_free_energy: 0.0,
+            global_free_energy_gradient: 0.0,
+            task_success_rate: 0.0,
+            structural_plasticity: 0.0,
+            anticipatory_coherence: 0.0,
+            efficiency_ratio: 1.0,
+            history: Vec::new(),
+            prev_free_energy: 0.0,
+            coherence_history: VecDeque::with_capacity(100),
+        }
+    }
+}
+
+impl MAEBEMetrics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    pub fn update(&mut self, metrics: &NucleusMetrics, step: usize) {
+        self.coherence = metrics.coherence;
+        self.global_free_energy = metrics.global_free_energy;
+        self.task_success_rate = metrics.task_success_rate;
+        
+        self.global_free_energy_gradient = self.global_free_energy - self.prev_free_energy;
+        self.prev_free_energy = self.global_free_energy;
+        
+        self.coherence_history.push_back(self.coherence);
+        if self.coherence_history.len() > 100 {
+            self.coherence_history.pop_front();
+        }
+        
+        if self.coherence_history.len() > 10 {
+            self.anticipatory_coherence = self.calculate_anticipatory_coherence();
+        }
+        
+        let snapshot = MetricSnapshot {
+            step,
+            coherence: self.coherence,
+            global_free_energy: self.global_free_energy,
+            dynamic_entropy: self.dynamic_entropy,
+            structural_plasticity: self.structural_plasticity,
+        };
+        self.history.push(snapshot);
+        
+        if self.history.len() > 1000 {
+            self.history.remove(0);
+        }
+    }
+    
+    fn calculate_anticipatory_coherence(&self) -> f64 {
+        if self.coherence_history.len() < 10 {
+            return 0.0;
+        }
+        
+        let recent_coherence: Vec<f64> = self.coherence_history.iter().take(5).cloned().collect();
+        let avg_coherence: f64 = recent_coherence.iter().sum::<f64>() / recent_coherence.len() as f64;
+        
+        avg_coherence * 0.8
+    }
+    
+    pub fn in_crisis(&self) -> bool {
+        self.coherence < 0.3 || self.task_success_rate < 0.2
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StagnationDetector {
+    pub window_size: usize,
+    pub gamma_threshold: f64,
+    pub max_stagnation_steps: usize,
+    pub current_gamma: f64,
+    pub stagnation_counter: usize,
+    coherence_buffer: VecDeque<f64>,
+    free_energy_buffer: VecDeque<f64>,
+}
+
+impl StagnationDetector {
+    pub fn new(window_size: usize, gamma_threshold: f64) -> Self {
+        Self {
+            window_size,
+            gamma_threshold,
+            max_stagnation_steps: 20,
+            current_gamma: 0.0,
+            stagnation_counter: 0,
+            coherence_buffer: VecDeque::with_capacity(window_size),
+            free_energy_buffer: VecDeque::with_capacity(window_size),
+        }
+    }
+    
+    pub fn evaluate(&mut self, coherence: f64, free_energy_gradient: f64, task_success: f64) -> bool {
+        self.coherence_buffer.push_back(coherence);
+        self.free_energy_buffer.push_back(free_energy_gradient.abs());
+        
+        if self.coherence_buffer.len() > self.window_size {
+            self.coherence_buffer.pop_front();
+            self.free_energy_buffer.pop_front();
+        }
+        
+        if free_energy_gradient.abs() > 1e-10 {
+            self.current_gamma = coherence / free_energy_gradient.abs();
+        } else {
+            self.current_gamma = if coherence > 0.0 { 100.0 } else { 0.0 };
+        }
+        
+        let is_stagnant = self.current_gamma > self.gamma_threshold && task_success < 0.5;
+        
+        if is_stagnant {
+            self.stagnation_counter += 1;
+        } else {
+            self.stagnation_counter = 0;
+        }
+        
+        is_stagnant && self.stagnation_counter >= 3
+    }
+}
+```
+
+5. Environment System
+
+crates/environment/Cargo.toml:
+
+```toml
+[package]
+name = "aiadn-environment"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aiadn-core = { path = "../core" }
+rand = { workspace = true }
+serde = { workspace = true }
+petgraph = { workspace = true }
+```
+
+crates/environment/src/lib.rs:
+
+```rust
+pub mod city;
+pub mod drones;
+
+pub use city::UrbanGrid;
+pub use drones::{DeliveryDrone, DroneStatus};
+```
+
+crates/environment/src/city.rs:
+
+```rust
+use std::collections::{BinaryHeap, HashMap};
+use petgraph::graph::{Graph, NodeIndex};
+use petgraph::visit::EdgeRef;
+use serde::{Deserialize, Serialize};
+use rand::Rng;
+
+const NUM_SECTORS: usize = 108;
+const SECTOR_RADIUS: f64 = 0.5;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CitySector {
+    pub id: usize,
+    pub center: (f64, f64),
+    pub capacity: usize,
+    pub current_drones: usize,
+    pub congestion: f64,
+    pub demand_level: f64,
+    pub connections: Vec<usize>,
+    pub functional: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RoadEdge {
+    pub distance: f64,
+    pub base_capacity: f64,
+    pub current_flow: f64,
+    pub is_functional: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduledEvent {
+    pub step: usize,
+    pub event_type: EventType,
+    pub sectors: Vec<usize>,
+    pub severity: f64,
+}
+
+impl PartialEq for ScheduledEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.step == other.step
+    }
+}
+
+impl Eq for ScheduledEvent {}
+
+impl PartialOrd for ScheduledEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        other.step.partial_cmp(&self.step)
+    }
+}
+
+impl Ord for ScheduledEvent {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.step.cmp(&self.step)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum EventType {
+    BridgeCollapse,
+    TrafficJam,
+    PowerOutage,
+    WeatherEvent,
+}
+
+pub struct UrbanGrid {
+    pub sectors: Vec<CitySector>,
+    pub graph: Graph<usize, RoadEdge>,
+    pub node_indices: HashMap<usize, NodeIndex>,
+    pub scheduled_events: BinaryHeap<ScheduledEvent>,
+    pub step_counter: usize,
+}
+
+impl UrbanGrid {
+    pub fn new() -> Self {
+        let mut sectors = Vec::with_capacity(NUM_SECTORS);
+        let mut graph = Graph::new();
+        let mut node_indices = HashMap::new();
+        
+        let rows = 9;
+        let cols = 12;
+        
+        for i in 0..NUM_SECTORS {
+            let row = i / cols;
+            let col = i % cols;
+            
+            let x = col as f64 * 0.866 * SECTOR_RADIUS * 2.0;
+            let y = row as f64 * SECTOR_RADIUS * 1.5 + if col % 2 == 1 { SECTOR_RADIUS * 0.75 } else { 0.0 };
+            
+            let node_idx = graph.add_node(i);
+            node_indices.insert(i, node_idx);
+            
+            let connections = Self::compute_adjacent_hexagonal(i, rows, cols);
+            
+            sectors.push(CitySector {
+                id: i,
+                center: (x, y),
+                capacity: 50,
+                current_drones: 0,
+                congestion: 0.0,
+                demand_level: 0.0,
+                connections,
+                functional: true,
+            });
+        }
+        
+        for (i, sector) in sectors.iter().enumerate() {
+            let from_idx = node_indices[&i];
+            for &neighbor in &sector.connections {
+                if i < neighbor {
+                    let distance = Self::sector_distance(&sectors[i], &sectors[neighbor]);
+                    let capacity = if distance < 1.5 { 30.0 } else { 15.0 };
+                    
+                    let to_idx = node_indices[&neighbor];
+                    graph.add_edge(from_idx, to_idx, RoadEdge {
+                        distance,
+                        base_capacity: capacity,
+                        current_flow: 0.0,
+                        is_functional: true,
+                    });
+                }
+            }
+        }
+        
+        let mut scheduled_events = BinaryHeap::new();
+        scheduled_events.push(ScheduledEvent {
+            step: 500,
+            event_type: EventType::BridgeCollapse,
+            sectors: vec![42, 67],
+            severity: 0.9,
+        });
+        
+        Self {
+            sectors,
+            graph,
+            node_indices,
+            scheduled_events,
+            step_counter: 0,
+        }
+    }
+    
+    fn compute_adjacent_hexagonal(id: usize, rows: usize, cols: usize) -> Vec<usize> {
+        let row = id / cols;
+        let col = id % cols;
+        let mut neighbors = Vec::new();
+        
+        let directions = vec![
+            (0, -1), (0, 1),
+            (-1, 0), (1, 0),
+            (-1, if col % 2 == 0 { -1 } else { 1 }),
+            (1, if col % 2 == 0 { -1 } else { 1 }),
+        ];
+        
+        for (dr, dc) in directions {
+            let new_row = row as isize + dr;
+            let new_col = col as isize + dc;
+            
+            if new_row >= 0 && new_row < rows as isize && 
+               new_col >= 0 && new_col < cols as isize {
+                let neighbor_id = (new_row as usize) * cols + new_col as usize;
+                if neighbor_id < NUM_SECTORS {
+                    neighbors.push(neighbor_id);
+                }
+            }
+        }
+        
+        neighbors
+    }
+    
+    fn sector_distance(a: &CitySector, b: &CitySector) -> f64 {
+        let dx = a.center.0 - b.center.0;
+        let dy = a.center.1 - b.center.1;
+        (dx * dx + dy * dy).sqrt()
+    }
+    
+    pub fn update(&mut self, drones: &[super::drones::DeliveryDrone]) {
+        self.step_counter += 1;
+        
+        for sector in &mut self.sectors {
+            sector.current_drones = 0;
+            sector.congestion = 0.0;
+        }
+        
+        for drone in drones {
+            use super::drones::DroneStatus;
+            if matches!(drone.status, DroneStatus::EnRoute | DroneStatus::Delivering) {
+                if drone.current_sector < self.sectors.len() {
+                    self.sectors[drone.current_sector].current_drones += 1;
+                }
+            }
+        }
+        
+        for sector in &mut self.sectors {
+            let density = sector.current_drones as f64 / sector.capacity as f64;
+            sector.congestion = density.min(1.0);
+        }
+        
+        let mut rng = rand::thread_rng();
+        for sector in &mut self.sectors {
+            let u: f64 = rng.gen_range(0.0..1.0);
+            let demand = (1.0 - u).powf(-1.0 / 2.5).min(100.0);
+            sector.demand_level = demand / 100.0;
+        }
+        
+        while let Some(event) = self.scheduled_events.peek() {
+            if event.step == self.step_counter {
+                let event = self.scheduled_events.pop().unwrap();
+                self.process_event(event);
+            } else if event.step > self.step_counter {
+                break;
+            }
+        }
+    }
+    
+    fn process_event(&mut self, event: ScheduledEvent) {
+        match event.event_type {
+            EventType::BridgeCollapse => {
+                if event.sectors.len() >= 2 {
+                    let sector_a = event.sectors[0];
+                    let sector_b = event.sectors[1];
+                    self.trigger_bridge_collapse(sector_a, sector_b);
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    pub fn trigger_bridge_collapse(&mut self, sector_a: usize, sector_b: usize) {
+        println!("ENVIRONMENT[{}]: Bridge collapsed between sectors {} and {}", 
+                self.step_counter, sector_a, sector_b);
+        
+        if let (Some(&node_a), Some(&node_b)) = (self.node_indices.get(&sector_a), self.node_indices.get(&sector_b)) {
+            if let Some(edge_idx) = self.graph.find_edge(node_a, node_b) {
+                if let Some(edge) = self.graph.edge_weight_mut(edge_idx) {
+                    edge.is_functional = false;
+                    edge.current_flow = 0.0;
+                }
+            }
+        }
+        
+        for &sector_id in &[sector_a, sector_b] {
+            if sector_id < self.sectors.len() {
+                self.sectors[sector_id].congestion = 0.8;
+                self.sectors[sector_id].demand_level = (self.sectors[sector_id].demand_level * 1.5).min(1.0);
+                self.sectors[sector_id].functional = false;
+            }
+        }
+    }
+    
+    pub fn get_sector_observation(&self, sector_id: usize) -> Vec<f64> {
+        if sector_id >= self.sectors.len() {
+            return vec![0.0; 5];
+        }
+        
+        let sector = &self.sectors[sector_id];
+        vec![
+            sector.congestion,
+            sector.demand_level,
+            sector.current_drones as f64 / sector.capacity as f64,
+            if sector.functional { 1.0 } else { 0.0 },
+            self.compute_connectivity(sector_id),
+        ]
+    }
+    
+    fn compute_connectivity(&self, sector_id: usize) -> f64 {
+        if let Some(&node_idx) = self.node_indices.get(&sector_id) {
+            let functional_edges = self.graph.edges(node_idx)
+                .filter(|edge| edge.weight().is_functional)
+                .count();
+            functional_edges as f64 / 8.0
+        } else {
+            0.0
+        }
+    }
+}
+```
+
+crates/environment/src/drones.rs:
+
+```rust
+use serde::{Deserialize, Serialize};
+use rand::Rng;
+
+use super::city::UrbanGrid;
+
+const DRONE_SPEED: f64 = 20.0;
+const BATTERY_DRAIN_RATE: f64 = 0.05;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeliveryPayload {
+    pub size: f64,
+    pub priority: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum DroneStatus {
+    Idle,
+    EnRoute,
+    Delivering,
+    Charging,
+    Delivered,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeliveryDrone {
+    pub id: usize,
+    pub position: (f64, f64),
+    pub destination: Option<usize>,
+    pub battery: f64,
+    pub payload: Option<DeliveryPayload>,
+    pub current_sector: usize,
+    pub route: Vec<usize>,
+    pub status: DroneStatus,
+    pub total_travel_time: f64,
+}
+
+impl DeliveryDrone {
+    pub fn new(id: usize, environment: &UrbanGrid) -> Self {
+        let mut rng = rand::thread_rng();
+        let start_sector = rng.gen_range(0..environment.sectors.len());
+        let position = environment.sectors[start_sector].center;
+        
+        Self {
+            id,
+            position,
+            destination: None,
+            battery: 1.0,
+            payload: None,
+            current_sector: start_sector,
+            route: Vec::new(),
+            status: DroneStatus::Idle,
+            total_travel_time: 0.0,
+        }
+    }
+    
+    pub fn update(&mut self, dt: f64, environment: &UrbanGrid) {
+        self.total_travel_time += dt;
+        
+        match self.status {
+            DroneStatus::EnRoute => {
+                if self.route.is_empty() {
+                    self.status = DroneStatus::Delivering;
+                    return;
+                }
+                
+                let next_sector = self.route[0];
+                let target = environment.sectors[next_sector].center;
+                
+                let dx = target.0 - self.position.0;
+                let dy = target.1 - self.position.1;
+                let distance = (dx * dx + dy * dy).sqrt();
+                
+                if distance < 0.01 {
+                    self.route.remove(0);
+                    self.current_sector = next_sector;
+                    return;
+                }
+                
+                let direction = (dx / distance, dy / distance);
+                let move_dist = DRONE_SPEED * dt;
+                
+                if move_dist >= distance {
+                    self.position = target;
+                    self.route.remove(0);
+                    self.current_sector = next_sector;
+                } else {
+                    self.position.0 += direction.0 * move_dist;
+                    self.position.1 += direction.1 * move_dist;
+                }
+                
+                self.battery = (self.battery - BATTERY_DRAIN_RATE * dt).max(0.0);
+                
+                if self.battery <= 0.2 {
+                    self.status = DroneStatus::Charging;
+                }
+            }
+            DroneStatus::Delivering => {
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < 0.1 {
+                    self.status = DroneStatus::Delivered;
+                    self.payload = None;
+                }
+            }
+            DroneStatus::Charging => {
+                self.battery = (self.battery + 0.3 * dt).min(1.0);
+                if self.battery >= 0.8 {
+                    self.status = DroneStatus::Idle;
+                }
+            }
+            DroneStatus::Idle => {
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < 0.05 {
+                    let dest = rng.gen_range(0..environment.sectors.len());
+                    self.destination = Some(dest);
+                    
+                    self.route = self.find_path(environment, dest);
+                    if !self.route.is_empty() {
+                        self.status = DroneStatus::EnRoute;
+                        self.payload = Some(DeliveryPayload {
+                            size: rng.gen_range(1.0..5.0),
+                            priority: rng.gen_range(0.0..1.0),
+                        });
+                    }
+                }
+            }
+            DroneStatus::Delivered => {
+                self.status = DroneStatus::Idle;
+            }
+        }
+    }
+    
+    fn find_path(&self, environment: &UrbanGrid, dest: usize) -> Vec<usize> {
+        if self.current_sector == dest {
+            return vec![dest];
+        }
+        
+        let mut visited = vec![false; environment.sectors.len()];
+        let mut queue = std::collections::VecDeque::new();
+        let mut predecessor = vec![None; environment.sectors.len()];
+        
+        visited[self.current_sector] = true;
+        queue.push_back(self.current_sector);
+        
+        while let Some(current) = queue.pop_front() {
+            if current == dest {
+                let mut path = Vec::new();
+                let mut node = dest;
+                
+                while let Some(prev) = predecessor[node] {
+                    path.push(node);
+                    node = prev;
+                }
+                path.push(self.current_sector);
+                path.reverse();
+                return path[1..].to_vec();
+            }
+            
+            for &neighbor in &environment.sectors[current].connections {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    predecessor[neighbor] = Some(current);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        
+        Vec::new()
+    }
+}
+```
+
+6. Simulation Engine
+
+crates/simulation/Cargo.toml:
+
+```toml
+[package]
+name = "aiadn-simulation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aiadn-core = { path = "../core" }
+aiadn-capsules = { path = "../capsules" }
+aiadn-nucleus = { path = "../nucleus" }
+aiadn-environment = { path = "../environment" }
+rand = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+rayon = { workspace = true }
+indicatif = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+```
+
+crates/simulation/src/lib.rs:
+
+```rust
+pub mod engine;
+pub mod config;
+
+pub use engine::AIADNSimulation;
+pub use config::SimulationConfig;
+```
+
+crates/simulation/src/config.rs:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    pub name: String,
+    pub total_steps: usize,
+    pub dt: f64,
+    pub capsule_count: usize,
+    pub drone_count: usize,
+    pub save_results: bool,
+    pub output_dir: String,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            name: "Dynamic Urban Pulse".to_string(),
+            total_steps: 1000,
+            dt: 0.1,
+            capsule_count: 108,
+            drone_count: 500,
+            save_results: true,
+            output_dir: "results".to_string(),
+        }
+    }
+}
+```
+
+crates/simulation/src/engine.rs:
+
+```rust
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::{mpsc, RwLock};
+use rayon::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
+use anyhow::Result;
+use tracing::{info, warn, error};
+
+use aiadn_core::{
+    inference::BeliefState,
+    resonance::ResonanceEngine,
+    types::{Observation, ObservationSource, SimulationConfig as CoreConfig, CapsuleMessage, NucleusCommand},
+};
+
+use aiadn_capsules::{Capsule, create_capsules, pins::PinNetwork};
+use aiadn_nucleus::{Nucleus, NucleusConfig};
+use aiadn_environment::{UrbanGrid, DeliveryDrone};
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SimulationMetrics {
+    pub step: usize,
+    pub coherence: f64,
+    pub global_free_energy: f64,
+    pub task_success_rate: f64,
+    pub total_latency: f64,
+    pub energy_efficiency: f64,
+    pub recovery_time: Option<usize>,
+    pub crisis_detected: bool,
+    pub divergent_pulses: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SimulationResults {
+    pub metrics_history: Vec<SimulationMetrics>,
+    pub final_coherence: f64,
+    pub average_latency: f64,
+    pub crisis_recovery_time: Option<usize>,
+    pub divergent_pulses: usize,
+    pub total_steps: usize,
+    pub execution_time: std::time::Duration,
+}
+
+pub struct AIADNSimulation {
+    pub capsules: Vec<Capsule>,
+    pub capsule_message_txs: Vec<mpsc::Sender<CapsuleMessage>>,
+    pub nucleus: Nucleus,
+    pub environment: Arc<RwLock<UrbanGrid>>,
+    pub resonance: ResonanceEngine,
+    pub pin_network: PinNetwork,
+    pub config: CoreConfig,
+    pub step: usize,
+    pub is_running: bool,
+    pub crisis_triggered: bool,
+    pub drones: Vec<DeliveryDrone>,
+    pub metrics_log: Vec<SimulationMetrics>,
+    pub broadcast_tx: mpsc::Sender<CapsuleMessage>,
+    pub broadcast_rx: mpsc::Receiver<CapsuleMessage>,
+    pub nucleus_command_tx: mpsc::Sender<NucleusCommand>,
+}
+
+impl AIADNSimulation {
+    pub async fn new(config: CoreConfig) -> Result<Self> {
+        info!("Initializing AIADN Simulation...");
+        
+        let (broadcast_tx, broadcast_rx) = mpsc::channel(1000);
+        let (nucleus_command_tx, _) = mpsc::channel(100);
+        
+        let environment = Arc::new(RwLock::new(UrbanGrid::new()));
+        
+        let resonance = ResonanceEngine::new(
+            config.base_frequency,
+            config.perturbation_alpha,
+            config.dt,
+        );
+        
+        let (mut capsules, capsule_message_txs) = create_capsules(
+            config.capsule_count,
+            broadcast_tx.clone(),
+        );
+        
+        let nucleus_config = NucleusConfig::default();
+        let nucleus = Nucleus::new(nucleus_config, nucleus_command_tx.clone());
+        
+        let env_read = environment.read().await;
+        let mut drones = Vec::with_capacity(config.drone_count);
+        for i in 0..config.drone_count {
+            drones.push(DeliveryDrone::new(i, &env_read));
+        }
+        drop(env_read);
+        
+        let mut pin_network = PinNetwork::new();
+        let mut rng = rand::thread_rng();
+        for i in 0..capsules.len() {
+            for j in 0..capsules.len() {
+                if i != j && rng.gen::<f64>() < 0.1 {
+                    pin_network.add_connection(i, j, rng.gen_range(0.1..0.5));
+                    capsules[i].add_outgoing_pin(j, rng.gen_range(0.1..0.5));
+                    capsules[j].add_incoming_pin(i, rng.gen_range(0.1..0.5));
+                }
+            }
+        }
+        
+        Ok(Self {
+            capsules,
+            capsule_message_txs,
+            nucleus,
+            environment,
+            resonance,
+            pin_network,
+            config,
+            step: 0,
+            is_running: false,
+            crisis_triggered: false,
+            drones,
+            metrics_log: Vec::new(),
+            broadcast_tx,
+            broadcast_rx,
+            nucleus_command_tx,
+        })
+    }
+    
+    pub async fn run_full_scenario(&mut self) -> Result<SimulationResults> {
+        info!("Starting AIADN Urban Pulse Simulation");
+        
+        let start_time = Instant::now();
+        self.is_running = true;
+        
+        let pb = ProgressBar::new(self.config.total_steps as u64);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+        
+        info!("Warmup phase (100 steps)...");
+        self.run_steps(100).await?;
+        
+        info!("Main simulation phase...");
+        for step in 100..self.config.total_steps {
+            self.step = step;
+            self.resonance.tick();
+            
+            self.update_environment().await;
+            
+            if step == 500 && !self.crisis_triggered {
+                self.trigger_bridge_collapse(42, 67).await;
+                self.crisis_triggered = true;
+                warn!("=== CRISIS EVENT: Bridge Collapse at Step {} ===", step);
+            }
+            
+            self.update_drones().await;
+            self.update_capsules_parallel().await;
+            self.update_nucleus().await;
+            self.collect_metrics().await;
+            
+            pb.set_position(step as u64);
+            
+            if step % 100 == 0 {
+                if let Some(metrics) = self.metrics_log.last() {
+                    info!("Step {}: C_Ψ={:.3}, F={:.3}, Success={:.1}%", 
+                          step, 
+                          metrics.coherence,
+                          metrics.global_free_energy,
+                          metrics.task_success_rate * 100.0);
+                }
+            }
+        }
+        
+        pb.finish_with_message("Simulation complete!");
+        
+        let execution_time = start_time.elapsed();
+        let results = self.finalize_simulation(execution_time).await?;
+        
+        info!("Simulation Results:");
+        info!("  Total Steps: {}", results.total_steps);
+        info!("  Execution Time: {:?}", results.execution_time);
+        info!("  Final Coherence: {:.3}", results.final_coherence);
+        info!("  Average Latency: {:.2}", results.average_latency);
+        info!("  Divergent Pulses: {}", results.divergent_pulses);
+        
+        if let Some(recovery_time) = results.crisis_recovery_time {
+            info!("  Crisis Recovery Time: {} steps", recovery_time);
+        }
+        
+        Ok(results)
+    }
+    
+    async fn run_steps(&mut self, steps: usize) -> Result<()> {
+        for _ in 0..steps {
+            self.step += 1;
+            self.resonance.tick();
+            self.update_environment().await;
+            self.update_drones().await;
+            self.update_capsules_parallel().await;
+            self.update_nucleus().await;
+            self.collect_metrics().await;
+        }
+        Ok(())
+    }
+    
+    async fn update_environment(&mut self) {
+        let mut env = self.environment.write().await;
+        env.update(&self.drones);
+    }
+    
+    async fn trigger_bridge_collapse(&mut self, sector_a: usize, sector_b: usize) {
+        let mut env = self.environment.write().await;
+        env.trigger_bridge_collapse(sector_a, sector_b);
+    }
+    
+    async fn update_drones(&mut self) {
+        let env = self.environment.read().await;
+        
+        for drone in &mut self.drones {
+            drone.update(self.config.dt, &env);
+        }
+    }
+    
+    async fn update_capsules_parallel(&mut self) {
+        let env = self.environment.read().await;
+        let resonance = self.resonance.clone();
+        let mut pin_network = self.pin_network.clone();
+        
+        let observations: Vec<Observation>
+
+
