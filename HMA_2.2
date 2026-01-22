@@ -1,0 +1,714 @@
+Holonic Mediated Autonomy (HMA) v2.2: Complete Mathematical & Implementation Specification
+
+1.0 Mathematical Foundations: Centroidal Dynamics & CBF Formulation
+
+1.1 Centroidal Dynamics for Floating-Base Systems
+
+For whole-body control of humanoids and quadrupeds, the Centroidal Dynamics model is essential. It describes the dynamics of the robot's total linear (P) and angular (L) momentum about its Center of Mass (CoM).
+
+Let:
+
+· P = Σ m_i v_i (Total linear momentum)
+· L = Σ (r_i × m_i v_i + I_i ω_i) (Total angular momentum about CoM)
+· G = [P; L] ∈ ℝ⁶ (Generalized centroidal momentum)
+· r_G ∈ ℝ³ (CoM position)
+· M ∈ ℝ⁶ˣ⁶ (Centroidal inertia matrix, configuration-dependent)
+
+The centroidal dynamics are:
+
+```
+Ḡ = M(r_G, q) · [¨r_G; ˙ω] + C(r_G, q, ˙q) = A_c(q) · τ + ∑ J_c,i(q)ᵀ · f_i
+```
+
+where:
+
+· A_c(q) maps joint torques τ to centroidal wrench
+· J_c,i(q) is the centroidal Jacobian for contact i
+· f_i ∈ ℝ³ is the external force at contact i (ground reaction force)
+
+The key for real-time CBFs is to express these as control-affine in [¨r_G; ˙ω; f_i].
+
+1.2 Centroidal CBF Chain (Layered Constraints)
+
+Layer 1: Centroidal Angular Momentum Bound
+Prevent excessive spin that cannot be stopped within the next support phase.
+
+```
+h_angular(x) = L_max² - ‖L(x)‖²
+```
+
+The Lie derivative requires Ḣ = -2Lᵀ·(r×f_total + τ_total). In practice, we bound the rate:
+
+```
+L_f h_angular + L_g h_angular · u ≥ -γ_angular · h_angular
+```
+
+where u includes contact force adjustments.
+
+Layer 2: Capture Point / Divergent Component of Motion (DCM)
+For a linear inverted pendulum model (LIPM), the DCM ξ is:
+
+```
+ξ = r_G + ˙r_G / ω_0,   where ω_0 = √(g / z_0)
+```
+
+The CBF keeps the DCM within the support polygon S:
+
+```
+h_dcm(x) = dist(ξ(x), ∂S) - margin
+```
+
+The time derivative ˙ξ = ω_0 (ξ - r_G) + net_force/(m ω_0), making it control-affine in contact forces.
+
+Layer 3: Contact Force Friction Cone & CoP
+For each contact i with normal n_i, friction coefficient μ_i, and local cop p_i:
+
+```
+h_friction,i(x) = μ_i·f_i,z - √(f_i,x² + f_i,y²)  // Pyramid approximation
+h_cop,i(x) = radius_i - ‖p_i(f_i)‖
+```
+
+These are linear in f_i → perfect for QP constraints.
+
+Layer 4: Joint-level Backstop
+Traditional joint limits, velocity, torque limits as in v2.1.
+
+Theorem (Hierarchical Safety): If the centroidal momentum is bounded (Layer 1), the LIPM approximation holds, and Layers 2-4 are satisfied with sufficient margin, then the probability of foot roll or tip-over under bounded disturbance ‖d‖ ≤ δ is less than ε(δ), where ε can be computed via robust reachability.
+
+1.3 Short-Horizon Safety Preview (Mini-MPC)
+
+Instead of purely pointwise CBFs, for centroidal stability we use a 1-3 step preview. At time t, solve:
+
+```
+min_{u[t], u[t+1], u[t+2]}  ‖u[t] - u_AI[t]‖² + ρ·∑‖u[k] - u_nominal[k]‖²
+subject to:
+  CBF_condition(x_pred[k], u[k]) ≥ 0 for k = t, t+1, t+2
+  where x_pred[k+1] = x_pred[k] + Δt·(f(x_pred[k]) + g(x_pred[k])u[k])
+```
+
+This is still a QP (not iterative MPC) because:
+
+1. We linearize dynamics around current state for the preview
+2. We warm-start with u_nominal[k] = u_AI[t] (assumed constant)
+3. Only execute u[t] and re-solve at next cycle
+
+This accounts for the inevitable delay in force application (approx. 2-3 ms on electric actuators).
+
+2.0 QP Solver Architecture: qpOASES Integration Pattern
+
+2.1 Why qpOASES for Robotics QPs
+
+· Active-set method: Efficient for warm-started problems (typical in robotics where solution changes smoothly)
+· Hot-start capability: Can update bounds/constraints without full re-factorization
+· Deterministic execution time: Fixed maximum iterations
+· Small memory footprint: Suitable for embedded (Jetson)
+
+2.2 Mediator QP Formulation for qpOASES
+
+The standard form for qpOASES is:
+
+```
+min   ½ uᵀ H u + gᵀ u
+s.t.  lb ≤ u ≤ ub
+       lbA ≤ A u ≤ ubA
+```
+
+Our constraint L_f h_i + L_g h_i u ≥ -α(h_i) becomes:
+
+```
+A_i = L_g h_i
+lbA_i = -L_f h_i - α(h_i)
+ubA_i = +∞
+```
+
+Implementation with slack variables: Convert soft constraints via:
+
+```
+min   ½ [u; δ]ᵀ [H, 0; 0, λI] [u; δ] + [g; 0]ᵀ [u; δ]
+s.t.  lb ≤ u ≤ ub
+      0 ≤ δ ≤ δ_max
+      lbA ≤ A u - δ ≤ ubA   (δ ≥ 0 acts as slack)
+```
+
+2.3 C++ Integration with Warm-Start
+
+```cpp
+// mediator/src/QPOASESSolver.cpp
+#include "hma/mediator/QPOASESSolver.hpp"
+#include <qpOASES.hpp>
+
+namespace hma::mediator {
+
+class QPOASESSolver::Impl {
+public:
+    Impl(int numVars, int numCons) 
+        : numVars_(numVars), numCons_(numCons),
+          qpProblem_(numVars, numCons, qpOASES::HST_POSDEF) {
+        
+        qpOASES::Options options;
+        options.setToDefault();
+        options.printLevel = qpOASES::PL_NONE;
+        options.enableRegularisation = qpOASES::BT_TRUE;
+        options.numRegularisationSteps = 2;
+        options.enableFlippingBounds = qpOASES::BT_TRUE;
+        options.flippingBoundAccuracy = 1e-6;
+        qpProblem_.setOptions(options);
+    }
+    
+    QPResult solve(const Eigen::MatrixXd& H,
+                   const Eigen::VectorXd& g,
+                   const Eigen::MatrixXd& A,
+                   const Eigen::VectorXd& lbA,
+                   const Eigen::VectorXd& ubA,
+                   const Eigen::VectorXd& lb,
+                   const Eigen::VectorXd& ub,
+                   const Eigen::VectorXd& x0) {
+        
+        // Convert to qpOASES format (column-major)
+        Eigen::MatrixXd H_col = H;  // Already symmetric
+        Eigen::MatrixXd A_col = A;
+        
+        // First call or hot-start
+        qpOASES::returnValue ret;
+        if (!initialized_) {
+            int nWSR = 100;  // Max working set recalculations
+            ret = qpProblem_.init(H_col.data(), g.data(),
+                                 A_col.data(), lb.data(), ub.data(),
+                                 lbA.data(), ubA.data(),
+                                 nWSR, nullptr);
+            initialized_ = (ret == qpOASES::SUCCESSFUL_RETURN);
+        } else {
+            // Hot-start with previous solution + updated bounds
+            int nWSR = 20;
+            ret = qpProblem_.hotstart(H_col.data(), g.data(),
+                                     A_col.data(), lb.data(), ub.data(),
+                                     lbA.data(), ubA.data(),
+                                     nWSR, nullptr);
+        }
+        
+        QPResult result;
+        if (ret == qpOASES::SUCCESSFUL_RETURN) {
+            result.feasible = true;
+            result.solution.resize(numVars_);
+            qpProblem_.getPrimalSolution(result.solution.data());
+            result.solve_time_us = qpProblem_.getCPUtime() * 1e6;
+            
+            // Early exit check: if constraints satisfied with margin > 0.95
+            // and cost hasn't changed much, skip next cycle's full solve
+            double constraint_margin = compute_min_margin(result.solution, A, lbA, ubA);
+            result.can_early_exit = (constraint_margin > 0.95 * global_margin_target_);
+            
+            // Store for next warm-start
+            last_solution_ = result.solution;
+        } else {
+            result.feasible = false;
+            // Fallback to simpler backup QP
+            result = solve_backup_qp(H, g, A, lbA, ubA, lb, ub);
+        }
+        
+        return result;
+    }
+    
+private:
+    int numVars_, numCons_;
+    qpOASES::SQProblem qpProblem_;
+    bool initialized_ = false;
+    Eigen::VectorXd last_solution_;
+    double global_margin_target_ = 0.05;
+    
+    QPResult solve_backup_qp(...) {
+        // Simplified QP with only critical constraints
+        // Uses Eiquadprog for deterministic solving
+    }
+};
+
+} // namespace hma::mediator
+```
+
+2.4 Active Set Selection Algorithm
+
+```cpp
+std::vector<size_t> select_active_set(
+    const std::vector<ConstraintEvaluation>& evals,
+    const AdmittanceIntent& intent,
+    size_t max_active = 16) {
+    
+    // Group by priority: CRITICAL, HIGH, MEDIUM, LOW
+    std::vector<std::vector<size_t>> groups(4);
+    
+    for (size_t i = 0; i < evals.size(); ++i) {
+        double urgency = -evals[i].h;  // Negative h = more urgent
+        double cost = compute_capability_cost(i, intent);
+        double score = urgency / (cost + 1e-6);
+        
+        int priority = get_priority(i);
+        groups[priority].push_back(i);
+        
+        // Sort within group by score
+        std::sort(groups[priority].begin(), groups[priority].end(),
+                 [&](size_t a, size_t b) {
+                     return compute_score(a) > compute_score(b);
+                 });
+    }
+    
+    // Greedy selection across priority groups
+    std::vector<size_t> selected;
+    for (int prio = 0; prio < 4 && selected.size() < max_active; ++prio) {
+        for (size_t idx : groups[prio]) {
+            if (selected.size() >= max_active) break;
+            
+            // Check if this constraint is "redundant" with already selected ones
+            if (!is_redundant(idx, selected, evals)) {
+                selected.push_back(idx);
+                
+                // If adding this uses too much slack budget, stop
+                if (estimate_slack_usage(selected, evals) > slack_budget_) {
+                    selected.pop_back();
+                    break;
+                }
+            }
+        }
+    }
+    
+    return selected;
+}
+```
+
+3.0 Recovery State Machine & Soft-Hard Transition
+
+3.1 Recovery State Definitions
+
+```cpp
+enum class RecoveryState {
+    NORMAL = 0,           // All constraints satisfied with margin > 0
+    SOFTENING = 1,        // Using slack budget (δ > 0)
+    RECOVERY_ACTIVE = 2,  // Budget exceeded, executing recovery trajectory
+    DEGRADED = 3,         // Reduced capability set active
+    EMERGENCY = 4         // Safe shutdown trajectory
+};
+
+struct RecoveryContext {
+    RecoveryState state = RecoveryState::NORMAL;
+    double slack_budget_used = 0.0;
+    double time_in_state = 0.0;
+    Eigen::VectorXd recovery_target;  // Target state for recovery
+    std::vector<std::string> violated_constraints;
+    
+    // Exponential moving average of slack usage
+    double slack_ema = 0.0;
+    const double alpha_ema = 0.1;  // EMA smoothing factor
+};
+```
+
+3.2 State Transition Logic
+
+```cpp
+RecoveryState update_recovery_state(
+    RecoveryContext& ctx,
+    const QPResult& qp_result,
+    const std::vector<ConstraintEvaluation>& evals) {
+    
+    // Update slack usage EMA
+    double total_slack = compute_total_slack(qp_result);
+    ctx.slack_ema = ctx.alpha_ema * total_slack + 
+                   (1 - ctx.alpha_ema) * ctx.slack_ema;
+    
+    // State transitions
+    switch (ctx.state) {
+        case RecoveryState::NORMAL:
+            if (ctx.slack_ema > 0.0) {
+                return RecoveryState::SOFTENING;
+            }
+            if (!qp_result.feasible) {
+                return RecoveryState::EMERGENCY;
+            }
+            break;
+            
+        case RecoveryState::SOFTENING:
+            if (ctx.slack_ema <= 0.0) {
+                return RecoveryState::NORMAL;
+            }
+            if (ctx.slack_ema > slack_budget_threshold_ * 0.8) {
+                // Budget nearly exhausted, plan recovery
+                ctx.recovery_target = plan_recovery_trajectory(ctx);
+                return RecoveryState::RECOVERY_ACTIVE;
+            }
+            if (ctx.time_in_state > max_softening_time_) {
+                return RecoveryState::DEGRADED;
+            }
+            break;
+            
+        case RecoveryState::RECOVERY_ACTIVE:
+            if (recovery_target_reached(ctx)) {
+                return RecoveryState::NORMAL;
+            }
+            if (ctx.time_in_state > max_recovery_time_) {
+                return RecoveryState::EMERGENCY;
+            }
+            break;
+            
+        case RecoveryState::DEGRADED:
+            if (all_constraints_satisfied(ctx, 10.0)) {  // 10-second clear period
+                return RecoveryState::NORMAL;
+            }
+            break;
+    }
+    
+    return ctx.state;  // No transition
+}
+```
+
+3.3 Recovery Trajectory Generation
+
+When slack_ema > threshold, generate a safe recovery trajectory:
+
+```
+min_{u[0..N]} ∑ ‖u[k] - u_nominal[k]‖² + ρ·‖x[N] - x_safe‖²
+s.t.  x[k+1] = f(x[k]) + g(x[k])u[k]
+      h_i(x[k]) ≥ margin_recovery  (stricter than normal!)
+      u_min ≤ u[k] ≤ u_max
+```
+
+where x_safe is a pre-computed "safe configuration" (e.g., crouched stance for biped, home position for arm).
+
+This is a small (N=5-10) trajectory optimization solved via:
+
+1. Sequential Quadratic Programming (SQP) for N ≤ 10
+2. Differential Dynamic Programming (DDP) if dynamics are smooth
+3. Pre-computed library of recovery motions for known failure modes
+
+4.0 Structured Teaching Signals: Bidirectional Protocol
+
+4.1 Complete TeachingSignal Protobuf
+
+```protobuf
+syntax = "proto3";
+
+package hma.core;
+
+message TeachingSignal {
+  // From Mediator to AI
+  message MediatorToAI {
+    string primary_constraint_id = 1;
+    repeated string active_constraint_ids = 2;
+    
+    enum InterventionLevel {
+      NO_INTERVENTION = 0;
+      MINOR_SCALING = 1;      // < 10% adjustment
+      MAJOR_SCALING = 2;      // 10-50% adjustment
+      TRAJECTORY_MOD = 3;     // Changed path
+      GOAL_SUBSTITUTION = 4;  // Different goal
+    }
+    
+    InterventionLevel level = 3;
+    double capability_preservation = 4;  // 0.0-1.0
+    
+    // Why mediation happened
+    message ConstraintViolation {
+      string constraint_id = 1;
+      double margin_before = 2;      // h(x) before mediation
+      double margin_after = 3;       // h(x) after mediation
+      double required_adjustment = 4; // ‖Δu‖ for this constraint
+    }
+    
+    repeated ConstraintViolation violations = 5;
+    
+    // Suggestion for AI policy adaptation
+    message PolicySuggestion {
+      enum SuggestionType {
+        INCREASE_COMPLIANCE = 0;
+        REDUCE_VELOCITY = 1;
+        AVOID_REGION = 2;
+        PREFER_ALTERNATIVE = 3;
+      }
+      
+      SuggestionType type = 1;
+      string region_id = 2;        // For AVOID_REGION
+      string alternative_id = 3;   // For PREFER_ALTERNATIVE
+      double confidence = 4;       // 0.0-1.0
+    }
+    
+    repeated PolicySuggestion suggestions = 6;
+  }
+  
+  // From AI to Mediator (optional hints)
+  message AIToMediator {
+    enum TrustLevel {
+      DISTRUST = 0;      // AI uncertain, be conservative
+      NEUTRAL = 1;       // Default
+      HIGH_TRUST = 2;    // AI confident, allow more slack
+    }
+    
+    TrustLevel trust_hint = 1;
+    
+    // Temporary permission for specific constraint softening
+    message SofteningPermission {
+      string constraint_id = 1;
+      double max_slack = 2;      // Additional slack allowed
+      uint64 duration_ms = 3;    // How long this permission lasts
+      string reason = 4;         // e.g., "delicate_insertion"
+    }
+    
+    repeated SofteningPermission permissions = 2;
+    
+    // AI's prediction of future intents
+    message IntentPreview {
+      uint64 lookahead_ms = 1;
+      repeated AdmittanceIntent predicted_intents = 2;
+    }
+    
+    IntentPreview preview = 3;
+  }
+  
+  MediatorToAI mediator_msg = 1;
+  AIToMediator ai_msg = 2;
+  
+  // Metadata
+  uint64 timestamp_ns = 10;
+  string intent_id = 11;          // Links to specific AI intent
+  double mediation_compute_time_us = 12;
+}
+```
+
+4.2 AI Policy Adaptation Using Teaching Signals
+
+The AI should maintain a constraint awareness model:
+
+```
+P(violation | intent, context) = σ(θᵀ · φ(intent, context))
+```
+
+where features φ include:
+
+· Distance to known constraint boundaries
+· Historical violation rates in similar contexts
+· Current mediator trust hints
+
+Update rule when receiving teaching signal:
+
+```
+θ ← θ - η·(predicted_violation - actual_violation)·φ
+```
+
+This implements online inverse reinforcement learning where the mediator is the "reward function" encoding safety.
+
+5.0 Formal Verification of Critical CBFs
+
+5.1 Template for Analytic CBF Verification in Lean
+
+```lean
+-- verification/CentroidalCBF.lean
+import Mathlib.Analysis.Calculus.ContDiff
+import Mathlib.Analysis.Convex.Cone
+
+structure CentroidalCBF where
+  -- System parameters
+  mass : ℝ
+  com_height : ℝ
+  friction_coeff : ℝ
+  support_polygon : Set (ℝ × ℝ)
+  
+  -- CBF definition
+  h_dcm : ℝ × ℝ × ℝ × ℝ → ℝ  -- ξ_x, ξ_y, ξ̇_x, ξ̇_y
+  h_angular : ℝ³ → ℝ        -- Angular momentum L
+  
+  -- Constants from physics
+  ω0 : ℝ := Real.sqrt (9.81 / com_height)
+  
+theorem dcm_safety (cbf : CentroidalCBF) (ξ : ℝ × ℝ) (ξ̇ : ℝ × ℝ) (f : ℝ × ℝ) :
+    let ξ_next := ξ + (1/cbf.ω0) • ξ̇ + (1/(cbf.mass * cbf.ω0)) • f in
+    cbf.h_dcm (ξ, ξ̇) ≥ 0 →
+    ‖f‖ ≤ cbf.friction_coeff * cbf.mass * 9.81 →
+    ∃ (f' : ℝ × ℝ), 
+      ‖f'‖ ≤ cbf.friction_coeff * cbf.mass * 9.81 ∧
+      cbf.h_dcm (ξ_next, cbf.ω0 • (ξ_next - ξ)) ≥ 0 := by
+  -- Proof uses convexity of friction cone and support polygon
+  rcases h_safe : cbf.h_dcm (ξ, ξ̇) ≥ 0 with ⟨h_val⟩
+  have : Convex ℝ (cbf.support_polygon) := by
+    apply convex_hull_property  -- Support polygon is convex hull of contact points
+    
+  -- Find feasible force that keeps DCM safe
+  let f_feasible := project_to_safe_force(ξ, ξ̇, f, cbf)
+  refine ⟨f_feasible, ?_, ?_⟩
+  · -- f_feasible satisfies friction cone
+    exact friction_cone_property f_feasible
+  · -- Next state is safe
+    exact compute_next_safety h_val f_feasible
+
+-- Neural CBF verification (simplified)
+theorem neural_cbf_lipschitz (network : NeuralNetwork) 
+    (weights_bound : ℝ) (activation : ℝ → ℝ) :
+    -- If weights are bounded and activation is Lipschitz...
+    ∀ (x y : ℝⁿ), 
+      ‖network(x) - network(y)‖ ≤ L * ‖x - y‖ := by
+  -- Proof via induction over layers
+  apply network_lipschitz_bound
+  · exact weights_bound
+  · exact activation_lipschitz_property
+```
+
+5.2 Critical vs. Non-Critical Constraint Classification
+
+```
+CRITICAL (must be analytic + formally verified):
+1. Joint position/velocity limits
+2. Actuator torque/thermal limits  
+3. Self-collision (simplified geometry)
+4. Centroidal angular momentum bound
+5. Support polygon (for standing)
+
+HIGH PRIORITY (can be learned but with Lipschitz bounds):
+1. Complex obstacle avoidance
+2. Human proximity constraints
+3. Task-specific force boundaries
+4. Terrain adaptation constraints
+
+MEDIUM/LOW (can be neural with runtime monitoring):
+1. Social comfort zones
+2. Energy-optimal motion patterns
+3. Aesthetic motion preferences
+```
+
+6.0 Performance Benchmarks & WCET Analysis
+
+6.1 Expected Performance on Jetson Thor (2026)
+
+```
+COMPONENT                    WCET (μs)   MEMORY (MB)   NOTES
+---------------------------  ----------  ------------  --------------------------
+Constraint evaluation        80-120      2-4          50 constraints, GPU-accelerated
+QP formulation (dense)       40-60       1-2          16 vars × 40 constraints
+qpOASES solve (hot-start)    60-100      2-3          Warm-started from prev solution
+PROXQP solve                 80-150      3-5          Better for larger problems
+Shadow mediator check        20-40       0.5          Every 5th cycle (async)
+Teaching signal generation   10-20       0.1          
+TOTAL CYCLE                  200-350     6-10         Under 500μs target
+```
+
+6.2 Memory Layout for Real-Time Performance
+
+```cpp
+// mediator/include/hma/mediator/RealtimeLayout.hpp
+#pragma once
+
+#include <array>
+
+namespace hma::mediator {
+
+// Cache-aligned structures for predictable memory access
+template<typename T, size_t N>
+struct CacheAlignedArray {
+  alignas(64) std::array<T, N> data;
+  
+  // Ensure no false sharing between cores
+  static_assert(sizeof(T) * N % 64 == 0, 
+                "Array size must be cache-line aligned");
+};
+
+// Pre-allocated memory pools to avoid dynamic allocation
+class MemoryPool {
+public:
+  // Fixed-size pools for common operations
+  CacheAlignedArray<double, 1024> qp_workspace;     // QP solver memory
+  CacheAlignedArray<double, 512>  constraint_workspace; // CBF evaluations
+  CacheAlignedArray<double, 256>  jacobian_workspace;  // Jacobian calculations
+  
+  // Double-buffered for pipelining
+  struct DoubleBuffer {
+    CacheAlignedArray<double, 512> front;
+    CacheAlignedArray<double, 512> back;
+    std::atomic<bool> front_valid{false};
+  };
+  
+  DoubleBuffer state_buffer;
+  DoubleBuffer command_buffer;
+};
+
+} // namespace hma::mediator
+```
+
+7.0 Integration with GR00T/NVIDIA Ecosystem
+
+7.1 VLA Output to AdmittanceIntent Conversion
+
+```python
+# integration/groot_adapter.py
+import torch
+from transformers import VLAModel  # Hypothetical GR00T model
+
+class GR00TToAdmittanceIntent:
+    def __init__(self, robot_model):
+        self.robot = robot_model
+        self.vla_model = VLAModel.from_pretrained("nvidia/GR00T-N1.6")
+        
+    def convert(self, image, text_prompt):
+        # GR00T outputs raw action predictions
+        vla_output = self.vla_model(
+            image, 
+            text_prompt,
+            output_type="trajectory"  # Get 6D poses + forces
+        )
+        
+        # Convert to AdmittanceIntent proto
+        intent = AdmittanceIntent()
+        
+        # Task-space goal from VLA
+        intent.desired_pose.position = vla_output["end_effector_pose"][:3]
+        intent.desired_pose.orientation = vla_output["end_effector_pose"][3:]
+        
+        # Compliance from language instruction
+        if "delicate" in text_prompt or "careful" in text_prompt:
+            intent.compliance.position_compliance = [0.9, 0.9, 0.9]  # Very compliant
+        elif "firm" in text_prompt or "forceful" in text_prompt:
+            intent.compliance.position_compliance = [0.1, 0.1, 0.1]  # Stiff
+        
+        # Force targets if specified
+        if "push with" in text_prompt:
+            # Parse force amount from text
+            force_n = parse_force_from_text(text_prompt)
+            intent.desired_wrench.force.z = force_n
+        
+        return intent
+```
+
+7.2 Jetson Thor Deployment Configuration
+
+```yaml
+# config/jetson_thor_humanoid.yaml
+mediator:
+  solver: "qpOASES"
+  max_active_constraints: 18
+  cycle_time_us: 500  # 2 kHz
+  
+  # Centroidal CBF parameters
+  centroidal:
+    com_height_nominal: 0.85  # meters
+    friction_coeff: 0.7
+    angular_momentum_limit: 25.0  # kg·m²/s
+    
+  # QP settings for qpOASES
+  qp:
+    max_iterations: 100
+    termination_tolerance: 1e-4
+    enable_regularization: true
+    regularization_strength: 1e-6
+    
+  # Recovery behavior
+  recovery:
+    slack_budget: 0.15
+    max_softening_time_s: 5.0
+    recovery_trajectory_horizon: 10  # steps
+    
+hardware:
+  ethercat:
+    cycle_time_us: 500
+    sync_mode: "dc"  # Distributed clock
+    watchdog_timeout_ms: 10
+    
+  # GPU acceleration
+  cuda:
+    constraint_evaluation: true
+    jacobian_computation: true
+    max_threads_per_block: 256
+```
+
