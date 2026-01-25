@@ -1,0 +1,639 @@
+The Chameleon Swarm Thesis: Adaptive Self-Organizing Particle Systems through Real-Time Rule Learning
+
+1. Refined Core Thesis
+
+Primary Assertion: Particle systems can achieve genuine real-time learning when they combine differentiable self-organization with meta-optimized inductive biases, exhibiting generalization to novel task variations while maintaining stability through adaptive temporal phases.
+
+Mathematical Formulation:
+
+```
+Given: Particle system P = {x_i, s_i}_{i=1}^N with dynamics f_θ
+Task: T ∼ p(T) from task distribution
+Goal: Learn θ* = argmin_θ 𝔼_T[L(T, f_θ)] in real-time
+
+Real-Time Learning Criterion:
+1. Adaptation: θ → θ' during task execution
+2. Generalization: Performance on T' ∉ training set
+3. Stability: ||f_θ' - f_θ||_2 bounded
+4. Efficiency: Δt_adaptation << Δt_task
+```
+
+2. Complete Mathematical Foundations
+
+2.1 NPA Dynamics with Enhanced Stability
+
+Enhanced SPH Operators with Regularization:
+
+```
+Density with smoothness constraint:
+ρ_i = Σ_j m_j W_ε(||r_ij||) + λ_ρ·tr(∇²W_ε)
+
+Gradient operator with Lipschitz enforcement:
+∇s_i = CLIP(Σ_j (m_j/ρ_j)(s_j - s_i)⊗W_ε∇(r_ij), -L, L)
+where CLIP(v, -L, L) = min(max(v, -L), L)
+
+Perception vector with noise injection for exploration:
+z_i = [s_i, ŝ_i, ∇s_i, ∇ρ_i] + ξ_i, ξ_i ∼ N(0, σ_explore²)
+```
+
+Differential Geometry Formulation:
+The particle system forms a time-varying manifold M(t) ⊂ ℝᴰ. The NPA rule induces a vector field:
+
+```
+V: M(t) × ℝᶜ → T(M(t)) × ℝᶜ
+V(x_i, s_i) = (Δx_i, Δs_i) = f_θ(z_i)
+```
+
+The stability condition becomes:
+
+```
+∃K > 0 such that ∀t: ||V(t+1) - V(t)|| ≤ K·||z(t+1) - z(t)||
+(Lipschitz continuity in perception space)
+```
+
+2.2 TTT-Discover with Entropic Adaptation
+
+Enhanced Entropic Objective with Adaptive Regularization:
+
+```
+J_β,λ(θ) = log 𝔼_τ∼π_θ[exp(β·R(τ))] - λ·D_KL(π_θ||π_0)
+
+Where:
+- π_0 is reference policy (pre-trained or minimally biased)
+- β adapts to maintain: KL(q_β||uniform) = log(2)
+- q_β(τ) ∝ π_θ(τ)·exp(β·R(τ))
+```
+
+Adaptive β Calculation via Fixed-Point Iteration:
+
+```
+Given rewards {r_i}_{i=1}^B:
+1. r' = r - max(r) (numerical stability)
+2. Solve: g(β) = Σ_i exp(β·r'_i)/B * log(B·exp(β·r'_i)/Σ_j exp(β·r'_j)) - γ = 0
+3. Use Newton-Raphson: β_{k+1} = β_k - g(β_k)/g'(β_k)
+4. Terminate when |g(β)| < ε or k > K_max
+```
+
+PUCT Selection with Temporal Discounting:
+
+```
+Score(s) = Q(s) + c·√(log(N_total)/(1 + n(s)))·P(s)·exp(-α·t_last)
+where:
+- t_last: time since last selection
+- α: temporal decay rate
+- P(s) = (rank(s))^{-η}/Σ_j (rank(j))^{-η} (power-law prior)
+```
+
+2.3 Combined Dynamics: Time-Scale Separation
+
+Three-Tier Time Hierarchy:
+
+```
+Level 1 (Fast): Particle dynamics (Δt ~ ms)
+    x_i(t+1) = x_i(t) + η·Δx_i
+    s_i(t+1) = s_i(t) + η·Δs_i
+
+Level 2 (Medium): Rule adaptation (Δt ~ 10-100 ms)
+    θ(k+1) = θ(k) + α·∇_θJ_β,λ(θ(k))
+
+Level 3 (Slow): Meta-parameter adaptation (Δt ~ 1-10 s)
+    L, λ, α, η adapt via gradient-free optimization
+```
+
+Lyapunov Stability Analysis:
+Define the composite state Ξ = ({x_i, s_i}, θ). The dynamics are:
+
+```
+Ξ(t+1) = F(Ξ(t)) = [F_particles(Ξ), F_rule(Ξ)]
+```
+
+Stability requires eigenvalues of ∇F within unit circle:
+
+```
+max|eig(∂F_particles/∂Ξ)| < 1
+max|eig(∂F_rule/∂Ξ)| < 1
+```
+
+3. Complete System Architecture
+
+3.1 Hierarchical Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 Meta-Controller                      │
+│  • Monitors learning progress                        │
+│  • Adjusts hyperparameters (L, λ, α, η)             │
+│  • Detects phase transitions                         │
+│  • Manages curriculum                               │
+└───────────────────────┬─────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────┐
+│           Test-Time Optimizer (TTT Core)            │
+│  • Experience buffer with prioritized replay        │
+│  • Entropic gradient computation                    │
+│  • Adaptive β calculation                           │
+│  • PUCT-based selection                             │
+└───────────────────────┬─────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────┐
+│         Adaptive NPA Rule (π_θ with LoRA)           │
+│  ┌─────────────────────────────────────────┐       │
+│  │ Base Network (frozen)                   │       │
+│  │ • 2-layer MLP: ℝᴺ → ℝᴹ                 │       │
+│  └─────────────────────────────────────────┘       │
+│  ┌─────────────────────────────────────────┐       │
+│  │ LoRA Adapters (trainable)               │       │
+│  │ • A ∈ ℝ^{N×r}, B ∈ ℝ^{r×M}              │       │
+│  │ • r = rank (4-16)                       │       │
+│  │ • ΔW = B·A                              │       │
+│  └─────────────────────────────────────────┘       │
+└───────────────────────┬─────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────┐
+│         Differentiable Physics Engine                │
+│  • SPH operators with gradient stopping             │
+│  • Hash-grid neighbor search                        │
+│  • Collision handling                               │
+│  • Boundary conditions                              │
+└───────────────────────┬─────────────────────────────┘
+                        │
+┌───────────────────────▼─────────────────────────────┐
+│                 Particle System                      │
+│  • N particles with state (x_i, s_i)                │
+│  • Mass m_i = 1/N (normalized)                     │
+│  • Support radius ε                                 │
+└─────────────────────────────────────────────────────┘
+```
+
+3.2 Data Flow with Checkpointing
+
+Forward Pass with Gradient Checkpointing:
+
+```
+Algorithm 1: Efficient Forward-Backward
+Input: Initial state Ξ_0, T steps, C checkpoints
+Output: Loss L, gradients ∇_θL
+
+1: Place checkpoints at indices {t_k} where t_k = floor(k·T/C)
+2: Forward pass:
+   for t = 0 to T-1:
+       if t ∈ {t_k}:
+           store Ξ_t
+       Ξ_{t+1} = F(Ξ_t)
+3: Compute loss L = ℓ(Ξ_T)
+4: Backward pass (reverse):
+   for k = C-1 downto 0:
+       Ξ_start = load_checkpoint(t_k)
+       Recompute from t_k to t_{k+1}-1:
+           for τ = t_k to t_{k+1}-1:
+               Ξ_{τ+1} = F(Ξ_τ)
+               if τ == t_{k+1}-1:
+                   compute ∂L/∂Ξ_τ
+               else:
+                   accumulate gradients
+```
+
+3.3 Two-Phase Training Protocol
+
+Phase 1: Meta-Learning General Prior:
+
+```
+Minimize: L_meta(θ) = 𝔼_{T∼p_train}[L_task(T, f_θ)] + λ_reg·R(θ)
+
+Where R(θ) includes:
+1. Lipschitz penalty: Σ_i ||∇_z f_θ(z_i)||_F²
+2. Sparsity penalty: Σ_{i,j} |θ_{ij}| (L1)
+3. Output bound: Σ_i max(0, |f_θ(z_i)| - 1)²
+```
+
+Phase 2: Real-Time Specialization:
+
+```
+For novel task T_novel:
+1. Initialize: θ = θ_meta, Buffer B = ∅
+2. for iteration = 1 to I_max:
+    2.1. Rollout: Generate K trajectories {τ_j} using π_θ
+    2.2. Evaluate: R_j = reward(τ_j, T_novel)
+    2.3. Store: B ← B ∪ {(τ_j, R_j)}
+    2.4. Prioritize: w_j = exp(β·(R_j - R̄))/Σ_k exp(β·(R_k - R̄))
+    2.5. Sample: Batch ∼ w-weighted from B
+    2.6. Update: θ ← θ + α·Σ_j w_j·∇_θ log π_θ(τ_j)
+    2.7. Adapt: Adjust β, α via gradient-free opt
+3. Return: Specialized θ*
+```
+
+4. Complete Mathematical Stability Proofs
+
+4.1 Contraction Mapping for Particle Dynamics
+
+Theorem 1: The particle dynamics form a contraction in perception space under Lipschitz constraint.
+
+```
+Proof sketch:
+Define perception map Φ: {x_i, s_i} → {z_i}
+Assume: ||Φ(X) - Φ(Y)|| ≤ L_Φ·||X - Y|| (by SPH smoothing)
+And: ||f_θ(z) - f_θ(z')|| ≤ L_f·||z - z'|| (by design)
+
+Then: ||F(X) - F(Y)|| ≤ L_Φ·L_f·||X - Y||
+If L_Φ·L_f < 1: Contraction → unique fixed point
+```
+
+4.2 Convergence of Entropic Policy Gradient
+
+Theorem 2: The entropic policy gradient converges to local optimum under appropriate conditions.
+
+```
+Define: J(θ) = log 𝔼_π_θ[exp(β·R)]
+Gradient: ∇J(θ) = 𝔼_π_θ[exp(β·R)·∇log π_θ]/𝔼[exp(β·R)]
+
+Assume: 1) π_θ is smooth in θ, 2) R bounded, 3) Learning rates satisfy Robbins-Monro
+
+Then: θ_t → θ* where ∇J(θ*) = 0 almost surely
+
+Proof uses Martingale convergence theorem and Polyak-Ruppert averaging.
+```
+
+5. Implementation Specifications
+
+5.1 CUDA Kernel Specifications
+
+Hash Grid SPH Kernel (Grid-Centric):
+
+```cpp
+__global__ void sph_grid_centric(
+    float* positions,    // [N, D]
+    float* states,       // [N, C]
+    float* outputs,      // [N, output_dim]
+    int* cell_offsets,   // [grid_size]
+    int* cell_counts,    // [grid_size]
+    float epsilon,
+    int D, int C
+) {
+    extern __shared__ float shared_data[];
+    int block_cell = blockIdx.x;
+    int particles_in_cell = cell_counts[block_cell];
+    
+    // Load cell particles to shared memory
+    for (int i = threadIdx.x; i < particles_in_cell; i += blockDim.x) {
+        int global_idx = cell_offsets[block_cell] + i;
+        // Load position and state to shared memory
+    }
+    __syncthreads();
+    
+    // Process neighbor cells (3^D neighborhood)
+    for (int nc = 0; nc < pow(3, D); nc++) {
+        int neighbor_cell = get_neighbor_cell(block_cell, nc);
+        int neighbor_count = cell_counts[neighbor_cell];
+        
+        // Process in chunks for memory efficiency
+        for (int chunk = 0; chunk < neighbor_count; chunk += CHUNK_SIZE) {
+            // Load chunk to shared memory
+            // Compute SPH interactions
+            // Accumulate results
+        }
+    }
+}
+```
+
+5.2 Memory Management Schema
+
+```
+Memory Budget:
+• Positions: N × D × sizeof(float)
+• States: N × C × sizeof(float)
+• Grid: G × (offset + count) × sizeof(int)
+• Gradients: Same as forward
+• Checkpoints: C × (N × (D+C)) × sizeof(float)
+
+Total: ≈ N × (D + C) × (2 + C/T) × sizeof(float) + O(G)
+
+Example: N=4096, D=3, C=16, C/T=0.1, G=32768
+Total: 4096 × 19 × 2.1 × 4 + 32768 × 4 ≈ 0.7MB + 0.13MB ≈ 0.83MB
+```
+
+5.3 LoRA Integration Mathematics
+
+Low-Rank Adaptation Formalism:
+
+```
+Base network: f(z) = W₂·σ(W₁·z + b₁) + b₂
+With LoRA: f_LoRA(z) = (W₂ + B₂A₂)·σ((W₁ + B₁A₁)·z + b₁) + b₂
+
+Where:
+A₁ ∈ ℝ^{r×d_in}, B₁ ∈ ℝ^{d_hidden×r}
+A₂ ∈ ℝ^{r×d_hidden}, B₂ ∈ ℝ^{d_out×r}
+r << min(d_in, d_hidden, d_out)
+
+Gradient computation:
+∂f/∂A₁ = B₁ᵀ·(diag(σ')·W₂ᵀ·∂L/∂f)·zᵀ
+∂f/∂B₁ = (∂L/∂f)·(W₂·diag(σ'))·A₁·z
+(Similarly for A₂, B₂)
+```
+
+6. Evaluation Framework
+
+6.1 Quantitative Metrics
+
+Learning Efficiency Metrics:
+
+```
+1. Sample Efficiency: η_sample = (R_final - R_initial)/N_samples
+2. Convergence Rate: α_conv from fit to R(t) = R_∞ - c·exp(-α·t)
+3. Generalization Gap: Δ_gen = |E[R_train] - E[R_test]|
+4. Stability Metric: σ_stab = std(R_last_100)/mean(R_last_100)
+```
+
+Task-Specific Metrics:
+
+```
+Shape Formation:
+• Chamfer Distance: CD(S, T) = (1/|S|)Σ_x∈S min_y∈T ||x-y||² + (1/|T|)Σ_y∈T min_x∈S ||x-y||²
+• Hausdorff Distance: HD(S, T) = max(sup_x∈S inf_y∈T ||x-y||, sup_y∈T inf_x∈S ||y-x||)
+• Skeleton Accuracy: F1 score of extracted medial axis
+
+Navigation:
+• Success Rate: % reaching goal
+• Path Efficiency: length_optimal/length_actual
+• Swarm Coherence: 1 - σ_positions/μ_positions
+```
+
+6.2 Statistical Validation Protocol
+
+Multiple Comparison Correction:
+
+```
+For M experiments, use Benjamini-Hochberg procedure:
+1. Compute p-values for all hypotheses
+2. Sort p-values: p_(1) ≤ p_(2) ≤ ... ≤ p_(M)
+3. Find largest k such that p_(k) ≤ (k/M)·q
+4. Reject hypotheses 1 through k
+
+Where q = 0.05 (false discovery rate)
+```
+
+7. Experimental Suite Design
+
+7.1 Task Taxonomy
+
+Level 1: Basic Adaptation (Sanity Checks)
+
+```
+T1.1: Shape Morphing (Circle → Star)
+T1.2: Density Control (Uniform → Gradient)
+T1.3: Pattern Formation (Stripes, Checkers)
+```
+
+Level 2: Complex Tasks (Core Evaluation)
+
+```
+T2.1: Multi-Objective (Shape + Avoid Obstacles)
+T2.2: Dynamic Target (Moving Goal)
+T2.3: Environmental Adaptation (Varying ε)
+```
+
+Level 3: Stress Tests (Robustness)
+
+```
+T3.1: Partial Observability (Limited Perception)
+T3.2: Particle Failure (Random State Zeroing)
+T3.3: Adversarial Perturbations
+```
+
+7.2 Baseline Comparison Matrix
+
+```
+Comparison against:
+1. Fixed NPA (pre-trained)
+2. Random Search (rule space)
+3. Gradient-Free Opt (CMA-ES)
+4. Standard RL (PPO)
+5. Oracle (if known)
+
+Metrics for each: Success rate, Convergence time, Final performance
+```
+
+8. Theoretical Contributions
+
+8.1 Novel Theoretical Results
+
+Theorem 3 (Adaptation Speed):
+
+```
+The adaptation speed is bounded by:
+Δt_adapt ≥ (1/λ_min(H))·log(||θ* - θ_0||/ε)
+
+Where H is Hessian of J(θ) at optimum,
+λ_min is smallest eigenvalue,
+ε is tolerance.
+
+Proof uses convex optimization theory.
+```
+
+Theorem 4 (Generalization Bound):
+
+```
+With probability 1-δ:
+R_test(θ) ≥ R_train(θ) - O(√(VCdim(f_θ)/N_train) + √(log(1/δ)/N_train))
+
+Where VCdim(f_θ) is VC-dimension of rule class.
+```
+
+8.2 Phase Transition Analysis
+
+Order Parameters:
+
+```
+1. Participation Ratio: PR = (Σ_i λ_i)²/Σ_i λ_i²
+   Where λ_i are eigenvalues of particle covariance
+   
+2. Mutual Information: I(X; S) = H(X) + H(S) - H(X, S)
+   
+3. Effective Dimension: d_eff = exp(H(θ))
+   Where H(θ) is entropy of parameter distribution
+```
+
+9. Complete Implementation Roadmap
+
+Month 1-2: Core Infrastructure
+
+```
+Week 1-2: Differentiable SPH with CUDA
+Week 3-4: NPA with LoRA integration
+Week 5-6: TTT-Discover adaptation layer
+Week 7-8: Unified training pipeline
+```
+
+Month 3-4: Optimization & Scaling
+
+```
+Week 9-10: Memory optimization
+Week 11-12: Multi-GPU support
+Week 13-14: Hyperparameter optimization
+Week 15-16: 3D extension
+```
+
+Month 5-6: Advanced Features
+
+```
+Week 17-18: Meta-controller
+Week 19-20: Adaptive curriculum
+Week 21-22: Robustness enhancements
+Week 23-24: Visualization tools
+```
+
+Month 7-8: Evaluation
+
+```
+Week 25-28: Complete task suite
+Week 29-32: Baseline comparisons
+Week 33-34: Statistical analysis
+Week 35-36: Paper writing
+```
+
+10. Expected Scientific Impact
+
+10.1 Immediate Contributions
+
+1. First framework for real-time rule learning in particle systems
+2. Mathematical foundation combining differentiable physics with entropic RL
+3. Efficient implementation with CUDA kernels and adaptive control
+
+10.2 Long-Term Implications
+
+1. Foundation for adaptive matter with applications in programmable materials
+2. New paradigm for distributed AI systems
+3. Bridge between machine learning, physics, and control theory
+
+10.3 Open Problems Addressed
+
+```
+1. How can physical systems learn without central coordination?
+2. What minimal structure enables efficient real-time adaptation?
+3. How to balance exploration and exploitation in physical learning?
+```
+
+---
+
+Appendices
+
+A. Mathematical Derivations
+
+Backward Pass for SPH with Gradient Stopping:
+
+```
+Let ŝ_i = Σ_j (m_j/ρ_j) s_j W_ε(r_ij)
+In forward pass: ŝ_i = stop_gradient(ŝ_i)
+In backward pass: ∂L/∂s_j = (m_j/ρ_j) W_ε(r_ij) ∂L/∂ŝ_i
+But: ∂L/∂ρ_j = 0 (gradient stopped)
+```
+
+Entropic Gradient Variance Reduction:
+
+```
+Var[∇̂J(θ)] = 𝔼[exp(2βR)(∇logπ)^2]/𝔼[exp(βR)]^2 - 1
+Control variate: g_cv = w(τ)(∇logπ - b)
+Optimal b = Cov(w∇logπ, w)/Var[w]
+```
+
+B. Hyperparameter Ranges
+
+```
+Particle System:
+• N: {256, 1024, 4096, 16384}
+• ε: {0.05, 0.1, 0.2, 0.4}
+• C: {4, 8, 16, 32}
+
+Learning:
+• α: [1e-5, 1e-3] (log scale)
+• β: adaptive, initial {0.1, 1, 10}
+• λ: [0, 1] (regularization)
+• L: [0.1, 10] (Lipschitz constant)
+```
+
+C. Failure Mode Analysis
+
+```
+1. Mode Collapse: All particles converge to same behavior
+   Solution: Diversity regularization
+
+2. Gradient Explosion: Unbounded parameter growth
+   Solution: Gradient clipping, weight decay
+
+3. Catastrophic Forgetting: New learning erases old
+   Solution: Elastic weight consolidation
+
+4. Oscillatory Dynamics: Never converging
+   Solution: Damping, moving average
+```
+
+Based on our "Chameleon Swarm" blueprint, here is a Minimum Viable Product (MVP) definition, focusing on a core demonstration of a particle system learning to self-organize for a single task.
+
+🎯 MVP Goal
+
+Demonstrate that a particle system, starting from a generic rule, can learn and adapt in real-time to form a simple target shape it has never seen before, using the principles of TTT-Discover.
+
+⚙️ MVP Core Components
+
+This MVP strips the comprehensive blueprint down to its most essential parts.
+
+1. The Particle Substrate (Simplified NPA)
+
+· What it is: A system of N particles (e.g., N=256) in 2D.
+· Core Mechanism: Each particle updates its position based on a small, shared Neural Network rule f_θ.
+· Key Simplification:
+  · Use a fixed, pre-computed neighbor graph (like a k-NN graph) instead of full differentiable SPH for perception. This dramatically reduces implementation complexity while keeping local interactions.
+  · The perception vector for particle i is: z_i = concat(s_i, mean(s_neighbors), var(s_neighbors)), where s_i is a small internal state vector.
+
+2. The Real-Time Learner (TTT-Discover Core)
+
+· What it does: It adapts the rule parameters θ during a single simulation run to maximize a reward.
+· Core Mechanism:
+  1. Rollout: Run the particle simulation for a short horizon (e.g., 50 steps).
+  2. Evaluate: Compute reward (e.g., R = - ChamferDistance(particle_positions, target_shape)).
+  3. Adapt: Take a gradient step on θ to increase R, using a simplified version of the entropic objective to focus on good rollouts.
+  4. Repeat: Continue simulating, evaluating, and adapting in loops.
+
+3. The Demonstration Task
+
+· Target: A simple shape (e.g., a square, a triangle, the letter "L").
+· Initialization: Particles start in a disorganized state (e.g., a random cloud or a tight ball).
+· Success Metric: Visual and quantitative improvement in shape formation over the course of one "test-time training" session, compared to a static, pre-trained rule.
+
+📈 MVP Implementation Roadmap (4-6 Weeks)
+
+Week Focus Deliverable
+1-2 Build the Engine A working 2D particle simulator with a neural network update rule and fixed neighbor perception.
+3 Integrate Learning Connect the simulator to an optimizer (e.g., PyTorch) so the rule parameters θ can be updated via gradient descent on a reward signal.
+4 Test & Iterate Get the system to learn a single, simple target shape. Tune learning rates, rewards, and network architecture.
+5-6 Polish & Validate Create a clear visualization showing the learning progression. Document results and quantify improvement over a non-adaptive baseline.
+
+🔬 What Success Looks Like
+
+A successful MVP would produce a video/gif showing:
+
+1. Start: A jumbled cloud of particles.
+2. Process: Over several minutes of real-time simulation and learning, the particles begin to move cohesively.
+3. End: The particles approximate the target shape (e.g., a recognizable square).
+4. Comparison: A side-by-side view showing that a particle system with a static rule fails to form the novel shape, while the adaptive (MVP) system succeeds.
+
+
+📚 Core Reference Papers
+
+1. Learning to Discover at Test Time (TTT-Discover)
+
+· Authors: Mert Yuksekgonul, Daniel Koceja, Xinhao Li, Federico Bianchi, Jed McCaleb, Xiaolong Wang, Jan Kautz, Yejin Choi, James Zou, Carlos Guestrin, Yu Sun.
+· Year: 2026 (submitted 22 Jan 2026).
+· Publisher: arXiv
+· Identifier: arXiv:2601.16175 [cs.LG].
+· DOI: https://doi.org/10.48550/arXiv.2601.16175.
+· Direct Link: https://arxiv.org/abs/2601.16175.
+· Key Point: Introduces the Test-Time Training to Discover (TTT-Discover) method, which uses reinforcement learning at test time to optimize a model for a single, specific problem, prioritizing the discovery of a top solution over average performance.
+
+2. Neural Particle Automata (NPA)
+
+· Authors: Hyunsoo Kim, Ehsan Pajouheshgar, Sabine Süsstrunk, Wenzel Jakob, Jinah Park.
+· Year: Not specified in provided text (accepted paper).
+· Publisher: Not specified in provided text.
+· Identifier: Not provided in search results.
+· Direct Link: Not provided in search results.
+· Key Point: Introduces Neural Particle Automata, a Lagrangian model that generalizes Neural Cellular Automata (NCA) to dynamic particle systems. It uses differentiable Smoothed Particle Hydrodynamics (SPH) operators as a perception mechanism, enabling learnable, self-organizing particle dynamics.
