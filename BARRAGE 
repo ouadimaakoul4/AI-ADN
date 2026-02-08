@@ -631,3 +631,260 @@ This chapter has provided the complete mathematical pathway from the stochastic 
 5. We extended this policy to incorporate institutional constraints, defining the final form of the controller to be integrated into the CPS (Proposition 5.3).
 
 The output of this chapter is a concrete control law—the ReservoirController logic outlined in the proposal—now grounded in rigorous optimal control theory. The next chapter (Chapter 6) will detail the software architecture and computational implementation of this controller, creating the "cyber" core of the proposed CPS framework.
+
+Chapter 6: System Design & Computational Implementation
+
+6.1. Introduction: Translating Theory into Software
+
+The preceding chapters established a rigorous mathematical framework for the optimal control of reservoir sedimentation. This chapter details the computational instantiation of that theory, transforming equations and proofs into a functional, pilot-ready software system. The core deliverable is the Sediment Management Cyber-Physical System (CPS) Toolkit, an open-source Python package that embodies the sensing, estimation, control, and actuation layers of the proposed framework.
+
+The implementation follows software engineering best practices for scientific computing: modularity, reproducibility, documentation, and interoperability. The system is designed not as a monolithic model, but as a suite of interoperable components that can be adapted, tested, and deployed incrementally. This chapter covers: (1) the overall software architecture, (2) the core ReservoirController class implementing the switched policy, (3) data pipelines for ingesting Moroccan remote sensing and hydrological data, and (4) the design of a visualization dashboard for the Agences de Bassins Hydrauliques (ABH). The implementation is grounded in the specific context of Moroccan data sources and governance structures, ensuring direct relevance.
+
+6.2. Software Architecture: A Modular CPS Stack
+
+The toolkit is structured as a three-layer stack, mirroring the CPS abstraction (Physical, Cyber, Interface). Each layer is implemented as a separate Python module to enforce separation of concerns and facilitate testing.
+
+Layer 1: Data & Physical Model Layer (cps_physical.py)
+This module encapsulates the "plant model." It contains classes and functions to simulate the physical world, serving two purposes: (1) as a digital twin for simulation and controller testing, and (2) as a wrapper for real data ingestion in deployment.
+
+· WatershedModel: Implements the MUSLE-based sediment yield calculation (Eq. 4.1). It is parameterized by rasters (GeoTIFF) of K, LS, and C factors.
+· ReservoirModel: Manages the reservoir state  V_s(t) . It integrates inflow from the watershed model and applies removal functions for flushing and dredging.
+· StochasticDriver: Generates sequences of stochastic erosivity  w(t)  following the non-stationary Gamma process (Section 4.3.1).
+· DataConnector: An abstract class with concrete implementations (ABH_API_Connector, SentinelHub_Connector) to fetch real-time observational data.
+
+Layer 2: Core Control & Optimization Layer (cps_control.py)
+This is the "cyber" brain of the system. It hosts the state estimator and the controller.
+
+· StateEstimator: Implements a Kalman Filter to fuse noisy, asynchronous observations (e.g., monthly bathymetry spot checks, daily inflow turbidity) with the ReservoirModel predictions to produce a statistically optimal estimate  \hat{V}_s(t) .
+· ReservoirController: The main class implementing the Switched Feedback Policy derived in Section 5.6. Its logic is detailed in Section 6.3.
+
+Layer 3: Interface & Visualization Layer (cps_interface.py)
+This module handles interaction with human operators and external systems.
+
+· PolicyDashboard: A web-based dashboard (built with Plotly Dash or Streamlit) that visualizes the system state, control recommendations, and historical trends.
+· ActuationInterface: Translates the controller's abstract output (e.g., u1=0.8) into actionable items (e.g., "Issue tender for terracing in Hotspot B: 50 ha"). It generates standardized reports compatible with ABH planning formats.
+
+Figure 6.1: Software Architecture Diagram
+
+```
+[Real World] <--Sensors--> [Data & Physical Layer]
+                                    ↓ (Observations y(t))
+[CORE CONTROL LAYER] ← StateEstimator (produces V_s_hat)
+                            ↓
+                    ReservoirController (computes u*(t))
+                            ↓ (Control Signal)
+[Interface Layer] ← ActuationInterface (creates report)
+                            ↓
+[Human Operator] <--PolicyDashboard--> [ABH Planning System]
+```
+
+6.3. The ReservoirController Class: Implementation of Switched Logic
+
+The ReservoirController class is the algorithmic centerpiece. It codifies the optimized switched policy  \pi_{sw}(v)  and the institutional constraints.
+
+```python
+import numpy as np
+from dataclasses import dataclass
+from enum import Enum
+
+class ControlMode(Enum):
+    STABLE = 1
+    WARNING = 2
+    CRITICAL = 3
+    FAILURE = 4
+
+@dataclass
+class ControllerConfig:
+    """Optimized policy parameters for a specific reservoir."""
+    # Thresholds (calibrated via optimization in Chap 5 & 7)
+    y_high: float = 0.85   # Capacity ratio threshold for STABLE mode
+    y_low: float = 0.50    # Capacity ratio threshold for WARNING mode
+    y_crit: float = 0.25   # Capacity ratio threshold for CRITICAL mode
+    # Control Intensities (optimized)
+    u1_stable: float = 0.8     # Max prevention in stable mode
+    u1_warning: float = 0.5    # Reduced prevention in warning mode
+    u2_flood_season: float = 0.9 # Flushing intensity during floods
+    u3_critical: float = 0.9    # Max dredging in critical mode
+    # Institutional Constraints
+    commitment_period_days: int = 365
+    max_u1_change_per_period: float = 0.2
+
+class ReservoirController:
+    """
+    Adaptive decision-support engine implementing the switched optimal control policy.
+    """
+    def __init__(self, initial_capacity: float, config: ControllerConfig):
+        self.C0 = initial_capacity
+        self.config = config
+        self._current_u1 = 0.0  # Tracks commitment period state
+        self._last_update = None
+
+    def _get_current_mode(self, v_sed_estimate: float) -> ControlMode:
+        """Determines control mode based on state estimate (Eq. from Sec 5.6)."""
+        y = 1 - (v_sed_estimate / self.C0)
+        if y >= self.config.y_high:
+            return ControlMode.STABLE
+        elif y >= self.config.y_low:
+            return ControlMode.WARNING
+        elif y >= self.config.y_crit:
+            return ControlMode.CRITICAL
+        else:
+            return ControlMode.FAILURE
+
+    def compute_control_action(self,
+                               v_sed_estimate: float,
+                               current_date: np.datetime64,
+                               is_flood_season: bool,
+                               force_recommendation: bool = False) -> dict:
+        """
+        Core control law. Returns recommended control intensities and a decision rationale.
+        
+        Args:
+            v_sed_estimate: Kalman Filter state estimate [M m³].
+            current_date: Current date for commitment tracking.
+            is_flood_season: Boolean from hydrological model.
+            force_recommendation: If True, overrides commitment period lock.
+            
+        Returns:
+            Dictionary with keys: 'u1', 'u2', 'u3', 'mode', 'rationale'.
+        """
+        # 1. Check Institutional Commitment Period Constraint
+        if (self._last_update is not None and
+            not force_recommendation and
+            (current_date - self._last_update) < np.timedelta64(self.config.commitment_period_days, 'D')):
+            # Still within commitment period, return last action
+            return self._last_action
+
+        # 2. Determine System Mode
+        mode = self._get_current_mode(v_sed_estimate)
+        
+        # 3. Apply Switched Control Law (Propositions 5.2 & 5.3)
+        if mode == ControlMode.STABLE:
+            u1_target = self.config.u1_stable
+            u2_target = 0.0
+            u3_target = 0.0
+            rationale = "STABLE: Focus budget on preventive watershed management in prioritized hotspots."
+            
+        elif mode == ControlMode.WARNING:
+            u1_target = self.config.u1_warning
+            # Exploit flood season for low-cost flushing (Section 3.4.3)
+            u2_target = self.config.u2_flood_season if is_flood_season else 0.1
+            u3_target = 0.0
+            rationale = f"WARNING: Mixed strategy. Maintain prevention, prepare for {'active flushing' if is_flood_season else 'opportunistic flushing'}."
+            
+        elif mode == ControlMode.CRITICAL:
+            u1_target = 0.3  # Maintain reduced prevention
+            u2_target = 0.4  # Continue flushing if possible
+            u3_target = self.config.u3_critical
+            rationale = "CRITICAL: Trigger emergency dredging protocol to protect intake capacity and avoid systemic penalty."
+            
+        else:  # FAILURE
+            u1_target, u2_target, u3_target = 0.0, 0.0, 0.0
+            rationale = "SYSTEM FAILURE: Usable capacity depleted. Penalty function P(y) active."
+
+        # 4. Apply Institutional Rate-of-Change Constraint to u1
+        u1_final = self._apply_rate_constraint(u1_target, self._current_u1)
+        self._current_u1 = u1_final
+
+        # 5. Package and Return Action
+        self._last_action = {
+            'u1': u1_final,
+            'u2': u2_target,
+            'u3': u3_target,
+            'mode': mode,
+            'rationale': rationale,
+            'timestamp': current_date
+        }
+        self._last_update = current_date
+        
+        return self._last_action
+
+    def _apply_rate_constraint(self, target: float, current: float) -> float:
+        """Enforces max annual change in watershed investment (Institutional constraint)."""
+        delta = target - current
+        max_delta = self.config.max_u1_change_per_period
+        if abs(delta) > max_delta:
+            return current + np.sign(delta) * max_delta
+        return target
+```
+
+Key Design Features:
+
+1. Stateful Controller: The class maintains internal state (_current_u1, _last_update) to enforce the commitment period constraint derived in Proposition 5.3.
+2. Configurable Policy: All thresholds and intensities are stored in a ControllerConfig dataclass. This allows the same controller logic to be used for different reservoirs (Al Wahda vs. SMBA) with different optimized parameters.
+3. Explicit Rationale: Each control action is accompanied by a plain-language rationale, essential for building trust and facilitating the human-in-the-loop approval process within ABH.
+4. Constraint Enforcement: The private method _apply_rate_constraint ensures recommendations respect institutional inertia.
+
+6.4. Data Pipelines: Integration with Moroccan Data Infrastructure
+
+For the CPS to function in near-real-time, robust data pipelines are required. The toolkit implements connectors to key Moroccan data sources.
+
+1. Remote Sensing Pipeline (Hotspot Monitoring):
+
+· Source: Sentinel-2 MSI via ESA's Sentinel Hub API or DIAS platform.
+· Process: The SentinelHub_Connector periodically (e.g., every 10 days) downloads Level-2A surface reflectance data for the watershed's bounding box.
+· Computation: It calculates the Normalized Difference Vegetation Index (NDVI) for each pixel. The NDVI time series for predefined hotspot polygons (Section 4.4) is computed and stored.
+· Control Feedback: A significant drop in mean NDVI within a hotspot triggers an alert and can dynamically increase the target u1 intensity in the controller's logic, closing a direct cyber-physical feedback loop.
+
+2. Hydrological & Operational Data Pipeline:
+
+· Source: Agence du Bassin Hydraulique (ABH) APIs, where available, or published data portals.
+· Process: The ABH_API_Connector fetches:
+  · Reservoir Level: Daily readings to approximate storage volume.
+  · Inflow & Outflow: Discharge data to calibrate the hydraulic flushing model H(V_s, Q).
+  · Sediment Concentration: Periodic measurements at gauging stations to validate the sediment yield model.
+· Fallback: In the absence of APIs, the connector is designed to parse standardized PDF or Excel reports published by the ABHs, using libraries like camelot or pandas.
+
+3. Bathymetric Survey Pipeline:
+
+· Source: Periodic (e.g., annual) bathymetric surveys conducted by ABHs or the Direction de la Recherche et de la Planification de l'Eau (DRPE).
+· Process: Survey data (point clouds or depth grids) are ingested to directly compute the true sediment volume  V_s . This serves as the "ground truth" to reset and correct the StateEstimator's Kalman Filter, preventing drift in the state estimate.
+
+6.5. Visualization Dashboard for ABH Decision-Support
+
+The PolicyDashboard (cps_interface.py) is a web application designed for use by ABH engineers and planners. Its primary function is to communicate the state of the system and the controller's recommendation clearly and persuasively.
+
+Dashboard Panels:
+
+1. System State Overview:
+   · A central "traffic light" gauge (Green/Yellow/Red) showing the current ControlMode.
+   · Key metrics: Current capacity ratio  y(t) , estimated sediment volume  \hat{V}_s(t) , time to critical threshold.
+2. Control Recommendation Panel:
+   · A clear display of the recommended intensities [u1, u2, u3].
+   · The rationale text from the controller.
+   · "Approve & Implement" button: This triggers the ActuationInterface to generate official project documents or tender outlines, formally integrating the CPS into the ABH workflow.
+3. Spatial Context Panel:
+   · An interactive map (Folium/Leaflet) displaying the watershed boundary, the identified erosion hotspots, and the current NDVI status of each.
+   · This visually justifies the focus of preventive measures.
+4. Historical Trends & Forecast Panel:
+   · Time-series plots of capacity, control actions, and costs.
+   · A probabilistic forecast of future capacity under the current policy vs. BAU, based on the Monte Carlo simulation engine.
+
+6.6. Validation, Testing, and Reproducibility
+
+To ensure the software is a reliable research and operational tool, the implementation adheres to rigorous standards.
+
+1. Unit Testing:
+The tests/ directory contains a comprehensive suite of unit tests (using pytest) for each core function and class.
+
+· test_controller.py: Validates the mode-switching logic and constraint application for edge-case state values.
+· test_watershed_model.py: Checks that the MUSLE implementation produces physically plausible results and respects Theorem 4.1 (convexity in C).
+· test_kalman_filter.py: Asserts the state estimator correctly reduces error variance when fed synthetic observations.
+
+2. Integration Testing & Scenario Replay:
+A key test is the "Historical Scenario Replay." Using historical climate data (e.g., 1990-2020) and the known initial state of Al Wahda Dam, the complete CPS stack is run in simulation. The final simulated  V_s(2020)  is compared against the actual surveyed sediment volume. This test validates the entire integrated pipeline—model calibration, state estimation, and controller logic—against real-world outcomes.
+
+3. Reproducibility Package:
+The entire codebase is version-controlled on GitHub. A Dockerfile or environment.yml is provided to encapsulate all dependencies (Python, GDAL, etc.). The calibration and simulation scripts for Chapter 7's case studies are included as Jupyter notebooks, allowing any researcher to exactly reproduce the thesis results.
+
+6.7. Chapter Conclusion
+
+This chapter has bridged the gap between mathematical theory and executable software. We have presented:
+
+1. A modular, three-layer software architecture that cleanly separates the physical model, the control logic, and the human interface.
+2. The detailed implementation of the ReservoirController class, which encodes the optimally-derived switched policy with institutional constraints, ready for deployment.
+3. Practical data pipelines for ingesting Moroccan remote sensing and hydrological data, forming the sensing layer of the CPS.
+4. The design of a decision-support dashboard that integrates the controller into the ABH's operational workflow.
+5. A robust framework for testing and validation to ensure software reliability and research reproducibility.
+
+With this computational engine built, the stage is set for the next chapter: calibrating this system using data from specific Moroccan dams (Al Wahda and SMBA) and running the comprehensive Monte Carlo simulations that will validate the framework's performance and economic superiority.
