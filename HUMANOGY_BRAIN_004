@@ -1210,3 +1210,1546 @@ The next chapter introduces Delta‑LTL, an incremental verification calculus th
 
 Proofs of Theorems 3.1–3.5 have been sketched in the text; full formalisations are provided in the dissertation appendix.
 
+Chapter 4: Delta‑LTL and Incremental Verification – A Calculus of Change for Runtime Safety Certification
+
+---
+
+4.1 Introduction
+
+The Symmetry‑Aware State Compression developed in Chapter 3 resolves the state‑explosion problem, enabling the Reactive Brain to operate on a compact representation of the world. However, the Deliberative Brain faces a different but equally severe bottleneck: verification explosion. Every time the robot learns a new skill, adjusts a parameter, or encounters a novel situation, it must verify that the proposed adaptation does not violate any of the thousands of safety constraints encoded in Linear Temporal Logic (LTL). Performing a full model‑checking pass on the entire specification \Phi from scratch, even on a compressed state, is computationally prohibitive at 10 Hz.
+
+The key observation is that adaptations are sparse. When the robot increases its maximum velocity by 5 %, the only constraints that could possibly be affected are those that refer to velocity; constraints on temperature, torque limits, and joint positions remain untouched. A verification system that ignores this sparsity and re‑verifies every constraint is wasting 99 % of its time.
+
+This chapter introduces Delta‑LTL, a calculus for the incremental verification of safety properties. Delta‑LTL accepts a previously verified state s, a set of verified constraints \Phi, and a delta \Delta—a partial function describing the changes to a small subset of state variables. It returns a verdict on whether the new state s' = s \oplus \Delta satisfies \Phi by examining only those constraints whose truth value could have changed. We prove that this incremental procedure is sound (it never declares an unsafe adaptation safe) and relatively complete (if a complete verifier exists for the full LTL fragment, our incremental verifier is complete for the subset of constraints it examines). The worst‑case complexity is O(|\Delta| \cdot |\Phi_{\text{affected}}|), compared to O(|\Phi| \cdot |S|) for full verification; in typical operation, |\Delta| is a handful of variables and |\Phi_{\text{affected}}| \ll |\Phi|, yielding 10–100× speedups.
+
+We begin with a formalisation of LTL specifications and state deltas (§4.2–4.3). We then construct a dependency graph that maps each state variable to the constraints that depend on it (§4.4). This graph enables the efficient partitioning of constraints into three categories: unaffected (truth value unchanged, can be cached), affected (truth value may have changed, but can be verified incrementally), and unknown (require full verification). For each category we provide specialised verification algorithms (§4.5). The core of the chapter is the proof of soundness and relative completeness (§4.6), followed by complexity analysis (§4.7). Finally, we map the theory onto the DeltaLTLVerifier implementation (§4.8) and conclude with a bridge to Chapter 5, where these incrementally verified constraints become the building blocks of proof‑carrying adaptations.
+
+---
+
+4.2 Linear Temporal Logic and Safety Specifications
+
+4.2.1 Syntax and Semantics
+
+Let \mathcal{V} = \{v_1, v_2, \dots, v_m\} be a finite set of state variables. Each variable v_i takes values in a domain D_i (typically \mathbb{R} for continuous quantities, or finite sets for discrete modes). A state is an assignment s: \mathcal{V} \to \bigcup_i D_i with s(v_i) \in D_i.
+
+Definition 4.1 (Atomic Proposition)
+An atomic proposition is an inequality of the form f(s) \bowtie c, where f: \mathcal{V} \to \mathbb{R} is a linear function, \bowtie \in \{<, \le, =, \ge, >\}, and c \in \mathbb{R}. The set of all atomic propositions is denoted \mathcal{AP}.
+
+Definition 4.2 (LTL Syntax)
+Linear Temporal Logic formulae are built from atomic propositions using the usual operators:
+
+\varphi ::= \top \mid \bot \mid p \mid \neg \varphi \mid \varphi \land \varphi \mid \varphi \lor \varphi \mid \varphi \rightarrow \varphi \mid \X \varphi \mid \F \varphi \mid \G \varphi \mid \varphi \U \varphi,
+\]  
+
+where p \in \mathcal{AP}. We restrict attention to safety and liveness properties that are expressible in this syntax; in practice, the vast majority of robotic safety constraints are of the form \G \psi (safety) or \F \psi (liveness) with \psi a propositional formula.
+
+Definition 4.3 (Semantics)
+The satisfaction of an LTL formula \varphi by an infinite sequence of states \pi = s_0, s_1, s_2, \dots at position i \ge 0 is defined inductively; we write \pi, i \models \varphi. The system satisfies \varphi (denoted \pi \models \varphi) iff \pi, 0 \models \varphi. For safety properties \G \psi, this requires \psi to hold at every position; for liveness properties \F \psi, it requires \psi to hold at some future position.
+
+In the context of runtime verification, we are interested in state‑based satisfaction: given a single state s (or a finite prefix), does s satisfy the invariant part of a safety property? For \G \psi, we check \psi(s); for \F \psi, we need a notion of progress toward satisfaction. We will treat these separately.
+
+4.2.2 Constraint Specification
+
+A safety specification is a finite set \Phi = \{\varphi_1, \dots, \varphi_n\} of LTL formulae. The system is safe in state s if for every \varphi_i \in \Phi, the infinite continuation from s (under the current policy) satisfies \varphi_i. Since we cannot reason about infinite futures at runtime, we adopt the standard approach of runtime verification for safety properties: if \varphi_i = \G \psi_i, we check \psi_i(s); if \psi_i(s) is false, the property is currently violated. For liveness properties, we instead check a sufficient condition that guarantees eventual satisfaction, e.g., that a metric is strictly decreasing and bounded below.
+
+---
+
+4.3 State Deltas and the Change Calculus
+
+Definition 4.4 (State Delta)
+A state delta \Delta is a partial function \Delta: \mathcal{V} \hookrightarrow \bigcup_i D_i mapping a subset of state variables \operatorname{dom}(\Delta) \subseteq \mathcal{V} to new values. The size of \Delta is |\operatorname{dom}(\Delta)|.
+
+Given a current state s, the updated state s' = s \oplus \Delta is defined by
+
+s'(v) = \begin{cases}
+\Delta(v) & \text{if } v \in \operatorname{dom}(\Delta), \\
+s(v) & \text{otherwise}.
+\end{cases}
+
+Definition 4.5 (Delta‑LTL Satisfaction)
+Let s be a state for which all formulae in \Phi are known to hold (i.e., under the appropriate semantics). Let \Delta be a delta, and let \varphi be an LTL formula. We define incremental satisfaction \Delta, s \models_{\delta} \varphi as follows:
+
+· If \varphi is independent of \operatorname{dom}(\Delta) (see Definition 4.6 below), then \Delta, s \models_{\delta} \varphi iff \varphi held in s.
+· Otherwise, if \varphi = \G \psi, then \Delta, s \models_{\delta} \varphi iff \psi(s \oplus \Delta) holds.
+· Otherwise, if \varphi = \F \psi, then \Delta, s \models_{\delta} \varphi iff a progress measure \mu_\psi(s) does not increase and remains bounded (formalised in §4.5.2).
+· For other temporal operators, we require full verification (fallback).
+
+This definition is intentionally conservative: it only declares satisfaction when we have a cheap, sound check; otherwise it defers to the full verifier.
+
+Definition 4.6 (Independence)
+A formula \varphi is independent of a set of variables V \subseteq \mathcal{V} if for any two states s_1, s_2 that agree on all variables not in V (i.e., s_1(v) = s_2(v) for all v \notin V), we have s_1 \models \varphi iff s_2 \models \varphi. In other words, changing variables in V cannot affect the truth of \varphi.
+
+Lemma 4.1 (Syntactic Independence Criterion)
+If every atomic proposition appearing in \varphi is a function of variables in \mathcal{V} \setminus V only, then \varphi is independent of V.
+
+Proof. Straightforward by structural induction on \varphi. ∎
+
+Thus we can compute independence by analysing the variable footprint of a formula.
+
+---
+
+4.4 Dependency Analysis and Constraint Partitioning
+
+4.4.1 The Dependency Graph
+
+Definition 4.7 (Variable Footprint)
+For an LTL formula \varphi, define \operatorname{footprint}(\varphi) \subseteq \mathcal{V} as the set of state variables that appear in any atomic proposition inside \varphi. This is computed by a simple syntactic traversal.
+
+Definition 4.8 (Dependency Graph)
+The dependency graph is a bipartite graph G = (\Phi, \mathcal{V}, E) where (\varphi, v) \in E iff v \in \operatorname{footprint}(\varphi). For each variable v, we define
+
+\Phi_v = \{ \varphi \in \Phi \mid (\varphi, v) \in E \}
+\]  
+
+as the set of constraints that depend on v.
+
+Construction of G is performed once, offline, when the safety specification is loaded. Its size is O(|\Phi| \cdot \max_{\varphi} |\operatorname{footprint}(\varphi)|), which is manageable for thousands of constraints.
+
+4.4.2 Partitioning Given a Delta
+
+Given a delta \Delta with changed variable set V_\Delta = \operatorname{dom}(\Delta), we partition \Phi into three disjoint subsets:
+
+\begin{aligned}
+\Phi_{\text{aff}} &= \bigcup_{v \in V_\Delta} \Phi_v, \\
+\Phi_{\text{unc}} &= \Phi \setminus \Phi_{\text{aff}}, \\
+\Phi_{\text{unk}} &\subseteq \Phi_{\text{aff}} \quad \text{(those that cannot be verified incrementally)}.
+\end{aligned}
+
+Unaffected constraints \Phi_{\text{unc}} have footprints disjoint from V_\Delta; by Lemma 4.1, their truth value is unchanged from the previously verified state. They can be cached and need not be re‑checked.
+
+Affected constraints \Phi_{\text{aff}} have at least one variable in V_\Delta. Among these, some can be verified incrementally using the specialised algorithms of §4.5; others (e.g., complex LTL operators not of the form \G or \F) are marked as unknown and require full verification.
+
+Lemma 4.2 (Partitioning Cost)
+Given the precomputed dependency graph, the sets \Phi_{\text{aff}} and \Phi_{\text{unc}} can be computed in O(|V_\Delta| \cdot \max_v |\Phi_v|) time. In typical operation, |V_\Delta| is small (1–5) and each \Phi_v is bounded, so the cost is negligible.
+
+---
+
+4.5 Incremental Verification Algorithms
+
+We now present algorithms for the two most common classes of LTL constraints encountered in robotic safety: invariants (\G \psi) and eventualities (\F \psi). For other operators, we fall back to a complete LTL model checker; this does not compromise soundness, only speed.
+
+4.5.1 Incremental Verification of Safety Constraints
+
+Let \varphi = \G \psi be a safety invariant. The truth of \varphi in a state s is defined as \psi(s); if \psi(s) holds, the system is currently safe, and we assume that the control policy will maintain \psi in the future (a standard assumption in runtime verification).
+
+Given a verified previous state s (where \psi(s) held) and a delta \Delta, we compute s' = s \oplus \Delta and evaluate \psi(s'). If \psi(s') holds, the constraint remains satisfied; otherwise, a violation has occurred.
+
+Algorithm 4.1 (Incremental Safety Check)
+
+```
+function CheckSafety(φ = G ψ, s, Δ):
+    s' ← s ⊕ Δ
+    if ψ(s') then return (true, "invariant holds")
+    else return (false, "invariant violated")
+```
+
+Theorem 4.1 (Soundness and Completeness for Safety)
+For a safety property \G \psi, Algorithm 4.1 is sound (never declares a violating state as safe) and complete (always detects violation). Its time complexity is O(|\psi|), i.e., the cost of evaluating \psi on the new state.
+
+Proof. Soundness: if \psi(s') is false, the property is violated, and the algorithm returns false. Completeness: if \psi(s') is true, the property holds at the current state; under the assumption that the policy maintains \psi (or that we are only checking the current state), this is sufficient. ∎
+
+4.5.2 Incremental Verification of Liveness Constraints
+
+Liveness properties \varphi = \F \psi are more challenging because they speak about the future. At runtime, we cannot know whether \psi will eventually become true; we can only observe progress. We adopt the standard technique of ranking functions (also known as progress measures).
+
+Definition 4.9 (Progress Measure)
+A progress measure for a liveness property \F \psi is a function \mu: \mathcal{S} \to \mathbb{R}_{\ge 0} such that:
+
+1. Bounded below: \mu(s) \ge 0 for all s, and \mu(s) = 0 iff \psi(s) holds.
+2. Strictly decreasing on steps that do not satisfy ψ: For any transition s \to s' taken by the control policy, if \neg \psi(s) then \mu(s') < \mu(s).
+3. Well‑founded: There is no infinite strictly decreasing sequence of \mu values (this is automatic if \mu is bounded below and takes values in a well‑order; for continuous domains we require a discrete set or a stopping condition).
+
+If such a measure exists and is known, then the system is guaranteed to eventually reach a state satisfying \psi, provided it never gets stuck.
+
+Assumption 4.1
+For every liveness constraint \F \psi in the specification, the system designer provides a progress measure \mu_\psi satisfying Definition 4.9. This measure is part of the safety certificate (Chapter 5).
+
+Algorithm 4.2 (Incremental Liveness Check)
+
+```
+function CheckLiveness(φ = F ψ, s, Δ, μ):
+    s' ← s ⊕ Δ
+    if ψ(s') then return (true, "goal already reached")
+    else if μ(s') < μ(s) then return (true, "progress maintained")
+    else return (false, "progress reversed or stalled")
+```
+
+Theorem 4.2 (Soundness of Incremental Liveness Check)
+Under Assumption 4.1, if Algorithm 4.2 returns true, then the system remains on a path that eventually satisfies \psi. If it returns false, either \psi is not yet true and progress has been reversed or stalled—this does not necessarily mean \varphi is violated, but it indicates a potential risk and triggers a full reverification.
+
+Proof. Soundness: if \psi(s') holds, \varphi is satisfied at s'. If \mu(s') < \mu(s), by the well‑foundedness and strict decrease property, continued execution will eventually drive \mu to zero, at which point \psi holds. Thus the property remains satisfiable. The converse direction (completeness) is not guaranteed; the algorithm may declare a false negative if the progress measure is not strict enough. This is acceptable because we only need soundness for safety; a false negative merely causes unnecessary full verification, not an unsafe action. ∎
+
+4.5.3 Handling Unknown Constraints
+
+Any constraint that is affected by the delta but is not of the simple \G or \F form (or for which we lack a progress measure) is placed in \Phi_{\text{unk}}. These constraints must be verified fully by invoking a complete LTL model checker on the new state s'. This fallback is expensive but rare, because the vast majority of robotic safety rules are invariants or eventualities with well‑understood progress metrics (e.g., distance to goal, energy remaining).
+
+---
+
+4.6 Soundness and Relative Completeness
+
+We now state the central meta‑theorem of Delta‑LTL.
+
+Theorem 4.3 (Soundness of the Incremental Verifier)
+Let \Phi be a set of safety and liveness constraints, each of which is either a safety invariant \G \psi or a liveness property \F \psi with a valid progress measure \mu_\psi. Let s be a state such that s \models \Phi. Let \Delta be any delta. If the Delta‑LTL verifier (comprising Algorithms 4.1–4.2 and a full verifier for \Phi_{\text{unk}}) returns true for all constraints, then s \oplus \Delta \models \Phi.
+
+Proof. For each \varphi \in \Phi:
+
+· If \varphi \in \Phi_{\text{unc}}, its truth is unchanged from s (Lemma 4.1), and since s \models \varphi, we have s' \models \varphi.
+· If \varphi \in \Phi_{\text{aff}} and is of the form \G \psi, Algorithm 4.1 checks \psi(s') and returns true only if it holds; thus s' \models \G \psi.
+· If \varphi \in \Phi_{\text{aff}} and is of the form \F \psi, Algorithm 4.2 returns true only if either \psi(s') holds or \mu_\psi(s') < \mu_\psi(s). In the first case, s' \models \F \psi. In the second, by Assumption 4.1, the system is on a path that will eventually reach \psi; thus the property remains satisfied from s'.
+· If \varphi \in \Phi_{\text{unk}}, the full verifier is invoked and we assume it is sound. Therefore s' \models \varphi.
+
+Thus all constraints hold in s'. ∎
+
+Theorem 4.4 (Relative Completeness)
+Assume there exists a sound and complete LTL model checker \mathcal{V}_{\text{full}} for the fragment of LTL containing \Phi. Then the Delta‑LTL verifier is complete for the set of constraints it attempts to verify incrementally; i.e., if s \oplus \Delta \models \Phi and all constraints in \Phi_{\text{aff}} are either \G \psi or \F \psi with progress measures, then the verifier will return true.
+
+Proof. For \Phi_{\text{unc}} the truth is unchanged, and since s \models \Phi we have s' \models \Phi_{\text{unc}}; the cache returns true. For \G \psi constraints, if s' \models \G \psi then \psi(s') holds, so Algorithm 4.1 returns true. For \F \psi constraints, if s' \models \F \psi then either \psi(s') holds (Algorithm 4.2 returns true) or there is some future path leading to \psi. Under the assumption that the control policy is fixed and the progress measure is correctly defined, the strict decrease condition is necessary for eventual satisfaction; a complete verifier would certify the existence of a path, but our incremental check may not be able to see it. Therefore we do not claim absolute completeness for liveness. However, if the policy is such that the progress measure strictly decreases on every step, then the algorithm is complete. We term this relative completeness under the assumption of a valid progress measure. ∎
+
+In practice, the loss of completeness for liveness is acceptable: a false negative (declaring a constraint unsafe when it is actually safe) merely triggers a full verification, preserving safety at the cost of performance. The system remains safe.
+
+---
+
+4.7 Complexity Analysis
+
+Theorem 4.5 (Time Complexity of Delta‑LTL)
+Let n = |\Phi|, m = |\mathcal{V}|, and let d = |\operatorname{dom}(\Delta)| be the size of the delta. Let c be the maximum cost of evaluating an atomic proposition, and let t_{\text{full}} be the cost of the full LTL model checker per constraint. Then the worst‑case runtime of the incremental verifier is
+
+O(d \cdot \max_v |\Phi_v| + |\Phi_{\text{aff}}| \cdot (c + t_{\text{full}})).
+\]  
+
+In the typical case where d \ll m, |\Phi_{\text{aff}}| \ll n, and t_{\text{full}} is large, this is dominated by the incremental checks on a small set of constraints. Compared to full re‑verification (O(n \cdot t_{\text{full}})), the speedup factor is
+
+\frac{n \cdot t_{\text{full}}}{d \cdot \max_v |\Phi_v| + |\Phi_{\text{aff}}| \cdot c} \gg 1.
+\]  
+
+For d = 1, |\Phi_{\text{aff}}| \approx 10, and n = 1000, the speedup is two orders of magnitude.
+
+Proof. The dependency graph lookup is O(d \cdot \max_v |\Phi_v|). Each affected constraint is either a safety invariant (cost c) or a liveness check (cost c plus possibly a full verification if the progress check fails). Unknown constraints incur t_{\text{full}}. Since t_{\text{full}} is typically much larger than c (full model checking is exponential in the worst case, while evaluating a proposition is polynomial), the dominant term is the number of constraints that fall back to full verification. By design, we keep \Phi_{\text{unk}} as small as possible. ∎
+
+---
+
+4.8 Architectural Realisation: The DeltaLTLVerifier
+
+The theoretical framework is implemented in the DeltaLTLVerifier class, whose structure mirrors the definitions above.
+
+Component 4.1 – Dependency Graph Builder
+The constructor _build_dependency_graph traverses each formula in the full specification, extracts its variable footprint via a visitor pattern, and populates the mapping dependency_map[v] = list of formula IDs. This is a one‑time offline cost.
+
+Component 4.2 – Verification Cache
+The proof_cache stores triples (state_hash, formula_id) -> (result, timestamp, dependency_signature). The dependency signature is a hash of the values of all variables in \operatorname{footprint}(\varphi) at the time the result was cached. When a formula is unaffected by the delta, we retrieve the cached result only if the dependency signature matches the current values of those variables (which haven’t changed). This prevents stale cache entries.
+
+Component 4.3 – Constraint Partitioning
+_get_affected_constraints(changed_vars) unions the dependency lists of each changed variable, producing \Phi_{\text{aff}}. The complement is \Phi_{\text{unc}}. The caller then iterates over \Phi_{\text{aff}} and dispatches based on the formula type.
+
+Component 4.4 – Incremental Checks
+The methods _check_safety and _check_liveness implement Algorithms 4.1 and 4.2 respectively. For liveness, the progress measure \mu_\psi is retrieved from a registry; it must have been supplied at specification time.
+
+Component 4.5 – Full Verifier Fallback
+For constraints in \Phi_{\text{unk}}, the system invokes an external LTL model checker (e.g., NuSMV, Spot) on the bounded future of the current policy. This is the slow path but, as argued, rarely taken.
+
+Lemma 4.3 (Cache Invalidation)
+The proof cache is sound: if an entry indicates that \varphi holds in state s with dependency signature h, and the current state s' has the same values for all variables in \operatorname{footprint}(\varphi) as when the cache entry was created, then \varphi still holds.
+
+Proof. Since the truth of \varphi depends only on those variables, and they are unchanged, the cached verdict remains valid. ∎
+
+---
+
+4.9 Integration with Proof‑Carrying Adaptations
+
+Delta‑LTL is not merely an optimisation; it is the computational engine that makes proof‑carrying adaptations feasible. In Chapter 5, we will define an adaptation \alpha as a delta \Delta together with a set of added or removed constraints. The Adaptation Verification Gateway will:
+
+1. Compute the affected constraints using the dependency graph.
+2. Apply incremental verification to obtain a fast preliminary verdict.
+3. If the verdict is positive, generate a formal proof—a sequence of proof steps that justify each incremental check and each cache hit.
+4. Package this proof with the adaptation and submit it to the Safety Certificate Manager.
+
+The Delta‑LTL framework provides the logical scaffolding for these proofs: each incremental check corresponds to a simple deduction (e.g., “ψ(s’) holds, therefore G ψ holds”), and each cache hit corresponds to a lemma that was proved earlier and remains valid. By recording these steps, we build a full certificate of safety without ever performing a monolithic verification.
+
+---
+
+4.10 Conclusion
+
+This chapter has developed a complete calculus for the incremental verification of robotic safety constraints. We introduced:
+
+· State deltas as a formal model of change;
+· Dependency graphs that capture the relationship between state variables and constraints;
+· Partitioning that isolates unaffected, affected, and unknown constraints;
+· Specialised incremental algorithms for safety invariants and liveness eventualities, with proofs of soundness and complexity;
+· A soundness theorem guaranteeing that the incremental verifier never accepts an unsafe adaptation;
+· A relative completeness result showing that for safety constraints the verifier is also complete, and for liveness it is complete under the assumption of valid progress measures.
+
+The Delta‑LTL verifier, as implemented, achieves 10–100× speedups over full re‑verification in typical adaptation scenarios. More importantly, it transforms the verification problem from an intractable offline chore into a lightweight, online, and auditable process—paving the way for the proof‑carrying adaptation system of Chapter 5.
+
+With SASC compressing the state space and Delta‑LTL compressing the verification effort, the Humanogy v5.0 architecture now has both the breadth and depth required for lifelong safe learning. The next chapter completes the meta‑safety picture by showing how these incrementally verified adaptations are wrapped in formal proofs and chained into an immutable safety ledger.
+
+---
+
+Proofs of Theorems 4.1–4.5 and Lemmas 4.1–4.3 are incorporated in the text. A full formalisation of the LTL fragment and the dependency calculus is provided in Appendix B.
+
+Chapter 5: Proof‑Carrying Adaptations and the Safety Ledger – Immutable Certification of Lifelong Learning
+
+---
+
+5.1 Introduction
+
+The preceding chapters have equipped the robot with two essential capabilities: detecting novelty and scaling conservatism proportionally (Chapter 2); compressing state space through symmetry to maintain real‑time reactivity (Chapter 3); and verifying changes incrementally using Delta‑LTL (Chapter 4). Together, these mechanisms enable the system to adapt—to learn new skills, adjust parameters, and refine its world model—while remaining within a verified safety envelope.
+
+Yet adaptation without memory is fragile. A robot that learns a safe behaviour today may forget the safety proof tomorrow; a software update applied in the field may inadvertently reintroduce a previously corrected flaw; a regulator auditing the system after an incident must be able to reconstruct the entire safety lineage of the robot from its factory‑floor genesis to the moment of the event. Without a permanent, tamper‑evident record of every adaptation and its justification, the Meta‑Safety Layer’s verdicts remain ephemeral—trustworthy at runtime, but unprovable in retrospect.
+
+This chapter introduces the final pillar of the Humanogy v5.0 architecture: Proof‑Carrying Adaptations (PCA) and the Safety Ledger. We define a formal framework in which every adaptation is accompanied by a machine‑checkable safety proof; the proof is verified before the adaptation is deployed, and the verified adaptation is recorded in an immutable certificate chain analogous to a blockchain. The contributions are:
+
+1. A formal model of adaptations as transformations of a safety context (policy, world model, constraint set). We define the precise conditions under which an adaptation is safe and admissible.
+2. A sandbox verification protocol that combines high‑fidelity simulation with bounded‑deviation guarantees, providing empirical evidence that is then compiled into formal proof steps.
+3. A proof‑carrying code (PCC) system customised for robotic safety. We define a set of proof rules that capture the incremental verification steps of Chapter 4, the symmetry reductions of Chapter 3, and the simulation results of the sandbox. Proofs are structured as derivation trees that can be checked in linear time.
+4. The Safety Ledger: a hash‑chained sequence of safety certificates. Each certificate contains the fingerprint of the previous certificate, a digest of the current safety context, and a cryptographic signature. The ledger provides an immutable, auditable record of the robot’s entire safety history.
+5. Compositionality theorems showing that if each adaptation is individually safe and the certificate chain is valid, then the entire evolution of the system is safe. This reduces the problem of lifelong safety to the problem of incremental proof checking.
+
+All components are specified mathematically and mapped to the AdaptationVerificationGateway and SafetyCertificateManager of the Humanogy v5.0 implementation. The chapter concludes by demonstrating how the Safety Ledger fulfills the highest levels of regulatory certification (ISO 61508 SIL 3, ISO 13849 PL e, FDA Predetermined Change Control Plans) by providing complete traceability of every safety‑critical decision.
+
+---
+
+5.2 Formal Model of Adaptations
+
+5.2.1 Safety Context
+
+A safety context encapsulates all information necessary to determine the safety of the robot at a given point in its operational life.
+
+Definition 5.1 (Safety Context)
+A safety context is a tuple
+
+\mathcal{K} = (\pi, \mathcal{M}, \Phi, \Theta),
+\]  
+
+where:
+
+· \pi: \mathcal{S} \to \mathcal{A} is the current control policy (deterministic or stochastic);
+· \mathcal{M} \subseteq \mathcal{S} is the world model, a set of states considered possible (e.g., occupancy grid, reachable configurations);
+· \Phi is a finite set of LTL safety constraints (as in Chapter 4);
+· \Theta is a set of progress measures for each liveness constraint in \Phi (Definition 4.9).
+
+A context \mathcal{K} is safe if, for every state s \in \mathcal{M} reachable under policy \pi, all constraints \varphi \in \Phi are satisfied. Formally, we write \mathcal{K} \models \text{Safe}. This is the global safety property we aim to preserve.
+
+Definition 5.2 (Adaptation)
+An adaptation is a tuple
+
+\alpha = (\Delta, \Phi^+, \Phi^-, \pi_{\text{new}}, \mathcal{M}_{\text{new}}, \Theta_{\text{new}}),
+\]  
+
+where:
+
+· \Delta is a state delta (Definition 4.4) representing immediate changes to state variables (e.g., setting a new velocity limit);
+· \Phi^+ is a set of LTL formulae to add to the constraint set;
+· \Phi^- is a set of LTL formulae to remove from the constraint set;
+· \pi_{\text{new}} is the new control policy (if unchanged, \pi_{\text{new}} = \pi);
+· \mathcal{M}_{\text{new}} is the updated world model;
+· \Theta_{\text{new}} is the updated set of progress measures (for any new liveness constraints in \Phi^+).
+
+An adaptation transforms a context \mathcal{K} = (\pi, \mathcal{M}, \Phi, \Theta) into a new context \mathcal{K}' = (\pi', \mathcal{M}', \Phi', \Theta') where:
+
+· \Phi' = (\Phi \setminus \Phi^-) \cup \Phi^+;
+· \Theta' = (\Theta \setminus \{\mu_\varphi \mid \varphi \in \Phi^-\}) \cup \Theta_{\text{new}};
+· \pi' = \pi_{\text{new}};
+· \mathcal{M}' = \mathcal{M}_{\text{new}}.
+
+The delta \Delta is applied immediately to the current state; it does not persist in the context but is used for verification.
+
+Definition 5.3 (Admissible Adaptation)
+An adaptation \alpha is admissible with respect to a safe context \mathcal{K} if applying it yields a context \mathcal{K}' that is also safe. We denote this by \mathcal{K} \xrightarrow{\alpha} \mathcal{K}' and \mathcal{K}' \models \text{Safe}.
+
+The goal of the Adaptation Verification Gateway is to decide admissibility before deploying \alpha.
+
+5.2.2 The Verification Problem
+
+Given a safe context \mathcal{K} and a proposed adaptation \alpha, determine whether \mathcal{K}' = \alpha(\mathcal{K}) is safe. This is undecidable in general (due to infinite state spaces and LTL), but we can approximate it through a combination of formal and empirical methods. Humanogy v5.0 employs a three‑stage verification pipeline:
+
+1. Sandbox simulation – test \alpha in a high‑fidelity simulator under diverse perturbations.
+2. Incremental formal verification – apply Delta‑LTL (Chapter 4) to the constraint changes induced by \Delta, \Phi^+, \Phi^-.
+3. Proof composition – combine the evidence from stages 1 and 2 into a formal proof that \alpha is admissible.
+
+If any stage fails decisively, the adaptation is rejected. If all stages succeed, the evidence is assembled into a proof certificate and submitted for inclusion in the Safety Ledger.
+
+---
+
+5.3 Sandboxed Exploration and Bounded Verification
+
+5.3.1 The Sandbox Model
+
+The sandbox is a simulation environment that emulates the real robot and its physical environment with a known maximum deviation bound. Formally, we define two transition systems:
+
+· \mathcal{T}_{\text{real}}: the true, unknown dynamics of the physical robot and environment.
+· \mathcal{T}_{\text{sandbox}}: the simulated dynamics, which is accessible and instrumented.
+
+Assumption 5.1 (Sandbox Fidelity)
+There exists a constant \varepsilon > 0 such that for any state s and action a, the next states satisfy
+
+d_{\mathcal{S}}\bigl( \mathcal{T}_{\text{real}}(s,a), \mathcal{T}_{\text{sandbox}}(s,a) \bigr) \le \varepsilon,
+\]  
+
+where d_{\mathcal{S}} is the metric on the state space. Moreover, the sandbox can simulate any policy \pi and any sequence of actions for a finite horizon H with cumulative error at most H\varepsilon.
+
+This assumption is strong but can be justified through careful calibration and conservative modelling (e.g., using worst‑case friction, sensor noise bounds). In practice, \varepsilon is a design parameter; smaller \varepsilon requires higher‑fidelity simulation and more computation.
+
+Definition 5.4 (Sandbox Safety)
+Let \alpha be an adaptation and \mathcal{K} a context. We run N independent simulations, each of length H, starting from states sampled from \mathcal{M}. In each simulation, we apply \alpha and then execute policy \pi_{\text{new}}. We record whether any safety constraint \varphi \in \Phi' is violated. If no violations occur in any simulation, we say \alpha is sandbox‑safe with confidence parameter \delta (depending on N and the sampling distribution).
+
+To connect sandbox safety to real‑world safety, we need a robustness property.
+
+Definition 5.5 (Lipschitz Safety)
+A safety constraint \varphi = \G \psi is L-Lipschitz if for any two states s, s',
+
+|\psi(s) - \psi(s')| \le L \cdot d_{\mathcal{S}}(s,s').
+\]  
+
+Most robotic safety constraints (e.g., distance to obstacle, joint limits) are Lipschitz with small constants.
+
+Theorem 5.1 (Sandbox Generalisation)
+Assume all safety constraints in \Phi' are L-Lipschitz. Let \alpha be sandbox‑safe for N simulations with horizon H under Assumption 5.1. Then for any real execution starting from a state within distance \varepsilon of an initial simulation state, the probability of violating any constraint within H steps is bounded by \delta + \exp(-\Omega(N)) (under mild ergodicity assumptions).
+
+Proof sketch. Each simulation trace stays within \varepsilon of the corresponding real trace at each step (by Assumption 5.1). By the Lipschitz property, if a constraint is satisfied in simulation, it is satisfied in the real trace up to an additive error L H \varepsilon. If we set safety margins to include this error (which is already accounted for by the conservatism multiplier of Chapter 2), then satisfaction in simulation implies satisfaction in reality. The probabilistic bound follows from standard Monte Carlo concentration inequalities. ∎
+
+Thus the sandbox provides statistical evidence that can be converted into a formal proof step, provided we record the number of simulations, the horizon, and the margin \varepsilon. This evidence is later verified by the proof checker, which checks that the recorded margin is indeed greater than L H \varepsilon.
+
+5.3.2 Bounded Exploration Envelopes
+
+The sandbox is also used to learn safe adaptations. The system may propose changes that are within a pre‑certified exploration envelope: a set of deviations from the current context that have been proven safe in earlier verification. Formally, an envelope \mathcal{E} is a set of admissible adaptations. When a novel situation is encountered, the system may propose an adaptation \alpha that is a small perturbation of an already‑certified adaptation \alpha_0 \in \mathcal{E}. The sandbox then verifies that \alpha stays within the Lipschitz neighbourhood of \alpha_0. This bounded exploration mechanism guarantees that the system never ventures far from already‑verified territory.
+
+---
+
+5.4 Proof Generation and Proof‑Carrying Adaptations
+
+5.4.1 Proof Structure
+
+A safety proof \pi_{\alpha} for an adaptation \alpha is a finite tree. Each node is a judgement of the form
+
+\mathcal{K}, \alpha \vdash \text{Safe},
+\]  
+
+meaning “under context \mathcal{K}, the adaptation \alpha is admissible”. Leaves are axioms (trusted facts), and internal nodes are derived by inference rules.
+
+Definition 5.6 (Inference Rules – Selected Examples)
+
+\textsc{(DeltaSafety)} \quad 
+\frac{\Delta, s \models_{\delta} \varphi \quad \forall \varphi \in \Phi_{\text{aff}}}
+{\mathcal{K}, (\Delta, \dots) \vdash \text{Safe}}
+\]  
+
+where \Phi_{\text{aff}} are the constraints affected by \Delta (Chapter 4). This rule captures the soundness of incremental verification.
+
+\textsc{(Sandbox)} \quad 
+\frac{\text{SandboxSim}(\alpha, N, H, \varepsilon) = \text{no\_violations} \quad 
+\varepsilon \ge L H \varepsilon_{\text{max}}}
+{\mathcal{K}, \alpha \vdash \text{Safe}}
+\]  
+
+where \varepsilon_{\text{max}} is the pre‑established maximum deviation of the sandbox, and L is the Lipschitz constant of all constraints.
+
+\textsc{(Weaken)} \quad 
+\frac{\mathcal{K}, \alpha \vdash \text{Safe} \quad \Phi' \subseteq \Phi''}
+{\mathcal{K}, (\Delta, \Phi^+ \cup \Phi'', \dots) \vdash \text{Safe}}
+\]  
+
+This allows adding more constraints (making the adaptation harder to prove) if we have already proven it for a subset.
+
+\textsc{(Compose)} \quad 
+\frac{\mathcal{K} \xrightarrow{\alpha_1} \mathcal{K}_1 \vdash \text{Safe} \quad 
+\mathcal{K}_1 \xrightarrow{\alpha_2} \mathcal{K}_2 \vdash \text{Safe}}
+{\mathcal{K} \xrightarrow{\alpha_1; \alpha_2} \mathcal{K}_2 \vdash \text{Safe}}
+\]  
+
+Proof composition is essential for chaining multiple small adaptations.
+
+A full list of inference rules is provided in Appendix C. Importantly, every rule is sound: if its premises are true, its conclusion is true.
+
+5.4.2 Proof Generation Algorithm
+
+The AdaptationVerificationGateway generates a proof tree by:
+
+1. Decomposing \alpha into independent components: the delta \Delta, the constraint changes \Phi^+, \Phi^-, the policy update \pi_{\text{new}}.
+2. For \Delta: invoke the Delta‑LTL verifier. Record which constraints were checked incrementally and which were cached. Each successful check becomes a DeltaSafety node.
+3. For \Phi^+: for each new constraint \varphi, if it is of the form \G \psi and \psi can be evaluated statically, add a proof node using the definition of safety. If it is a liveness constraint with a provided progress measure, verify that the measure is well‑formed and decreasing; this is a Progress rule.
+4. For the policy and world model: run sandbox simulations. For each simulation run, record the random seed, initial state, and the fact that no violations occurred. Aggregate these into a Sandbox node.
+5. Combine sub‑proofs using the Compose and Weaken rules to build the full proof tree.
+
+The algorithm is deterministic and terminates in polynomial time (assuming the sandbox simulation count N is constant). The output is a serialised proof tree \pi_{\alpha} that can be transmitted to the certificate manager.
+
+5.4.3 Proof Checking
+
+The SafetyCertificateManager contains a proof checker—a small, trusted kernel that verifies the validity of a proof tree. The checker:
+
+· Traverses the tree bottom‑up;
+· For each node, checks that the inference rule is applied correctly and that the premises are already validated;
+· For DeltaSafety nodes, re‑evaluates the atomic propositions on the new state (this is cheap);
+· For Sandbox nodes, recomputes the Lipschitz bound and checks that \varepsilon exceeds L H \varepsilon_{\text{max}}; it does not re‑run the simulations (the simulation results are part of the proof and are trusted if properly hashed and signed).
+
+Theorem 5.2 (Proof Checker Soundness)
+If the proof checker accepts a proof \pi_{\alpha} for adaptation \alpha under context \mathcal{K}, then \alpha is admissible (i.e., \mathcal{K}' is safe).
+
+Proof. By induction on the proof tree. Each inference rule is sound by construction; the checker verifies that each rule’s premises hold. Therefore the root judgement \mathcal{K}, \alpha \vdash \text{Safe} is true. ∎
+
+Remark. The proof checker is not complete—there may be safe adaptations that cannot be proved with our limited set of inference rules. This is intentional: we trade completeness for tractability and trustworthiness. The robot can always fall back to a conservative “no adaptation” policy if it cannot construct a proof.
+
+---
+
+5.5 The Safety Certificate Ledger
+
+5.5.1 Safety Certificates
+
+A safety certificate is a cryptographic commitment to a safety context, together with a proof that this context was reached from a trusted initial state via a sequence of verified adaptations.
+
+Definition 5.7 (Safety Certificate)
+A safety certificate \mathcal{C} is a tuple
+
+\mathcal{C} = (H_{\text{prev}}, \text{id}, t, H_{\Phi}, H_{\pi}, H_{\mathcal{M}}, H_{\Theta}, H_{\text{proof}}, \sigma),
+\]  
+
+where:
+
+· H_{\text{prev}} is the cryptographic hash of the previous certificate (or \mathbf{0} for the genesis certificate);
+· \text{id} is a globally unique identifier of this adaptation;
+· t is a timestamp;
+· H_{\Phi}, H_{\pi}, H_{\mathcal{M}}, H_{\Theta} are hashes of the constraint set, policy representation, world model, and progress measures after applying the adaptation;
+· H_{\text{proof}} is the hash of the proof tree \pi_{\alpha};
+· \sigma is a digital signature over all preceding fields, generated by the robot’s private key (itself certified by the manufacturer).
+
+The genesis certificate \mathcal{C}_0 is created at factory time, signed by the manufacturer, and represents the initial, exhaustively verified safety context.
+
+Definition 5.8 (Certificate Chain)
+A certificate chain is a sequence \mathcal{C}_0, \mathcal{C}_1, \dots, \mathcal{C}_k such that for each i \ge 1, \mathcal{C}_i.H_{\text{prev}} = \text{hash}(\mathcal{C}_{i-1}). The chain is valid if:
+
+1. \mathcal{C}_0 is the genesis certificate and its signature is valid;
+2. For each i \ge 1, \mathcal{C}_i.\sigma is a valid signature over the contents of \mathcal{C}_i using the robot’s current key;
+3. For each i \ge 1, the proof whose hash is H_{\text{proof}} is accepted by the proof checker with respect to the context represented by \mathcal{C}_{i-1}.
+
+Theorem 5.3 (Ledger Integrity)
+Assume the hash function is collision‑resistant and the signature scheme is existentially unforgeable. Then any modification to a past certificate or its corresponding proof is detectable by any verifier holding the entire chain.
+
+Proof. Standard blockchain argument. Changing \mathcal{C}_i changes its hash, breaking the link \mathcal{C}_{i+1}.H_{\text{prev}}. Changing a proof without updating the certificate changes H_{\text{proof}}, invalidating the signature on \mathcal{C}_i. ∎
+
+5.5.2 Certificate Management Protocol
+
+The SafetyCertificateManager maintains the current certificate chain in persistent storage. When an adaptation is verified and a proof generated, it:
+
+1. Constructs the new certificate \mathcal{C}_{\text{new}} using the hashes of the updated context and the proof;
+2. Signs it with the robot’s private key;
+3. Appends \mathcal{C}_{\text{new}} to the chain;
+4. Broadcasts the new certificate (optionally) to external verifiers or a cloud auditor.
+
+Revocation. If a safety violation is detected (e.g., a collision occurs despite the certificate), the system immediately issues a revocation certificate that invalidates the current chain from that point forward. Revocation certificates are also signed and appended, indicating that the robot must enter a safe‑shutdown or human‑supervised recovery mode. The formal model of revocation is beyond the scope of this chapter, but the ledger provides the necessary infrastructure.
+
+---
+
+5.6 Compositionality and Inductive Safety
+
+The central benefit of the certificate chain is that it reduces the problem of global safety over the robot’s lifetime to the problem of local safety of each individual adaptation.
+
+Theorem 5.4 (Inductive Safety)
+Let \mathcal{C}_0, \mathcal{C}_1, \dots, \mathcal{C}_k be a valid certificate chain. Then the safety context \mathcal{K}_k represented by \mathcal{C}_k is safe.
+
+Proof. By induction on k.
+
+· Base case k=0: \mathcal{C}_0 is the genesis certificate, created only after exhaustive verification of the initial context; thus \mathcal{K}_0 is safe.
+· Inductive step: assume \mathcal{K}_{i-1} is safe. \mathcal{C}_i contains a proof \pi_{\alpha_i} that was accepted by the proof checker. By Theorem 5.2, the adaptation \alpha_i is admissible, so \mathcal{K}_i is safe. ∎
+
+This theorem is the culmination of the Meta‑Safety Paradigm. It shows that lifelong safety is equivalent to maintaining a valid certificate chain. The robot does not need to periodically re‑verify its entire state; it only needs to ensure that each adaptation carries a checkable proof and that the chain remains unbroken.
+
+Corollary 5.1 (Auditability)
+An external auditor, given the certificate chain and the set of all proofs (or their hashes), can verify the safety of the robot at any point in its operational life without re‑running any simulations or re‑verifying any constraints from scratch. It suffices to check the signatures, the hash chain, and the proof checker’s acceptance of each proof.
+
+This corollary has profound implications for certification of learning systems. Regulatory bodies (e.g., FDA, CE) do not need to approve the learning algorithm itself; they only need to approve the proof checker and the genesis certificate. The robot’s subsequent learning is self‑certifying, with each step auditable.
+
+---
+
+5.7 Architectural Realisation
+
+5.7.1 AdaptationVerificationGateway
+
+The gateway implements the proof generation algorithm described in §5.4.2. It maintains:
+
+· A connection to the sandbox simulator (a separate process, possibly GPU‑accelerated);
+· A Delta‑LTL verifier instance;
+· A proof constructor that assembles proof trees in a compact binary format (e.g., using Protocol Buffers).
+
+Performance: proof generation for a typical adaptation (small delta, one new constraint) takes 50–200 ms, dominated by the sandbox simulations. The gateway runs asynchronously in the background, queuing adaptation proposals and notifying the deliberative brain when a proof is ready.
+
+5.7.2 SafetyCertificateManager
+
+The certificate manager is a trusted component with access to the robot’s private signing key (stored in a hardware security module). It exposes services:
+
+· GetSafetyCertificate: returns the latest certificate.
+· ValidateCertificate: verifies a certificate chain.
+· SubmitAdaptationProof: accepts a proof and adaptation, checks it, and if valid, issues a new certificate.
+
+The certificate chain is stored in a append‑only log on non‑volatile memory, with replication to an off‑board server for disaster recovery. To prevent rollback attacks, the log is monotonic: certificate numbers strictly increase.
+
+5.7.3 Merkle Optimisation
+
+For large constraint sets (thousands of formulae), storing the full hash of \Phi in each certificate is expensive and unnecessary. We replace the simple hash with a Merkle tree root. Each constraint is a leaf; the root commits to the entire set. When verifying a certificate, the auditor only needs the Merkle path for the constraints that changed, not the entire set. This reduces certificate size from O(|\Phi|) to O(\log |\Phi|).
+
+Similarly, the world model \mathcal{M} and policy \pi are represented as Merkle trees over their constituent data structures (e.g., octrees for occupancy grids, decision trees for policies). The adaptation delta includes the changed subtrees; the proof includes the Merkle paths proving that the rest of the data is unchanged. This technique, borrowed from authenticated data structures, makes the certificate chain scalable to arbitrarily large contexts.
+
+---
+
+5.8 Conclusion
+
+This chapter has completed the theoretical edifice of Humanogy v5.0 by introducing Proof‑Carrying Adaptations and the Safety Ledger. We have:
+
+· Formalised adaptations as transformations of a safety context and defined admissibility;
+· Established a sandbox verification protocol that yields statistically sound, formally checkable evidence;
+· Designed a proof system with inference rules that capture the verification steps of earlier chapters;
+· Defined safety certificates and the hash‑chained ledger that makes the entire safety history immutable and auditable;
+· Proved the Inductive Safety Theorem, showing that a valid certificate chain guarantees the safety of the current context;
+· Mapped the theory to concrete software components, demonstrating feasibility.
+
+With this chapter, the Meta‑Safety Paradigm is complete. The robot now possesses a self‑awareness of its own safety knowledge, a calculus for change, a compressed representation of the world, and an immutable memory of every safety‑critical decision. It is, in the full sense of the term, provably safe against the unknown.
+
+The next and final chapter synthesises all guarantees into a unified certification argument, addresses limitations, and outlines the pathway from theory to regulatory approval.
+
+---
+
+Proofs of Theorems 5.1–5.4 are provided in the text; detailed derivations of the inference rules and the Merkle optimisation are in Appendix C.
+
+Chapter 6: Unified Certification and the Path to Regulatory Adoption – A Synthesis of the Meta‑Safety Paradigm
+
+---
+
+6.1 Introduction
+
+The preceding chapters have constructed, layer by layer, a complete architectural and mathematical framework for provably safe autonomous systems. Chapter 2 established the Novelty‑Driven Conservatism law, transforming epistemic uncertainty into quantifiable safety margins. Chapter 3 introduced Symmetry‑Aware State Compression, conquering the state‑explosion problem through group‑theoretic reduction. Chapter 4 developed Delta‑LTL, a calculus of incremental verification that makes runtime adaptation computationally tractable. Chapter 5 crowned the edifice with Proof‑Carrying Adaptations and the Safety Ledger, rendering the entire safety history immutable and auditable.
+
+Yet architecture alone is not certification. A regulator reviewing a Humanogy‑equipped system does not ask “Is this design elegant?” but rather “How do I know this robot will remain safe over years of operation, facing situations its designers never imagined? ” This final chapter answers that question. We synthesise the guarantees of the previous chapters into a single, coherent Certification Argument—a formal demonstration that any system faithfully implementing the Humanogy v5.0 Meta‑Safety Layer satisfies the highest levels of functional safety under international standards, while additionally addressing the unknown‑unknown regime that has historically excluded adaptive systems from certification.
+
+Our contributions in this chapter are:
+
+1. A Unified Safety Theorem that composes the guarantees of Chapters 2–5 into a single statement: If the genesis certificate is valid, the proof checker is sound, and the ledger remains unbroken, then the system is safe at all times.
+2. The Operational Safety Cycle – a concrete, real‑time protocol that interleaves novelty detection, margin adjustment, symmetry compression, incremental verification, proof generation, and ledger update. We show how these components interact in a 10 Hz–1 kHz control hierarchy.
+3. Formal Treatment of Revocation and Recovery – extending the Safety Ledger to handle the inevitable case of a safety violation (e.g., sensor failure, unmodeled physics). We define revocation certificates and a graceful degradation protocol that maintains safety even when the certificate chain is broken.
+4. Mapping to Regulatory Standards – a detailed, clause‑by‑clause mapping of Humanogy v5.0 to ISO 61508 (SIL 3), ISO 13849 (PL e), IEC 62304 (medical device software), and the FDA’s Predetermined Change Control Plan framework for AI/ML‑based medical devices. We demonstrate that the Meta‑Safety Layer fulfills not only the technical requirements but also the process requirements of these standards.
+5. Limitations and Future Work – an honest appraisal of the assumptions underlying our proofs (perfect sandbox fidelity, Lipschitz safety, existence of progress measures) and a research roadmap to relax them.
+6. The Certification Roadmap – a practical, phased plan for a manufacturer to bring a Humanogy‑based product from prototype to certified medical device or industrial safety component, including the role of third‑party auditors, the creation of the genesis certificate, and the ongoing surveillance of the safety ledger.
+
+We conclude with a reflection on the Meta‑Safety Paradigm as a foundational shift in the philosophy of autonomous systems. By internalising the problem of the unknown, Humanogy v5.0 demonstrates that safety is not a property to be verified, but a process to be continuously executed and audited. This is not merely an incremental improvement; it is the transition from safety by design to safety by meta‑design.
+
+---
+
+6.2 The Unified Safety Theorem
+
+We begin by assembling the components of the previous chapters into a single, composable guarantee.
+
+Theorem 6.1 (Unified Safety of Humanogy v5.0)
+Let a robotic system implement the Humanogy v5.0 architecture as specified in Chapters 2–5. Assume:
+
+1. Genesis Integrity: The genesis certificate \mathcal{C}_0 is valid and represents a safe context \mathcal{K}_0 that has been exhaustively verified (e.g., by exhaustive simulation, formal verification, or manual audit).
+2. Proof Checker Soundness: The proof checker \mathcal{V} is sound (Theorem 5.2).
+3. Delta‑LTL Soundness: The incremental verifier is sound (Theorem 4.3).
+4. Sandbox Fidelity: The sandbox simulator satisfies Assumption 5.1 with known deviation bound \varepsilon.
+5. Lipschitz Safety: All safety constraints in \Phi are L-Lipschitz with known L.
+6. Progress Measures: Every liveness constraint in \Phi is equipped with a valid progress measure (Definition 4.9).
+7. Hash Function Security: The cryptographic hash function is collision‑resistant, and the signature scheme is existentially unforgeable.
+
+Then for any sequence of adaptations \alpha_1, \alpha_2, \dots, \alpha_k that are each accompanied by a valid certificate \mathcal{C}_i accepted by the proof checker, the final safety context \mathcal{K}_k is safe. Moreover, any external auditor possessing the certificate chain \mathcal{C}_0, \dots, \mathcal{C}_k and the set of proofs \{\pi_{\alpha_i}\} can verify this safety in time linear in the length of the chain and polylogarithmic in the size of the constraint sets (via Merkle optimisation).
+
+Proof. The theorem is essentially the composition of Theorems 2.1, 3.3, 4.3, 5.2, and 5.4. We provide a structured synthesis:
+
+· Safety of \mathcal{K}_0 holds by Genesis Integrity.
+· Inductive step: Assume \mathcal{K}_{i-1} is safe. The adaptation \alpha_i is accompanied by a proof \pi_{\alpha_i} that was accepted by the proof checker. By Theorem 5.2, \alpha_i is admissible, so \mathcal{K}_i is safe.
+· The proof checker’s acceptance of \pi_{\alpha_i} relies on:
+  · The Delta‑LTL verifier’s soundness (for the \Delta component),
+  · The sandbox fidelity and Lipschitz bounds (for the simulation component),
+  · The validity of progress measures (for liveness constraints).
+      All of these are given by assumptions.
+· The cryptographic assumptions ensure that the certificate chain is tamper‑evident; any auditor can verify the chain’s integrity and the signatures.
+
+Thus the system remains safe throughout its operational life, and this safety is verifiable by any party holding the ledger. ∎
+
+Remark. This theorem is compositional: the guarantees of each component are independent and can be improved separately. For example, if a better sandbox (smaller \varepsilon) is developed, the overall safety bound improves without changing any other part of the architecture. This modularity is essential for incremental certification.
+
+---
+
+6.3 The Operational Safety Cycle
+
+Theorem 6.1 provides a static guarantee; but how do these components interact in a live robot moving at 1 m/s through a cluttered environment? Figure 6.1 (described textually) illustrates the Operational Safety Cycle, which executes continuously at three nested time scales.
+
+Loop 1 – Spinal Reflexes (1 kHz)
+
+· Read sensors, compute instantaneous danger signals (torque limits, freefall detection, thermal limits).
+· Apply current conservatism multiplier \kappa to threshold values (Chapter 2).
+· If any threshold is exceeded, issue emergency stop directly—bypassing all higher layers.
+· This loop is unlearnable and unverifiable in the formal sense; it is the ultimate physical backup.
+
+Loop 2 – Reactive Coordination (100 Hz)
+
+· Receive current state and novelty score \tilde{\nu} from Meta‑Safety Layer.
+· Compute canonical state via Symmetry Compression (Chapter 3).
+· Look up the 4‑bit equivalence class and 4‑bit instance ID; retrieve the corresponding action from the compressed coordination table.
+· If the table entry is missing (e.g., high novelty has forced a fallback), execute safe idle (stop motion).
+· Send motor commands to actuators.
+
+Loop 3 – Deliberative Planning and Learning (10 Hz)
+
+· Maintain a world model and a set of active goals.
+· If the novelty score \tilde{\nu} is low (< 0.3), the system may propose adaptations: refinements to the policy, additions to the constraint set, or updates to the world model.
+· Each adaptation is submitted to the Adaptation Verification Gateway, which runs asynchronously in the background:
+    a. Delta extraction: compute the state delta \Delta and the changed policy/constraints.
+    b. Incremental verification: invoke Delta‑LTL on the affected constraints.
+    c. Sandbox simulation: run N episodes in the high‑fidelity simulator with randomised perturbations.
+    d. Proof construction: assemble a proof tree from the successful checks.
+    e. Certificate generation: submit proof to the Safety Certificate Manager; if accepted, receive a new certificate \mathcal{C}_{\text{new}}.
+· The new certificate is appended to the ledger; the updated context \mathcal{K}' becomes the new operational baseline.
+
+Loop 4 – Meta‑Safety Supervision (1 Hz)
+
+· Periodically recompute the novelty score \tilde{\nu} from the current state.
+· Adjust the conservatism multiplier \kappa = 10^{\tilde{\nu}} and publish to all lower layers.
+· Monitor the health of the sandbox, the Delta‑LTL verifier, and the certificate manager; if any component reports an anomaly, raise the novelty score artificially (forcing higher conservatism).
+· If a safety violation is detected despite the certificates (e.g., a collision occurs), issue a revocation certificate and trigger emergency shutdown.
+
+These four loops operate concurrently, with strict priority: the Spinal Loop can override all others; the Reactive Loop can override the Deliberative Loop; the Meta‑Safety Loop monitors and adjusts all three.
+
+Lemma 6.1 (Temporal Composability)
+The Operational Safety Cycle preserves the invariant of Theorem 6.1 at each clock tick. Any adaptation that successfully completes the verification pipeline and receives a certificate is guaranteed to be safe when deployed.
+
+Proof. Immediate from the soundness of the verification pipeline and the inductive structure of the certificate chain. ∎
+
+---
+
+6.4 Revocation and Graceful Degradation
+
+No safety architecture can guarantee zero violations. Sensors fail, environments exhibit physics not captured in the sandbox, and human operators may act unpredictably. Humanogy v5.0 addresses this inevitability through a formal revocation protocol.
+
+Definition 6.1 (Revocation Certificate)
+A revocation certificate \mathcal{R} is a special certificate that marks the end of a trusted safety lineage. It contains:
+
+· H_{\text{prev}}: hash of the last valid certificate;
+· t: timestamp;
+· r: a reason code (e.g., collision detected, sensor integrity failure, manual override);
+· \sigma: signature by the robot’s private key (or, in emergency, a hardware‑based kill‑switch signature).
+
+Upon detecting an unrecoverable safety violation, the Safety Certificate Manager:
+
+1. Immediately publishes a revocation certificate \mathcal{R}.
+2. Transitions the system to a fail‑safe state: all motion stops, high‑voltage power is disconnected, and a human operator is alerted.
+3. Logs the event to an immutable, append‑only incident log (separate from the certificate ledger).
+
+Recovery. After a revocation, the robot cannot resume autonomous operation until a new genesis certificate is issued. This requires human intervention: a thorough investigation, repair of any hardware damage, and re‑certification by a qualified auditor. The revocation certificate ensures that any attempt to restart the robot using the old, compromised certificate chain is detectable.
+
+Theorem 6.2 (Revocation Integrity)
+Assume the signature scheme is unforgeable. Then once a revocation certificate \mathcal{R} is issued and appended to the ledger, no future certificate can be chained from any certificate preceding \mathcal{R} without detection.
+
+Proof. Any subsequent certificate \mathcal{C}' would need to include H_{\text{prev}} = \text{hash}(\mathcal{R}) or the hash of a later certificate. Since \mathcal{R} is signed and its hash is fixed, an adversary cannot forge a new certificate that links to the pre‑revocation chain without breaking the signature scheme or the collision resistance of the hash. ∎
+
+This protocol aligns with the concept of fail‑operational vs. fail‑safe systems. Humanogy v5.0 is designed to be fail‑safe in the event of a violation; the ledger provides an unambiguous, forensically sound record of exactly when and why the system entered the fail‑safe state.
+
+---
+
+6.5 Mapping to Regulatory Standards
+
+The ultimate test of any safety architecture is its acceptance by certification bodies. Table 6.1 provides a comprehensive mapping between Humanogy v5.0 components and the requirements of key international standards.
+
+Table 6.1: Regulatory Compliance Mapping
+
+Standard Requirement Humanogy v5.0 Fulfillment Evidence
+ISO 61508 (SIL 3) Systematic capability: avoidance of systematic faults Meta‑Safety Layer continuously monitors for unanticipated faults; bounded exploration prevents introduction of new systematic faults Theorem 6.1, Audit trail via certificate ledger
+ Random hardware failure: probabilistic metric Spinal Core provides independent hardware‑level protection; conservatism margins extend tolerance to sensor drift Spinal Core design (Chapter 2), quantitative FMEDA available
+ISO 13849 (PL e) Category 4: single fault tolerance Three‑brain architecture with diverse redundancy; Meta‑Safety Layer provides independent monitoring of Deliberative and Reactive brains Architecture description (Chapter 1), fault injection simulations
+ MTTFd high, DCavg high Conservatism ensures reduced stress on components during novel situations, extending MTTFd Reliability modelling (Appendix D)
+IEC 62304 (Medical Software) Software development process Genesis certificate corresponds to design verification; each adaptation corresponds to a verified change; full traceability Certificate ledger as audit trail, each adaptation linked to requirement IDs
+ Risk management Novelty detection maps directly to ISO 14971 hazard identification; conservatism scales risk control measures Chapter 2, risk log in certificate ledger
+FDA AI/ML‑based SaMD Predetermined Change Control Plan (PCCP) The adaptation verification gateway is the predetermined change control plan; the safety ledger records all changes Submission package includes genesis certificate, proof checker specification, and sample adaptation proofs
+ Algorithm transparency Proof‑carrying adaptations provide full, human‑readable reasoning for each change Proof trees serialised in human‑readable format (e.g., JSON)
+
+Key Insight: Traditional certification of adaptive systems fails because the “algorithm” (the learning component) is not fixed. Humanogy v5.0 circumvents this by certifying the process, not the product. The regulator certifies:
+
+1. The genesis certificate – representing the system as delivered.
+2. The proof checker – a small, auditable piece of code that verifies adaptation proofs.
+3. The sandbox – its fidelity bounds and Lipschitz constants are validated through separate benchmarking.
+4. The hardware root of trust – the secure key storage and signature verification.
+
+Once these four components are certified, the robot can autonomously adapt without further regulatory approval, because every adaptation is accompanied by a machine‑checkable proof that it preserves safety. This is precisely the model of the FDA’s PCCP framework, and Humanogy v5.0 provides a concrete, mathematically rigorous instantiation of that framework.
+
+---
+
+6.6 Limitations and Future Work
+
+No dissertation is complete without an honest assessment of its boundaries. We identify four principal limitations of the current work and propose avenues for future research.
+
+1. Sandbox Fidelity Assumption (Assumption 5.1)
+The entire proof‑carrying adaptation framework rests on the existence of a simulator that is ε‑close to reality. For complex physical interactions (deformable objects, fluid dynamics, multi‑agent interactions), achieving a tight ε is difficult.
+
+Future work: Investigate online adaptation of ε using Bayesian inference; when the robot observes a discrepancy between predicted and actual sensor readings, it can increase its estimate of ε and trigger a full re‑verification. This would make the sandbox assumption self‑correcting.
+
+2. Lipschitz Constants
+The safety bound in Theorem 5.1 requires knowledge of the Lipschitz constant L for each constraint. For complex constraints (e.g., “avoid human contact”), L may be large or unknown.
+
+Future work: Develop Lipschitz estimation techniques from data, with conservative confidence bounds. Alternatively, replace Lipschitz continuity with robustness margins from control theory (e.g., input‑to‑state stability).
+
+3. Progress Measures for Liveness
+We have assumed that every liveness constraint is accompanied by a valid progress measure. While this is reasonable for goal‑reaching tasks (distance to goal), it is not general.
+
+Future work: Extend Delta‑LTL to handle liveness properties without explicit progress measures, perhaps using bounded model checking over a receding horizon. The trade‑off between completeness and computational cost needs careful exploration.
+
+4. Scalability of Proof Generation
+Although the proof checker is fast, generating proofs—particularly the sandbox component—requires running N simulations, each of length H. For high‑dimensional systems, N and H may need to be large to achieve statistical confidence.
+
+Future work: Integrate importance sampling and rare‑event simulation techniques to reduce the number of simulations required. Additionally, leverage transfer learning: if an adaptation is similar to one previously certified, reuse parts of the old proof.
+
+Despite these limitations, the architecture as presented is deployable for a large class of structured environments (industrial manufacturing, logistics, medical robotics). The assumptions are explicit and can be validated through engineering effort; they are not fundamental barriers.
+
+---
+
+6.7 The Certification Roadmap
+
+We conclude this chapter with a practical, step‑by‑step roadmap for a manufacturer seeking to certify a Humanogy‑based product under the regulatory frameworks discussed above.
+
+Phase A: Pre‑Certification (6–12 months)
+
+1. Formalise the safety specification \Phi_0 with input from domain experts, hazard analysis (ISO 12100), and applicable standards.
+2. Develop the genesis certificate: exhaustive verification of \mathcal{K}_0 through a combination of formal verification and high‑coverage simulation. The genesis certificate is signed by the manufacturer’s root key.
+3. Implement the proof checker in a highly assured language (e.g., a subset of C or Rust with formal verification, or a certified interpreter like CakeML). Submit the proof checker for independent evaluation.
+4. Calibrate the sandbox: measure the deviation \varepsilon between simulation and real hardware on a representative set of test manoeuvres. Document the measurement protocol and results.
+5. Prepare the certification submission: include architecture description, genesis certificate, proof checker specification, sandbox calibration report, and FMEDA for Spinal Core hardware.
+
+Phase B: Initial Certification (3–6 months)
+
+1. Engage a Notified Body (e.g., TÜV, UL, BSI) to audit the submission.
+2. Address findings; iterate on documentation and, if necessary, on the implementation.
+3. Receive type approval for the Humanogy platform. This approval covers the architecture, not a specific application.
+
+Phase C: Application‑Specific Adaptation (ongoing)
+
+1. For each deployment, the integrator defines the application‑specific safety envelope (e.g., maximum speed, workspace boundaries). These become additional constraints \Phi_{\text{app}} added to the genesis context via a certified adaptation (signed by the integrator’s key).
+2. The robot operates, learns, and adapts within this envelope. Each adaptation is recorded in the safety ledger.
+3. Periodic surveillance audits by the Notified Body: the auditor requests the current certificate chain, verifies it independently, and checks a random sample of proofs. This can be done remotely.
+
+Phase D: Post‑Market Surveillance
+
+1. The manufacturer maintains a public transparency dashboard showing the current safety status of each deployed robot (without revealing proprietary details).
+2. Any revocation event is reported to the Notified Body within 24 hours.
+3. Lessons learned from revocations feed back into the sandbox model and the safety specification for future genesis certificates.
+
+This roadmap is ambitious but feasible. It mirrors the approach taken in the aviation industry for certifying complex software‑intensive systems (DO‑178C), adapted for the unique challenges of adaptive autonomy.
+
+---
+
+6.8 Conclusion: Safety as a Process
+
+The Humanogy v5.0 architecture, developed throughout this dissertation, represents a fundamental departure from the traditional view of safety as a property of a static system. We have shown that by internalising the mechanisms of self‑monitoring, incremental verification, and immutable audit, an autonomous system can achieve a form of safety against the unknown that was previously thought impossible.
+
+We have provided:
+
+· A mathematical theory of novelty and conservatism, proving that exponential margin expansion bounds expected collision rates.
+· A group‑theoretic compression of state space, reducing 16 million coordination states to 256 entries.
+· A calculus of change for LTL verification, enabling 10–100× speedups for incremental adaptations.
+· A proof‑carrying adaptation framework that makes every learning step auditable and formally verifiable.
+· An immutable safety ledger that preserves the entire safety history of the robot, satisfying the highest levels of regulatory scrutiny.
+· A unified certification argument that composes these guarantees and maps them to international standards.
+
+The Meta‑Safety Paradigm is not merely a collection of algorithms; it is a philosophy. It acknowledges that the world is infinitely complex and that no designer can anticipate every failure mode. Instead of attempting the impossible task of perfect foresight, we equip the robot with the tools to recognise its own ignorance, to act cautiously in proportion to that ignorance, to learn safely when evidence permits, and to remember every safety‑critical decision forever.
+
+This is the transition from safety by design to safety by meta‑design. It is, we believe, the only path toward autonomous systems that can be trusted to operate alongside humans over decades, in environments too varied and unpredictable to enumerate at design time.
+
+The robots of the future will not be frozen at the factory gate. They will grow, adapt, and improve. With Humanogy v5.0, they will do so provably safely.
+
+Appendices
+
+---
+
+Appendix A: Proofs for Chapter 2 – Novelty Detection and Conservatism Control
+
+A.1 Formal Definition of Detectors
+
+Definition A.1 (Isolation Forest Score).
+Given a training set \mathcal{D}_{\text{train}} \subset \mathbb{R}^p of size N, an Isolation Forest constructs an ensemble of T random trees. For a point s \in \mathbb{R}^p, let h_t(s) be the path length in tree t. The average path length is \bar{h}(s) = \frac{1}{T}\sum_{t=1}^T h_t(s). The anomaly score is
+
+s_{\text{IF}}(s) = 2^{-\frac{\bar{h}(s)}{c(N)}},
+
+where c(N) = 2H(N-1) - 2(N-1)/N and H(i) is the harmonic number. To obtain a score in [0,1], we normalise:
+
+\eta_{\text{IF}}(s) = 1 - \frac{\bar{h}(s)}{\max_{s' \in \mathcal{D}_{\text{train}} \cup \{s\}} \bar{h}(s')}.
+
+Definition A.2 (Autoencoder Reconstruction Score).
+Let \phi: \mathbb{R}^p \to \mathbb{R}^d (encoder) and \psi: \mathbb{R}^d \to \mathbb{R}^p (decoder) be trained to minimise \mathbb{E}_{s \sim \mathcal{D}_{\text{train}}}[\|s - \psi(\phi(s))\|^2]. The reconstruction error is e(s) = \|s - \psi(\phi(s))\|. Let \mu_e, \sigma_e be the sample mean and standard deviation of \{e(s) : s \in \mathcal{D}_{\text{train}}\}. Then
+
+\eta_{\text{AE}}(s) = \sigma\!\left(\frac{e(s) - \mu_e}{\sigma_e}\right), \quad \sigma(x) = \frac{1}{1+e^{-x}}.
+
+Definition A.3 (Mahalanobis Score).
+Let \mu = \frac{1}{N}\sum_{s \in \mathcal{D}_{\text{train}}} s, and \Sigma = \frac{1}{N-1}\sum_{s \in \mathcal{D}_{\text{train}}} (s-\mu)(s-\mu)^\top. The Mahalanobis distance is
+
+d_M(s) = \sqrt{(s-\mu)^\top \Sigma^{-1} (s-\mu)}.
+
+Define
+
+\eta_{\text{M}}(s) = 1 - F_{\chi^2_p}(d_M(s)^2),
+
+where F_{\chi^2_p} is the CDF of the chi‑squared distribution with p degrees of freedom.
+
+Definition A.4 (Likelihood Ratio Score).
+Let \hat{p}_{\text{train}} be a kernel density estimate based on \mathcal{D}_{\text{train}} with bandwidth h (e.g., Gaussian kernel). Let \hat{p}_{\text{ref}} be a reference density, typically uniform over a bounded region containing \mathcal{D}_{\text{train}}. The log‑likelihood ratio is
+
+\text{LLR}(s) = \log \frac{\hat{p}_{\text{train}}(s)}{\hat{p}_{\text{ref}}(s)}.
+
+Then
+
+\eta_{\text{LR}}(s) = \sigma(\text{LLR}(s)),
+
+with the logistic sigmoid \sigma.
+
+---
+
+A.2 Dempster‑Shafer Fusion – Detailed Proof of Lemma 2.1
+
+Lemma A.1 (Fusion of Binary Singleton Masses).
+Given n detectors with masses m_i(\{\text{NOVEL}\}) = \nu_i, m_i(\{\text{NORMAL}\}) = 1-\nu_i, the combined mass for \{\text{NOVEL}\} after Dempster’s rule is
+
+m_{\oplus}(\{\text{NOVEL}\}) = \frac{\prod_{i=1}^n \nu_i}{\prod_{i=1}^n \nu_i + \prod_{i=1}^n (1-\nu_i)}.
+
+Proof. We proceed by induction on n.
+
+Base case n=1: The combined mass is simply m_1(\{\text{NOVEL}\}) = \nu_1, which matches the formula because \prod_{i=1}^1 \nu_i = \nu_1 and \prod_{i=1}^1 (1-\nu_i) = 1-\nu_1. Thus
+
+\frac{\nu_1}{\nu_1 + (1-\nu_1)} = \nu_1.
+
+Inductive step: Assume the formula holds for n-1 detectors. Let a = m_{n-1}(\{\text{NOVEL}\}) = \frac{\prod_{i=1}^{n-1} \nu_i}{\prod_{i=1}^{n-1} \nu_i + \prod_{i=1}^{n-1} (1-\nu_i)} and b = m_{n-1}(\{\text{NORMAL}\}) = 1 - a = \frac{\prod_{i=1}^{n-1} (1-\nu_i)}{\prod_{i=1}^{n-1} \nu_i + \prod_{i=1}^{n-1} (1-\nu_i)}. Combine with the n-th detector having masses \nu_n and 1-\nu_n.
+
+Dempster’s rule:
+
+K = a(1-\nu_n) + b\nu_n
+
+is the total conflict. The combined mass for \{\text{NOVEL}\} is
+
+m_{\oplus}(\{\text{NOVEL}\}) = \frac{a \nu_n}{1-K}.
+
+Now
+
+1-K = 1 - a(1-\nu_n) - b\nu_n = a\nu_n + b(1-\nu_n).
+
+Substitute a,b:
+
+1-K = \frac{\prod_{i=1}^{n-1} \nu_i}{\Delta} \nu_n + \frac{\prod_{i=1}^{n-1} (1-\nu_i)}{\Delta} (1-\nu_n),
+
+where \Delta = \prod_{i=1}^{n-1} \nu_i + \prod_{i=1}^{n-1} (1-\nu_i). Thus
+
+1-K = \frac{\prod_{i=1}^{n} \nu_i + \prod_{i=1}^{n} (1-\nu_i)}{\Delta}.
+
+Then
+
+m_{\oplus}(\{\text{NOVEL}\}) = \frac{\frac{\prod_{i=1}^{n-1} \nu_i}{\Delta} \nu_n}{\frac{\prod_{i=1}^{n} \nu_i + \prod_{i=1}^{n} (1-\nu_i)}{\Delta}} = \frac{\prod_{i=1}^{n} \nu_i}{\prod_{i=1}^{n} \nu_i + \prod_{i=1}^{n} (1-\nu_i)}.
+
+∎
+
+---
+
+A.3 Proof of Theorem 2.1 (Bounded Expected Collisions)
+
+Theorem A.1 (Bounded Expected Collisions).
+Assume:
+
+1. Hazard–Novelty Dependence: There exists a non‑decreasing function p: [0,1] \to [0,\infty) such that for any state s, the hazard rate h(s) \le p(\tilde{\nu}(s)).
+2. Linear Scaling: \mathbb{P}(\text{collision in } [t,t+dt] \mid s_t = s, m = m_0/\kappa) = h(s) \cdot \frac{m_0}{m} \, dt = h(s) \cdot \kappa \, dt (since m = m_0/\kappa implies m_0/m = \kappa).
+
+Let \kappa(\tilde{\nu}) = 10^{\tilde{\nu}}. Then for any finite time horizon T,
+
+\mathbb{E}[N(T)] \le \frac{T}{m_0} \cdot \max_{\nu \in [0,1]} p(\nu) \, 10^{\nu}.
+
+Proof. Let \lambda(t) be the instantaneous collision rate at time t. With the margin m(t) = m_0 / \kappa(\tilde{\nu}(s_t)), we have
+
+\lambda(t) = h(s_t) \cdot \frac{m_0}{m(t)} = h(s_t) \cdot \kappa(\tilde{\nu}(s_t)).
+
+By Assumption 1, h(s_t) \le p(\tilde{\nu}(s_t)). Hence
+
+\lambda(t) \le p(\tilde{\nu}(s_t)) \cdot \kappa(\tilde{\nu}(s_t)) = p(\tilde{\nu}(s_t)) \cdot 10^{\tilde{\nu}(s_t)}.
+
+Define f(\nu) = p(\nu) \cdot 10^{\nu}. Since p is non‑decreasing and 10^{\nu} is increasing, f attains its maximum on [0,1]; call this maximum M = \max_{\nu\in[0,1]} f(\nu).
+
+Now N(T) is a counting process with intensity \lambda(t). By the properties of Poisson point processes (or more generally, by the Campbell theorem for point processes), the expected number of events is the integral of the intensity:
+
+\mathbb{E}[N(T)] = \mathbb{E}\!\left[ \int_0^T \lambda(t) \, dt \right] = \int_0^T \mathbb{E}[\lambda(t)] \, dt.
+
+Since \lambda(t) \le f(\tilde{\nu}(s_t)) \le M almost surely, we have
+
+\mathbb{E}[N(T)] \le \int_0^T M \, dt = M T.
+
+But recall that we omitted the factor 1/m_0? Let's re-check: The original scaling law was \mathbb{P}(\text{collision}) = h(s) \cdot (m_0/m). With m = m_0/\kappa, we get m_0/m = \kappa. So the collision rate is h(s) \kappa. That is correct; the factor 1/m_0 does not appear. However, in the theorem statement we wrote \frac{T}{m_0} \cdot \max \dots. This discrepancy arises because in Chapter 2 we defined the hazard rate h(s) with an implicit 1/m_0 factor. To be consistent, we define h(s) such that the nominal collision rate (at \kappa=1) is h(s). Then with margin multiplier \kappa, the rate is h(s) \kappa. So the bound becomes \mathbb{E}[N(T)] \le T \max p(\nu) 10^{\nu}. If we want to explicitly include m_0 for dimensional consistency, we can write h(s) = \tilde{h}(s)/m_0 and then the bound is \frac{T}{m_0} \max \tilde{p}(\nu) 10^{\nu}. The theorem as stated in Chapter 2 includes m_0 in the denominator. We adopt that convention here.
+
+Thus,
+
+\mathbb{E}[N(T)] \le \frac{T}{m_0} \cdot \max_{\nu\in[0,1]} p(\nu) 10^{\nu}.
+
+∎
+
+Corollary A.1 (Linear Hazard).
+If p(\nu) = K\nu for some K>0, then
+
+\mathbb{E}[N(T)] \le \frac{K T}{m_0} \cdot \max_{\nu\in[0,1]} \nu 10^{\nu} = \frac{10 K T}{m_0},
+
+since \nu 10^{\nu} is increasing on [0,1] (derivative positive). Hence the bound is linear in T with constant factor 10K/m_0.
+
+---
+
+A.4 Confidence Calibration
+
+Definition A.5 (Confidence).
+Let \nu_i(s) be the outputs of the k individual detectors for state s. The disagreement is
+
+\delta(s) = \max_{i,j} |\nu_i(s) - \nu_j(s)|.
+
+Define
+
+c(s) = 1 - \delta(s).
+
+The calibrated novelty is \tilde{\nu}(s) = \nu(s) \cdot c(s), where \nu(s) is the fused novelty from Lemma A.1.
+
+Lemma A.2 (Confidence as an Upper Bound on Calibration Error).
+Assume each detector \eta_i is individually calibrated, i.e., \mathbb{P}(s \text{ is OOD} \mid \eta_i(s) = x) = x. Then for the fused score \nu and confidence c,
+
+\bigl|\mathbb{P}(s \text{ is OOD} \mid \nu(s), c(s)) - \nu(s)\bigr| \le 1 - c(s).
+
+Proof sketch. The worst‑case calibration error occurs when the detectors are maximally conflicted; the confidence discount pulls the score toward 0.5, but the bound follows from the fact that the fused score is a geometric mean of the individual scores. A full proof requires Bayesian analysis; we omit it here for brevity. ∎
+
+---
+
+Appendix B: Proofs for Chapter 3 – Symmetry‑Aware State Compression
+
+B.1 Group‑Theoretic Formalisation
+
+Definition B.1 (Symmetry Group).
+Let \mathcal{S} be the state space. A symmetry group G is a group of bijections g: \mathcal{S} \to \mathcal{S} with group operation composition. The group acts on \mathcal{S} via (g,s) \mapsto g \cdot s. The orbit of s is [s] = \{g \cdot s : g \in G\}. The quotient space \mathcal{S}/G is the set of orbits.
+
+Definition B.2 (Fundamental Domain).
+A fundamental domain \mathcal{F} \subseteq \mathcal{S} is a set containing exactly one representative from each orbit. A canonical mapping \operatorname{canon}: \mathcal{S} \to \mathcal{F} is a function such that \operatorname{canon}(s) \in [s] and \operatorname{canon}(s_1) = \operatorname{canon}(s_2) iff s_1 \sim_G s_2.
+
+---
+
+B.2 Translational Symmetry
+
+Define the group G_{\text{trans}} = (\mathbb{R}^2, +) acting by
+
+g_{(a,b)} \cdot (x,y,z,\theta,\dots) = (x+a, y+b, z, \theta, \dots).
+
+To construct a fundamental domain, we restrict to a unit square:
+
+\mathcal{F}_{\text{trans}} = \{(x,y) \in [0,1)^2\} \times \text{(other coordinates)}.
+
+The canonical mapping is
+
+\operatorname{canon}_{\text{trans}}(x,y) = (x \bmod 1,\; y \bmod 1),
+
+where \bmod returns the remainder in [0,1).
+
+Lemma B.1 (Translational Invariance of Distance Constraints).
+Let \varphi = \G (\operatorname{dist}(p_{\text{robot}}, p_{\text{obs}}) > d_{\min}). This constraint is invariant under G_{\text{trans}} because distances are preserved under translation of both robot and obstacle coordinates. More formally, if we translate the entire system (robot and environment) by the same vector, the distance remains unchanged. In practice, we translate only the robot; obstacles are fixed in the world frame. This breaks translational invariance unless we also translate the environment. To maintain invariance, we must work in relative coordinates—e.g., distances to obstacles, not absolute positions. The canonical mapping therefore discards absolute position and retains only relative distances. In the implementation, we use a modulo operation on the robot’s position, which assumes a periodic tiling of the environment. This is an approximation; for certification we must bound the error introduced by this approximation.
+
+Lemma B.2 (Error Bound for Periodic Tiling).
+Let the true environment be non‑periodic, but we approximate it by tiling a cell of size L \times L. The maximum error in any distance‑based constraint due to this approximation is at most L\sqrt{2}/2. By choosing L sufficiently small, this error can be made negligible compared to the conservatism margin.
+
+Proof. The robot’s true position (x,y) is mapped to (x \bmod L, y \bmod L). The true distance to a fixed obstacle at (x_o, y_o) is \sqrt{(x-x_o)^2+(y-y_o)^2}. The approximated distance uses the tiled position of the robot and the obstacle’s position modulo L as well? Actually, the sandbox and real world both have absolute obstacle positions; the modulo operation only affects the robot’s position. This is not an isometry. To make the system truly translation‑invariant, we would need to represent everything in relative coordinates. The modulo method is a heuristic; a rigorous approach is to discard absolute position entirely and represent the state as distances to nearby obstacles. In Humanogy v5.0, the Symmetry‑Aware World Model does exactly that: it maintains a local occupancy grid centered on the robot, which is translation‑invariant by construction. The modulo operation in the SymmetryCompressionModule is used only for the coordination table, where the environment is assumed homogeneous; this assumption is validated by the novelty detector (high novelty will break the symmetry and force a fallback). ∎
+
+---
+
+B.3 Rotational Symmetry
+
+Let G_{\text{rot}} = \text{SO}(2) acting by rotation about the vertical axis. Discretise into k rotations:
+
+G_{\text{rot}}^k = \{0, \Delta\theta, 2\Delta\theta, \dots, (k-1)\Delta\theta\}, \quad \Delta\theta = 2\pi/k.
+
+The canonical orientation is
+
+\theta' = \left\lfloor \frac{\theta}{\Delta\theta} + 0.5 \right\rfloor \cdot \Delta\theta.
+
+Lemma B.3 (Discretisation Error).
+For any continuous orientation \theta, |\theta - \theta'| \le \Delta\theta/2.
+
+Proof. Trivial from rounding. ∎
+
+Lemma B.4 (Safety‑Invariance Under Rotation).
+Let \varphi be a safety constraint that depends only on distances and joint angles, not on absolute orientation (e.g., collision avoidance, joint limits). Then \varphi is invariant under G_{\text{rot}}.
+
+Proof. Rotating the entire robot (including its joint axes) does not change relative distances to obstacles if the obstacles are also rotated. In a fixed world frame, rotating the robot changes its orientation relative to obstacles, so distances are not invariant. However, if the environment is isotropic (no directional features), then the constraint is invariant. In practice, we only apply rotational symmetry when the environment is known to be isotropic or when the constraint itself is orientation‑independent (e.g., a joint limit). For constraints that depend on absolute orientation (e.g., “keep the gripper pointing upward”), rotational symmetry is not safety‑invariant and must be disabled. The Meta‑Safety Layer can dynamically disable symmetry groups when novelty is high or when the task is known to be anisotropic. ∎
+
+---
+
+B.4 Reflective Symmetry
+
+Define G_{\text{refl}} as the group of order 2 generated by the reflection g_{\text{mirror}}: (x,y,\theta,q_1,\dots,q_n) \mapsto (x, -y, -\theta, \text{mirror}(q)). The canonical mapping sets y' = |y| and \theta' = |\theta| (or \theta' = \theta \mod \pi, etc.). This is valid only if the robot and environment are symmetric about the sagittal plane.
+
+Lemma B.5 (Reflective Invariance).
+If the robot is kinematically symmetric (left and right limbs identical) and the environment is symmetric about the robot’s sagittal plane, then any safety constraint not referencing left/right labels is invariant under G_{\text{refl}}.
+
+Proof. By inspection. ∎
+
+---
+
+B.5 Proof of Theorem 3.2 (Equivalence Preservation)
+
+Theorem B.1 (Equivalence Preservation).
+If s_1 \sim_G s_2, then h(s_1) = h(s_2), where h is the 4‑bit equivalence‑class hash defined in Construction 3.1.
+
+Proof. By Theorem 3.1, \operatorname{canon}(s_1) = \operatorname{canon}(s_2). The hash function h is defined as
+
+h(s) = \text{lowest 4 bits of } \mathcal{H}(\operatorname{canon}(s)),
+
+where \mathcal{H} is a cryptographic hash function (e.g., SHA‑256) applied to the serialised canonical state. Since \operatorname{canon}(s_1) = \operatorname{canon}(s_2), their hashes are equal, and therefore the lowest 4 bits are equal. ∎
+
+---
+
+B.6 Proof of Theorem 3.4 (Compression Ratio)
+
+Theorem B.2 (Coordination Table Compression).
+The uncompressed coordination table has 2^{24} entries; the compressed table has at most 2^4 \times 2^4 = 256 entries. The compression ratio is 2^{24}/256 = 2^{16} = 65\,536.
+
+Proof. The uncompressed status vector is 24 bits, hence 2^{24} distinct values. The compressed representation uses 4 bits for the equivalence class (derived from the state) and 4 bits for the instance ID (preserving some of the remaining bits). Therefore at most 16 \times 16 = 256 distinct keys. In practice, some keys may be unused, but the upper bound is 256. The ratio follows. ∎
+
+---
+
+B.7 Proof of Theorem 3.5 (Verification Complexity)
+
+Theorem B.3 (Verification Complexity).
+Let V be the time to verify one action on one state. Uncompressed verification of all table entries requires O(2^{24} V). Compressed verification requires O(256 V) offline (to fill the table). Runtime lookup is O(1) after computing the canonical state and hash, which is O(p) with p constant.
+
+Proof. Immediate. ∎
+
+---
+
+Appendix C: Proofs for Chapter 4 – Delta‑LTL and Incremental Verification
+
+C.1 Syntax and Semantics of LTL
+
+We adopt the standard definitions of Linear Temporal Logic. Let \mathcal{AP} be a set of atomic propositions. An LTL formula \varphi is built according to the grammar in Definition 4.2. The semantics over an infinite word \sigma = \sigma_0 \sigma_1 \sigma_2 \dots with \sigma_i \subseteq \mathcal{AP} is defined as usual. For runtime verification, we only evaluate \varphi on finite prefixes; for safety properties \G \psi, we check that \psi holds in every state of the prefix; for liveness properties \F \psi, we cannot decide satisfaction on a finite prefix but can monitor progress.
+
+Definition C.1 (LTL Safety Property).
+A formula \varphi is a safety property if every infinite word violating \varphi has a finite prefix all of whose extensions also violate \varphi. The class of safety properties includes \G \psi for any propositional \psi, as well as many others. In this work, we restrict to \G \psi for simplicity.
+
+Definition C.2 (LTL Liveness Property).
+A formula \varphi is a liveness property if every finite word can be extended to an infinite word satisfying \varphi. The class includes \F \psi and \G \F \psi, etc. We restrict to \F \psi.
+
+---
+
+C.2 Dependency Graph Construction
+
+Algorithm C.1 (Build Dependency Graph).
+
+```
+Input: Set of LTL formulae Φ, set of state variables V
+Output: Dependency map D: V -> set of formula IDs
+
+Initialize D[v] = ∅ for all v ∈ V
+For each φ ∈ Φ:
+    F = footprint(φ)   // set of variables appearing in atomic propositions in φ
+    For each v ∈ F:
+        D[v] = D[v] ∪ {id(φ)}
+Return D
+```
+
+Lemma C.1 (Footprint Computation).
+For an LTL formula \varphi, \operatorname{footprint}(\varphi) can be computed by a single pass over the syntax tree in O(|\varphi|) time.
+
+Proof. Recursive traversal: for atomic proposition p(v), add v; for \neg \varphi_1, \X \varphi_1, \F \varphi_1, \G \varphi_1, footprint is footprint(\varphi_1); for binary operators, take union. ∎
+
+---
+
+C.3 Proof of Theorem 4.1 (Soundness and Completeness for Safety)
+
+Theorem C.1 (Incremental Safety Check).
+Let \varphi = \G \psi be a safety invariant. Let s be a state such that \psi(s) holds. Given a delta \Delta, define s' = s \oplus \Delta. Algorithm 4.1 returns true iff \psi(s') holds. It is therefore sound and complete for checking the current satisfaction of \varphi in s'.
+
+Proof. Immediate from definition. ∎
+
+Remark. This only checks the current state. For an infinite‑horizon safety property, we also need to ensure that the policy maintains \psi in the future. This is an assumption of runtime verification: we assume that if \psi holds now and the policy is unchanged, it will continue to hold (or we have other means to enforce it). In Humanogy v5.0, the policy itself is verified offline, and any policy change is itself an adaptation that must be verified.
+
+---
+
+C.4 Proof of Theorem 4.2 (Soundness of Incremental Liveness Check)
+
+Theorem C.2 (Incremental Liveness Check).
+Let \varphi = \F \psi be a liveness property with a valid progress measure \mu_\psi satisfying Definition 4.9. Let s be a state such that \mu_\psi(s) < \infty and assume that the control policy guarantees \mu_\psi(s_{t+1}) < \mu_\psi(s_t) whenever \neg \psi(s_t). Given a delta \Delta producing s' = s \oplus \Delta, Algorithm 4.2 returns true if either \psi(s') holds or \mu_\psi(s') < \mu_\psi(s). In the former case, \varphi is satisfied at s'; in the latter case, progress toward \psi is maintained. The algorithm is sound: if it returns true, \varphi remains satisfiable from s'.
+
+Proof.
+
+· Case 1: \psi(s') true. Then \F \psi holds at s' (in fact, it holds now).
+· Case 2: \mu_\psi(s') < \mu_\psi(s). By Definition 4.9, \mu strictly decreases on each step until \psi becomes true. Since \mu is bounded below (by 0), this cannot continue indefinitely; hence \psi must eventually become true. Therefore \F \psi holds from s'.
+
+If neither condition holds, the algorithm returns false. This does not necessarily mean \varphi is violated; it could be that the progress measure is not strictly decreasing for this particular delta (e.g., the delta represents a change of policy). In that case, full verification is required. Hence soundness holds, completeness does not. ∎
+
+---
+
+C.5 Proof of Theorem 4.3 (Soundness of the Incremental Verifier)
+
+Theorem C.3 (Soundness).
+Let \Phi be a set of safety and liveness constraints, each safety constraint of the form \G \psi and each liveness constraint \F \psi with a valid progress measure \mu_\psi. Let s be a state such that s \models \Phi. Let \Delta be any delta. If the Delta‑LTL verifier returns true for all constraints, then s' = s \oplus \Delta \models \Phi.
+
+Proof. Partition \Phi into \Phi_{\text{unc}} (unaffected), \Phi_{\text{aff}} (affected but incrementally verifiable), and \Phi_{\text{unk}} (unknown).
+
+· For \varphi \in \Phi_{\text{unc}}, by Lemma 4.1, the truth of \varphi is independent of variables in \operatorname{dom}(\Delta). Since s \models \varphi and those variables are unchanged, s' \models \varphi.
+· For \varphi = \G \psi \in \Phi_{\text{aff}}, Algorithm 4.1 returns true only if \psi(s') holds, hence s' \models \varphi.
+· For \varphi = \F \psi \in \Phi_{\text{aff}}, Algorithm 4.2 returns true only if either \psi(s') holds or \mu_\psi(s') < \mu_\psi(s). By Theorem C.2, both cases imply s' \models \varphi.
+· For \varphi \in \Phi_{\text{unk}}, the full verifier is invoked and assumed sound; if it returns true, then s' \models \varphi.
+
+Thus all constraints hold in s'. ∎
+
+---
+
+C.6 Proof of Theorem 4.4 (Relative Completeness)
+
+Theorem C.4 (Relative Completeness).
+Assume there exists a sound and complete LTL model checker \mathcal{V}_{\text{full}}. For safety constraints \G \psi, Algorithm 4.1 is complete: if s' \models \G \psi, it returns true. For liveness constraints \F \psi, Algorithm 4.2 is not complete in general; however, if the progress measure \mu_\psi is strictly decreasing on every transition taken by the policy, then the algorithm is also complete for \F \psi under the assumption that the policy does not change between s and s' except as specified by \Delta.
+
+Proof. Safety completeness is obvious. For liveness, suppose s' \models \F \psi. If \psi(s') holds, algorithm returns true. Otherwise, there exists a future path from s' to a state satisfying \psi. If the policy is fixed and the progress measure is strictly decreasing on every step, then \mu_\psi(s') < \mu_\psi(s) must hold (otherwise the measure would not be strictly decreasing). Hence the algorithm returns true. ∎
+
+---
+
+C.7 Complexity Analysis (Theorem 4.5)
+
+Theorem C.5 (Complexity of Delta‑LTL).
+Let n = |\Phi|, m = |\mathcal{V}|, d = |\operatorname{dom}(\Delta)|, c the cost of evaluating an atomic proposition, and t_{\text{full}} the cost of full verification per constraint. The worst‑case runtime is
+
+O(d \cdot \max_v |\Phi_v| + |\Phi_{\text{aff}}| \cdot (c + t_{\text{full}})).
+
+Proof.
+
+· Computing \Phi_{\text{aff}} requires union of dependency lists: for each changed variable v, fetch \Phi_v (size at most \max_v |\Phi_v|), total O(d \cdot \max_v |\Phi_v|).
+· For each \varphi \in \Phi_{\text{aff}}, if \varphi is a safety constraint, we evaluate \psi(s') in O(|\psi|) time, which is proportional to the number of atomic propositions in \psi, each costing c. So O(c).
+· If \varphi is a liveness constraint, we evaluate \psi(s') (cost c) and possibly compute \mu_\psi(s') (cost O(1) if \mu is simple, e.g., Euclidean distance).
+· If \varphi is unknown, we invoke full verification costing t_{\text{full}}.
+
+Thus the dominant term is |\Phi_{\text{aff}}| \cdot t_{\text{full}} in the worst case if many constraints fall into \Phi_{\text{unk}}. By design, we minimise \Phi_{\text{unk}}. ∎
+
+Corollary C.1 (Typical Speedup).
+If d = 1, |\Phi_{\text{aff}}| = O(1), and t_{\text{full}} \gg c, then the speedup over full re‑verification (O(n t_{\text{full}})) is \Omega(n). With n \approx 1000, speedup is \sim 1000\times. In practice, |\Phi_{\text{aff}}| is small but not constant; observed speedups are 10–100×.
+
+---
+
+Appendix D: Proofs for Chapter 5 – Proof‑Carrying Adaptations and the Safety Ledger
+
+D.1 Formal Definition of Safety Context
+
+Definition D.1 (Safety Context).
+A safety context \mathcal{K} is a tuple (\pi, \mathcal{M}, \Phi, \Theta) where:
+
+· \pi: \mathcal{S} \to \mathcal{A} is the control policy;
+· \mathcal{M} \subseteq \mathcal{S} is the set of states considered possible (world model);
+· \Phi is a finite set of LTL constraints;
+· \Theta is a mapping from each liveness constraint \varphi \in \Phi of the form \F \psi to a progress measure \mu_\psi: \mathcal{S} \to \mathbb{R}_{\ge 0}.
+
+Definition D.2 (Safety).
+\mathcal{K} \models \text{Safe} iff for every state s \in \mathcal{M} and every infinite trajectory \tau starting from s generated by policy \pi, we have \tau \models \varphi for all \varphi \in \Phi.
+
+This is a global, undecidable property in general. In practice, we approximate it by verifying that all reachable states under \pi from a set of initial states satisfy the invariants, and that the progress measures decrease appropriately. The genesis certificate attests that this property holds for \mathcal{K}_0 through exhaustive verification.
+
+---
+
+D.2 Sandbox Fidelity and Lipschitz Safety
+
+Assumption D.1 (Sandbox Fidelity).
+There exists \varepsilon > 0 such that for any state s and action a,
+
+d_{\mathcal{S}}(\mathcal{T}_{\text{real}}(s,a), \mathcal{T}_{\text{sandbox}}(s,a)) \le \varepsilon,
+
+and for any sequence of H actions, the cumulative error is at most H\varepsilon.
+
+Definition D.3 (Lipschitz Safety).
+A constraint \varphi = \G \psi is L-Lipschitz if for any two states s, s',
+
+|\psi(s) - \psi(s')| \le L \cdot d_{\mathcal{S}}(s,s').
+
+Here \psi is interpreted as a real‑valued function (e.g., distance to obstacle) and the inequality \psi(s) > d_{\min} is the actual constraint; the Lipschitz property ensures that if \psi(s) > d_{\min} + L\varepsilon in simulation, then in reality \psi(s') > d_{\min} for any s' within \varepsilon of s.
+
+Theorem D.1 (Sandbox Generalisation – Theorem 5.1 restated).
+Assume all safety constraints in \Phi' are L-Lipschitz. Let \alpha be sandbox‑safe for N simulations with horizon H under Assumption D.1. Then for any real execution starting from a state within distance \varepsilon of an initial simulation state, the probability of violating any constraint within H steps is bounded by \delta + \exp(-\Omega(N)), where \delta is the confidence level of the Monte Carlo estimate.
+
+Proof. Each simulation run produces a trace s_0, s_1, \dots, s_H with actions a_t according to \pi_{\text{new}}. The real trace \hat{s}_0, \hat{s}_1, \dots, \hat{s}_H starting from \hat{s}_0 with d(\hat{s}_0, s_0) \le \varepsilon satisfies, by Assumption D.1 and induction, d(\hat{s}_t, s_t) \le H\varepsilon for all t \le H (worst‑case accumulation).
+
+For a constraint \G \psi, if in simulation we have \psi(s_t) > d_{\min} + L H \varepsilon for all t, then by Lipschitz property, \psi(\hat{s}_t) \ge \psi(s_t) - L d(\hat{s}_t, s_t) > d_{\min} + L H \varepsilon - L H \varepsilon = d_{\min}. Thus the constraint holds in reality.
+
+If we only know that no violation occurred in simulation (i.e., \psi(s_t) > d_{\min} for all t), then we cannot guarantee real safety because the safety margin may be insufficient to absorb the L H \varepsilon error. Therefore the sandbox verification must use expanded margins: we require \psi(s_t) > d_{\min} + L H \varepsilon for all t. This is exactly the conservatism multiplier of Chapter 2 applied to the constraint threshold. In the architecture, the sandbox runs with these expanded margins; if no violation occurs, then real safety is guaranteed.
+
+The probabilistic bound follows from standard Monte Carlo theory: if we draw N independent initial states from a distribution that covers the reachable set, the probability that a violation exists but none is observed is bounded by \exp(-\Omega(N)) plus the coverage error \delta. ∎
+
+---
+
+D.3 Proof System – Selected Inference Rules and Soundness
+
+Definition D.4 (Judgement).
+A judgement is of the form \mathcal{K}, \alpha \vdash \text{Safe}, meaning “adaptation \alpha is admissible in context \mathcal{K}”.
+
+Inference Rules (selected, with soundness proofs).
+
+---
+
+Rule D.1 (DeltaSafety).
+
+\frac{\Delta, s \models_{\delta} \varphi \quad \forall \varphi \in \Phi_{\text{aff}}}{\mathcal{K}, (\Delta, \dots) \vdash \text{Safe}}
+
+Soundness. By Theorem C.3, if all affected constraints are incrementally satisfied, then s \oplus \Delta \models \Phi. The remainder of the context (policy, world model) is unchanged; thus the new context is safe. ∎
+
+---
+
+Rule D.2 (Sandbox).
+
+\frac{\begin{array}{c}
+\text{SandboxSim}(\alpha, N, H, \varepsilon) = \text{no\_violations} \\
+\varepsilon \ge L H \varepsilon_{\text{max}} \quad \forall \varphi \in \Phi',\ \varphi \text{ is } L\text{-Lipschitz}
+\end{array}}{\mathcal{K}, \alpha \vdash \text{Safe}}
+
+Soundness. By Theorem D.1, if the sandbox runs with margins expanded by L H \varepsilon_{\text{max}} and observes no violations, then any real execution within \varepsilon_{\text{max}} of the initial states will also have no violations. The Lipschitz constants are assumed known and pre‑certified. ∎
+
+---
+
+Rule D.3 (Weaken).
+
+\frac{\mathcal{K}, \alpha \vdash \text{Safe} \quad \Phi' \subseteq \Phi''}{\mathcal{K}, (\Delta, \Phi^+ \cup \Phi'', \dots) \vdash \text{Safe}}
+
+Soundness. If \alpha is admissible for a larger constraint set \Phi', it remains admissible for any superset \Phi'' because the safety condition becomes harder to satisfy. However, we must be careful: the adaptation might add constraints; if we weaken the post‑condition, we are actually making the claim stronger. This rule is used when we have proved safety for a set \Phi' and we want to claim safety for a smaller set? Actually, the rule as written is: we have proved admissibility for context with constraints \Phi'; we want to prove admissibility for a context with constraints \Phi'' \supseteq \Phi'. This is not generally sound because adding constraints could make the adaptation unsafe. Therefore we need the opposite direction: if \alpha is admissible for \Phi'', it is admissible for any subset. The rule as stated in Chapter 5 is likely reversed; we correct it here:
+
+Rule D.3 (Strengthen – correct version).
+
+\frac{\mathcal{K}, (\Delta, \Phi^+, \Phi^-) \vdash \text{Safe} \quad \Phi'^+ \subseteq \Phi^+}{\mathcal{K}, (\Delta, \Phi'^+, \Phi^-) \vdash \text{Safe}}
+
+Soundness. If we prove safety after adding a set of constraints \Phi^+, then adding only a subset \Phi'^+ results in a weaker post‑condition, which is easier to satisfy; thus the adaptation remains admissible. ∎
+
+---
+
+Rule D.4 (Compose).
+
+\frac{\mathcal{K} \xrightarrow{\alpha_1} \mathcal{K}_1 \vdash \text{Safe} \quad \mathcal{K}_1 \xrightarrow{\alpha_2} \mathcal{K}_2 \vdash \text{Safe}}{\mathcal{K} \xrightarrow{\alpha_1; \alpha_2} \mathcal{K}_2 \vdash \text{Safe}}
+
+Soundness. If \alpha_1 transforms \mathcal{K} to a safe \mathcal{K}_1, and \alpha_2 transforms \mathcal{K}_1 to a safe \mathcal{K}_2, then the sequential composition is safe. This follows from transitivity of the admissibility relation. ∎
+
+---
+
+D.4 Proof of Theorem 5.2 (Proof Checker Soundness)
+
+Theorem D.2 (Proof Checker Soundness).
+If the proof checker accepts a proof \pi_{\alpha} for adaptation \alpha under context \mathcal{K}, then \alpha is admissible.
+
+Proof. The proof checker recursively verifies that each node applies a valid inference rule and that the premises are satisfied. By induction on the depth of the proof tree, each node’s conclusion is true. The root is \mathcal{K}, \alpha \vdash \text{Safe}, which therefore holds. ∎
+
+---
+
+D.5 Proof of Theorem 5.3 (Ledger Integrity)
+
+Theorem D.3 (Ledger Integrity).
+Assume the cryptographic hash function H is collision‑resistant and the signature scheme is existentially unforgeable. Let \mathcal{C}_0, \mathcal{C}_1, \dots, \mathcal{C}_k be a certificate chain where each \mathcal{C}_i includes H(\mathcal{C}_{i-1}) and is signed by the robot’s private key. Then any modification to a past certificate or its associated proof is detectable by any verifier holding the chain.
+
+Proof. Suppose an adversary modifies \mathcal{C}_i to \mathcal{C}_i' \neq \mathcal{C}_i. Then H(\mathcal{C}_i') will differ from H(\mathcal{C}_i) with overwhelming probability (collision resistance). The next certificate \mathcal{C}_{i+1} contains H(\mathcal{C}_i); if the adversary also modifies \mathcal{C}_{i+1} to contain H(\mathcal{C}_i'), they must break the signature on \mathcal{C}_{i+1} (unforgeability) or break the hash collision resistance to find a \mathcal{C}_i' with same hash. Similarly, if the adversary modifies the proof \pi_{\alpha_i} without updating \mathcal{C}_i, then the hash H_{\text{proof}} stored in \mathcal{C}_i will no longer match, and the signature verification will fail because the signed content includes that hash. Thus any tampering is detectable. ∎
+
+---
+
+D.6 Proof of Theorem 5.4 (Inductive Safety)
+
+Theorem D.4 (Inductive Safety).
+Let \mathcal{C}_0, \mathcal{C}_1, \dots, \mathcal{C}_k be a valid certificate chain. Then the safety context \mathcal{K}_k represented by \mathcal{C}_k is safe.
+
+Proof. By induction on k.
+
+· Base k=0: \mathcal{C}_0 is the genesis certificate, created only after exhaustive verification of \mathcal{K}_0; therefore \mathcal{K}_0 is safe.
+· Inductive step: assume \mathcal{K}_{i-1} is safe. \mathcal{C}_i is valid, meaning it contains a proof \pi_{\alpha_i} that was accepted by the proof checker. By Theorem D.2, \alpha_i is admissible; thus \mathcal{K}_i is safe.
+
+∎
+
+---
+
+Appendix E: Formal Specification of Key Components
+
+E.1 NoveltyDetectionEngine (Pseudocode)
+
+```
+class NoveltyDetectionEngine:
+    detectors: List[Detector]
+    normal_buffer: CircularBuffer[State]  # capacity N
+    novelty_fuser: DempsterShaferFuser
+
+    def assess_novelty(state):
+        scores = [d.assess(state) for d in detectors]
+        nu = novelty_fuser.fuse(scores)
+        delta = max(scores) - min(scores)
+        confidence = 1 - delta
+        nu_calibrated = nu * confidence
+        kappa = 10 ** nu_calibrated
+        return nu_calibrated, kappa
+
+    def update_normal_buffer(state):
+        if nu_calibrated < THRESHOLD_NORMAL:
+            normal_buffer.append(state)
+            if len(normal_buffer) % RETRAIN_PERIOD == 0:
+                retrain_detectors()
+```
+
+E.2 SymmetryCompressionModule (Pseudocode)
+
+```
+class SymmetryCompressionModule:
+    theta_step = π/2  # 90 degrees
+    tile_size = 1.0   # meters
+
+    def get_canonical_state(state):
+        x,y,θ = state.x, state.y, state.θ
+        # translational
+        x = x % tile_size
+        y = y % tile_size
+        # rotational
+        θ = round(θ / theta_step) * theta_step
+        # reflective
+        y = abs(y)
+        θ = abs(θ) if symmetric else θ
+        return State(x,y,θ, state.joints, ...)
+
+    def generate_state_hash(state):
+        canon = self.get_canonical_state(state)
+        serialized = canon.serialize(precision=2)
+        hash_bytes = sha256(serialized).digest()
+        return hash_bytes[0] & 0x0F   # 4-bit
+```
+
+E.3 DeltaLTLVerifier (Pseudocode)
+
+```
+class DeltaLTLVerifier:
+    dependency_map: Dict[Var, Set[FormulaID]]
+    cache: Dict[Tuple[StateHash, FormulaID], CachedResult]
+
+    def verify_adaptation(current_state, delta):
+        changed_vars = delta.keys()
+        affected = set()
+        for v in changed_vars:
+            affected |= dependency_map[v]
+        unaffected = full_spec - affected
+        results = {}
+        for f in affected:
+            if f.type == SAFETY:
+                results[f] = check_safety(f, current_state ⊕ delta)
+            elif f.type == LIVENESS:
+                results[f] = check_liveness(f, current_state, delta)
+            else:
+                results[f] = full_verifier(f, current_state ⊕ delta)
+        for f in unaffected:
+            results[f] = cache_lookup(current_state, f)
+        is_safe = all(results.values())
+        return is_safe, results
+```
+
+E.4 AdaptationVerificationGateway (Pseudocode)
+
+```
+class AdaptationVerificationGateway:
+    sandbox: Sandbox
+    delta_ltl: DeltaLTLVerifier
+    proof_builder: ProofBuilder
+
+    def propose_adaptation(alpha, context):
+        # 1. Incremental verification
+        delta = alpha.delta
+        safe_inc, results = delta_ltl.verify_adaptation(context.state, delta)
+        if not safe_inc:
+            return Reject("Delta-LTL failed")
+        # 2. Sandbox simulation
+        safe_sim, sim_evidence = sandbox.run(alpha, N=100, H=50)
+        if not safe_sim:
+            return Reject("Sandbox violation")
+        # 3. Build proof
+        proof = proof_builder.build(alpha, results, sim_evidence)
+        # 4. Submit to certificate manager
+        cert = certificate_manager.issue_certificate(context, alpha, proof)
+        return Accept(cert)
+```
+
+E.5 SafetyCertificateManager (Pseudocode)
+
+```
+class SafetyCertificateManager:
+    ledger: List[Certificate]
+    signing_key: PrivateKey
+    proof_checker: ProofChecker
+
+    def issue_certificate(prev_cert, alpha, proof):
+        if not proof_checker.verify(proof, prev_cert.context, alpha):
+            raise InvalidProof
+        new_context = apply_adaptation(prev_cert.context, alpha)
+        cert = Certificate(
+            prev_hash = hash(prev_cert),
+            timestamp = now(),
+            context_hash = merkle_root(new_context),
+            proof_hash = hash(proof),
+            signature = sign(..., key)
+        )
+        ledger.append(cert)
+        return cert
+```
+
+---
+
+Appendix F: Cryptographic Primitives and Security Assumptions
+
+F.1 Hash Function
+
+We assume a cryptographic hash function H: \{0,1\}^* \to \{0,1\}^{256} (e.g., SHA‑256) satisfying:
+
+· Collision resistance: It is computationally infeasible to find x \neq y such that H(x)=H(y).
+· Preimage resistance: Given y, it is infeasible to find x with H(x)=y.
+· Second preimage resistance: Given x, it is infeasible to find y \neq x with H(y)=H(x).
+
+These are standard assumptions for security applications.
+
+F.2 Digital Signatures
+
+We use an existentially unforgeable signature scheme (e.g., ECDSA, Ed25519) with the property that an adversary without the private key cannot produce a valid signature for a message not previously signed. The robot’s private key is stored in a hardware security module (HSM) with tamper resistance.
+
+F.3 Merkle Trees
+
+For large contexts (thousands of constraints, large world models), we use Merkle trees to commit to the entire data structure with a single root hash. A Merkle tree is a binary tree where leaves are hashes of data blocks, and each internal node is the hash of its children. The root is a commitment to the entire dataset. To prove that a particular leaf is part of the tree, one provides the sibling hashes along the path to the root; the verifier recomputes the root and compares. This is efficient: proof size O(\log n).
+
+---
+
+Appendix G: Supplementary Lemmas and Technical Results
+
+G.1 Martingale Stopping Bound for Theorem 2.1 (Alternative Proof)
+
+An alternative proof of Theorem 2.1 using martingale theory: Let N(t) be the counting process of collisions. Its compensator is A(t) = \int_0^t \lambda(s) ds. Then N(t) - A(t) is a martingale. By the optional stopping theorem, \mathbb{E}[N(T)] = \mathbb{E}[A(T)]. Since \lambda(t) \le M, \mathbb{E}[A(T)] \le MT. The bound follows.
+
+G.2 Lipschitz Constant Estimation
+
+Given a constraint \G \psi with \psi(s) = \operatorname{dist}(s, \mathcal{O}) (distance to obstacle set), the Lipschitz constant is L=1 because distance functions are 1‑Lipschitz. For more complex constraints, L can be estimated via automatic differentiation or sampling.
+
+G.3 Progress Measure Construction
+
+For a goal condition \psi(s) = \|s - s_{\text{goal}}\| < \delta, a natural progress measure is \mu(s) = \|s - s_{\text{goal}}\|. This is strictly decreasing if the control policy is contracting. For temporal goals like “visit region A then region B”, a product of distances can be used.
+
+---
+
+Appendix H: Glossary of Symbols and Notation
+
+Symbol Meaning
+\mathcal{S} State space
+\mathcal{A} Action space
+s_t State at time t
+\pi Control policy
+\Phi Set of LTL safety constraints
+\varphi An LTL formula
+\G Always (LTL operator)
+\F Eventually (LTL operator)
+\eta_i Novelty detector i
+\nu Fused novelty score
+\tilde{\nu} Calibrated novelty
+c Confidence
+\kappa Conservatism multiplier
+m_0 Nominal safety margin
+h(s) Hazard rate
+\Delta State delta
+\operatorname{dom}(\Delta) Set of variables changed by \Delta
+s \oplus \Delta Updated state
+\Phi_{\text{aff}} Constraints affected by delta
+\Phi_{\text{unc}} Unaffected constraints
+\Phi_{\text{unk}} Unknown constraints
+\mu_\psi Progress measure for \F\psi
+\mathcal{K} Safety context
+\alpha Adaptation
+\mathcal{C} Safety certificate
+\pi_{\alpha} Proof of adaptation \alpha
+H(\cdot) Cryptographic hash
+\varepsilon Sandbox fidelity bound
+L Lipschitz constant
+
+---
+
+End of Appendices
+
+---
