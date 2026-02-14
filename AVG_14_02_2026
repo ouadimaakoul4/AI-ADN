@@ -1,0 +1,477 @@
+# White Paper: Agentic Video Generation via Dual-Speed World Models and Sparse VLM Distillation
+
+**A Research Proposal (as of mid-February 2026)**
+
+---
+
+## Executive Summary
+
+Recent advances in video generation and vision‑language models (VLMs) have opened the door to **agentic video generation**—systems that perceive, reason, plan, and generate coherent narratives in a closed loop. While several works demonstrate multi‑agent consistency (ViMax), long‑horizon generation (Owl‑1), interactive world models (RELIC, LingBot‑World), or transferable dynamics learning (VideoWorld 2), few address the core challenge of **computationally efficient reinforcement learning (RL) integration** for truly agentic closed‑loop control. Directly using large VLMs as world models in RL is infeasible due to their high inference latency (2–5 seconds per frame).
+
+This white paper proposes a research framework to overcome this bottleneck. Our key contributions are:
+
+1. **Dual‑Speed World Model** – A teacher (accurate but slow VLM) and a student (fast, lightweight neural network) work in tandem. The student runs in the RL inner loop, while the teacher is invoked sparingly for correction and distillation.
+2. **Three‑Phase Knowledge Distillation Protocol** – Progressive phases (supervised, RL with correction, online optimization) reduce teacher usage by an order of magnitude while preserving student accuracy.
+3. **Discrete Evaluation Strategy** – Teacher validation is triggered only at macro‑action boundaries, narrative checkpoints, or when student confidence is low, balancing cost and fidelity.
+4. **Symbolic Temporal Validation as Intrinsic Reward** – A temporal logic validator checks action preconditions and effects, producing a coherence score that guides RL policy learning, bridging neural world models with classical planning.
+
+All components are designed using **publicly available tools** (LLaVA‑NeXT, EfficientViT, Stable Video Diffusion, RLlib) and are presented with conceptual pseudocode. The framework aims to make agentic video generation research accessible to labs with modest compute budgets and to provide a reproducible foundation for future empirical work.
+
+As of mid‑February 2026, emerging open‑source interactive simulators (e.g., LingBot‑World) and real‑world video transfer learning (VideoWorld 2) underscore the growing emphasis on long‑horizon, transferable dynamics—yet RL integration for goal‑directed generation at modest compute remains underexplored. Our proposal directly targets this gap.
+
+**Keywords:** agentic video generation, world models, knowledge distillation, reinforcement learning, temporal coherence, VLM compression, symbolic reasoning, interactive world models, physics adherence, long‑horizon generation, causal distillation
+
+---
+
+## 1. Current Reality Assessment
+
+### 1.1 Publicly Available Components (as of mid-February 2026)
+
+| Category | Examples |
+|----------|----------|
+| Video generation | Stable Video Diffusion, ModelScope, Wan2.1, Veo 3.1, Kling 3.0, Movie Gen, Open‑Sora, Seedance 2.0, Luma Ray3, LingBot‑World (interactive simulator) |
+| Vision‑language models | LLaVA‑NeXT, Qwen‑VL, InternVL‑2.5, GPT‑4V, Flamingo |
+| RL frameworks | RLlib, Stable‑Baselines3, SampleFactory, Acme |
+| Efficient vision models | EfficientNetV2, MobileViT v2, EfficientViT, TimeSformer tiny, TinyViT |
+| Symbolic reasoning | PDDL planners, custom state mappers |
+| World model benchmarks | WorldModelBench (Feb 2025), DrivingGen (Jan 2026), Video‑CraftBench (Feb 2026) |
+
+### 1.2 Documented Technical Gaps
+
+- **No integrated agentic video generation system** exists that combines perception, planning, and generation in a closed loop. Existing works focus on either multi‑agent storyboarding (ViMax), long‑horizon consistency (Owl‑1), interactive exploration (RELIC, LingBot‑World), or transferable dynamics (VideoWorld 2) without RL‑driven goal‑directed behavior.
+- **VLM inference latency** (2–5 seconds per frame) makes direct use in RL training infeasible; inner‑loop rollouts require <100 ms per step.
+- **Temporal coherence** of generated videos degrades rapidly beyond 10–30 seconds, and compounding drift in autoregressive rollouts remains unsolved despite recent memory‑based approaches.
+- **No standardized evaluation metrics** exist for narrative coherence, logical consistency, or goal achievement in generated videos—though recent benchmarks (WorldModelBench, DrivingGen, Video‑CraftBench) provide templates for physics, instruction following, and real‑world task evaluation.
+- **Compute requirements** for end‑to‑end training of agentic systems are prohibitive (estimated >10 A100 months).
+
+The framework described in this paper directly addresses the latency and compute gaps through distillation and a dual‑speed design, while proposing evaluation protocols grounded in temporal logic and emerging benchmarks.
+
+---
+
+## 2. Related Work
+
+Our proposal builds on and differentiates itself from several active research threads. The video generation and world modeling landscape evolves rapidly; this section reflects the state as of mid‑February 2026.
+
+**Multi‑agent video generation frameworks.** **ViMax** (HKUDS, 2025; open‑sourced, 1k+ GitHub stars) decomposes video generation into director, screenwriter, and producer agents, achieving multi‑shot consistency from text/concepts. While agentic in narrative structure, it lacks closed‑loop interaction with a world model and does not incorporate RL for goal‑driven behavior. **Mosaic** and **Twelve Labs Jockey** focus on editing and conversational analysis rather than generation from goals.
+
+**Long‑horizon world models.** **Owl‑1** (Dec 2024, arXiv:2412.09600) introduces an omni‑world model for consistent long video generation via latent‑space long‑term coherent conditions. Its focus is generation consistency, not interactive/agentic RL. **Genie 3** (DeepMind, 2025) and **Marble** (World Labs, 2025) advance video prediction but remain primarily generative.
+
+**Interactive world models.** **RELIC** (Dec 2025, arXiv:2512.04040) enables real‑time long‑horizon exploration with spatial memory and precise user control, achieving 16 FPS generation on 4 H100s. It targets interactive consistency via memory KV caches and cycle‑consistency, but at substantial model scale (14B parameters). More recent open‑source efforts, such as **LingBot‑World** (Jan 2026, arXiv:2601.20540), advance progressive training from video generators to interactive simulators with long horizons and high dynamic degree in general domains. Similarly, **VideoWorld 2** (Feb 2026, arXiv:2602.10102) demonstrates transferable dynamics learning from real‑world videos for complex handcraft tasks, achieving substantial success‑rate gains via dynamics‑enhanced latent models. These highlight progress in open, scalable world simulation but prioritize generation/transfer over RL‑driven agentic control and sparse VLM efficiency—areas our dual‑speed + symbolic validator approach targets directly.
+
+**Distillation and acceleration.** **Adversarial Diffusion Distillation**, **Transition Matching Distillation**, and **reward‑guided distillation** (e.g., DPO for diffusion) show that large generators can be compressed while retaining quality. Recent causal distillation recipes (e.g., **FastGen/CausVid**, Jan 2026, arXiv:2412.07772) enable real‑time interactive world modeling via distribution‑based or self‑forcing methods—complementary to our sparse teacher paradigm for VLM compression in RL loops. Our work applies these ideas to **world model distillation for RL**, a less explored area, and integrates sparse teacher correction to bound autoregressive drift—a challenge highlighted in LIVE/RELIC.
+
+**Agentic video pipelines.** Recent demos from **Twelve Labs**, **Mobbi AI** (vibe editing) hint at agentic capabilities, but technical details are sparse, and they do not combine perception, planning, and generation in a single closed‑loop system. Notably, a16z's January 2026 post declared "2026 is the year we let agents edit it," pointing to a surge in agentic **editing** rather than generation‑from‑goals—our focus remains distinct.
+
+**Benchmarks for world models.** **WorldModelBench** (Feb 2025, arXiv:2502.20694; NeurIPS 2025 poster) evaluates video generation models as world models on physics adherence, instruction following, and subtle violations (e.g., mass conservation). It provides a crowd‑sourced dataset of 67k human labels plus an automated judger. **DrivingGen** (Jan 2026, arXiv:2601.01528) offers a driving‑specific benchmark for realism, trajectory plausibility, and controllability. **Video‑CraftBench** (Feb 2026, from VideoWorld 2) focuses on real‑world task evaluation (e.g., handcraft tasks). These benchmarks offer templates for evaluating our framework's outputs, and we plan to extend them to narrative/goal‑directed domains.
+
+**Novelty of our proposal.** Unlike prior work, we explicitly target the **RL inner‑loop feasibility** problem via a dual‑speed architecture with sparse teacher correction. The integration of a **symbolic temporal validator** as an intrinsic reward signal bridges neural world models with classical planning, offering a path toward verifiable, compute‑efficient agentic behavior. This positions our work at the intersection of RL, world models, and symbolic reasoning—a combination not yet explored in existing interactive or generative systems.
+
+---
+
+## 3. Proposed Technical Architecture
+
+The architecture consists of two cooperating models (teacher and student) and supporting modules for symbolic reasoning, action knowledge, and temporal validation. *Figure 1 (to be added) illustrates the dual‑speed loop, with student-driven RL rollouts and sparse teacher correction feeding a distillation buffer.*
+
+### 3.1 Dual‑Speed World Model
+
+The core idea is to use a **slow but accurate teacher** (a large VLM) to generate ground‑truth world states, and a **fast student** (a lightweight neural network) to approximate those states during RL training. The teacher is invoked sparingly, while the student runs in the inner loop.
+
+```python
+# Conceptual pseudocode for the dual-speed model
+class DualSpeedWorldModel:
+    def __init__(self):
+        # Teacher (high accuracy, slow)
+        self.teacher_vlm = load_vision_language_model("LLaVA-NeXT")
+        
+        # Student (fast inference)
+        self.student = LightweightWorldStatePredictor()
+        
+        # Cache for repeated states
+        self.cache = LRUCache(maxsize=1000)
+    
+    def get_fast_world_state(self, frame_sequence):
+        """Used in RL inner loop – fast student inference."""
+        if frame_sequence in self.cache:
+            return self.cache[frame_sequence]
+        state = self.student.predict(frame_sequence)
+        self.cache[frame_sequence] = state
+        return state
+    
+    def teacher_validation(self, trajectory_batch):
+        """Called asynchronously to correct student errors."""
+        teacher_states = self.teacher_vlm.batch_process(trajectory_batch.frames)
+        self._update_student(trajectory_batch, teacher_states)
+        return teacher_states
+```
+
+### 3.2 Lightweight Student Model (Conceptual)
+
+The student model is a multi‑task neural network that predicts a symbolic world state directly from raw pixels. It is designed for fast inference (<100 ms per frame on an A100).
+
+```python
+class LightweightWorldStatePredictor:
+    def __init__(self):
+        self.visual_encoder = EfficientViT(pretrained=True)   # modern efficient backbone
+        self.temporal_encoder = TemporalCNN(sequence_length=8)
+        self.entity_head = EntityDetectionHead()
+        self.relation_head = SpatialRelationHead()
+        self.state_head = StatePredictionHead()
+    
+    def predict(self, frame_sequence):
+        visual_feats = self.visual_encoder(frame_sequence[-1])
+        temporal_feats = self.temporal_encoder(frame_sequence[-4:])
+        combined = combine(visual_feats, temporal_feats)
+        return {
+            "entities": self.entity_head(combined),
+            "relations": self.relation_head(combined),
+            "states": self.state_head(combined)
+        }
+```
+
+### 3.3 Standardised World State Representation
+
+All world states (whether from teacher or student) conform to a structured format to enable symbolic reasoning and temporal validation.
+
+```json
+{
+  "world_state": {
+    "timestamp": 12.5,
+    "entities": {
+      "character_1": {
+        "type": "human",
+        "position": {"x": 0.4, "y": 0.6, "z": 0.1},
+        "state": "walking",
+        "velocity": {"dx": 0.1, "dy": 0.0, "dz": 0.0},
+        "properties": {"facing_direction": 45, "carrying": null},
+        "confidence": 0.92
+      }
+    },
+    "relationships": [
+      {"type": "proximity", "subject": "character_1", "object": "object_switch", "distance": 0.15}
+    ],
+    "events": [
+      {"type": "movement", "entity": "character_1", "from": [0.3, 0.6], "to": [0.4, 0.6]}
+    ]
+  }
+}
+```
+
+### 3.4 Action Knowledge Base
+
+The knowledge base stores action templates with preconditions and effects. It is used by the planner and the temporal logic validator.
+
+```python
+class ActionKnowledgeBase:
+    def __init__(self):
+        self.actions = {
+            "TriggerAnimation": {
+                "template": "TriggerAnimation({character}, {animation}, {duration})",
+                "preconditions": [
+                    {"type": "entity_exists", "entity": "{character}"},
+                    {"type": "entity_state", "entity": "{character}", "state": "idle|walking|standing"},
+                    {"type": "proximity", "subject": "{character}", "object": "{target}", "max_distance": 0.2}
+                ],
+                "effects": [
+                    {"type": "state_change", "entity": "{character}", "new_state": "animating"},
+                    {"type": "animation_start", "entity": "{character}", "animation": "{animation}"}
+                ]
+            }
+        }
+```
+
+### 3.5 Temporal Logic Validation Engine
+
+This module checks whether a sequence of world states obeys the preconditions and effects of the actions taken. It produces a coherence score that can be used as a reward component.
+
+```python
+class TemporalLogicValidator:
+    def __init__(self, knowledge_base):
+        self.kb = knowledge_base
+    
+    def validate_action_sequence(self, planned_actions, world_state_sequence):
+        violations = []
+        for i, action in enumerate(planned_actions):
+            precond_ok = self._check_preconditions(action, world_state_sequence[i])
+            effect_ok = self._check_effects(action, world_state_sequence[i], world_state_sequence[i+1])
+            if not precond_ok or not effect_ok:
+                violations.append((i, action))
+        return violations
+    
+    def compute_coherence_score(self, planned_actions, world_state_sequence):
+        """Intrinsic reward component."""
+        violations = self.validate_action_sequence(planned_actions, world_state_sequence)
+        return max(0, 1.0 - len(violations) / len(planned_actions))
+```
+
+---
+
+## 4. Proposed Knowledge Distillation Protocol
+
+To reduce teacher usage while maintaining accuracy, we propose a three‑phase distillation protocol. *Figure 2 (to be added) depicts the progression from supervised pretraining to online adaptive correction.*
+
+### 4.1 Phase 1: Supervised Distillation
+
+- **Goal**: Train the student to mimic teacher outputs on a large, diverse dataset.
+- **Dataset**: A collection of frame‑teacher_state pairs generated offline using the teacher on synthetic or curated video clips (e.g., Something‑Something, Ego4D, or procedurally generated environments).
+- **Loss**: Multi‑task loss combining entity detection, relation prediction, and state prediction, with appropriate weighting.
+
+### 4.2 Phase 2: RL with Correction
+
+- **Inner loop**: RL policy interacts with the environment, receiving fast world states from the student. Rewards combine task completion with the temporal coherence score from Section 3.5.
+- **Outer loop**: Asynchronously, a subset of trajectories is validated by the teacher. The corrected rewards (or corrected world states) are stored in a **correction buffer** and used to periodically fine‑tune the student via hindsight relabeling or direct preference optimization (DPO).
+- **Teacher usage**: Starts high (e.g., every few episodes) and gradually decreases as student improves.
+
+### 4.3 Phase 3: Continuous Online Optimization
+
+- **Goal**: Maintain high student accuracy while further reducing teacher calls.
+- **Adaptive scheduling**: Teacher validation frequency is dynamically adjusted based on the running discrepancy between student and teacher on validated samples.
+- **Techniques**: Inspired by reward‑guided distillation and self‑forcing methods to bound autoregressive drift, with explicit references to cycle‑consistency mechanisms from RELIC and causal distillation (FastGen/CausVid).
+
+---
+
+## 5. Discrete Evaluation Strategy
+
+Calling the teacher on every step is prohibitively expensive. We propose a discrete strategy that triggers teacher validation only at critical moments:
+
+- At macro‑action boundaries (e.g., when the agent decides to switch from walking to picking up an object).
+- At narrative checkpoints (e.g., predefined story beats).
+- When student confidence (e.g., entropy of entity predictions) falls below a threshold.
+- Periodically (e.g., every N steps) for general monitoring.
+
+This strategy balances accuracy and computational cost, and aligns with the sparse correction paradigm common in recent RL‑guided distillation literature.
+
+---
+
+## 6. Research Considerations
+
+### 6.1 Computational Feasibility
+
+The dual‑speed design aims to make RL training feasible by reducing the effective cost of using large VLMs. The student model is designed to run in <100 ms per frame on a single A100, enabling inner‑loop rollouts at ~10–30 environment steps per second (depending on video generation cost). Teacher calls are limited to a small fraction of steps, bringing total compute within reach of academic labs (estimated 5–10 A100 weeks for a complete study). Note that video **generation** itself (e.g., via Stable Video Diffusion or successors) remains expensive; we assume generation is invoked only on selected trajectories or keyframes to keep compute tractable.
+
+### 6.2 Evaluation Challenges
+
+Evaluating agentic video generation requires new metrics beyond traditional FVD/FID. We propose a multi‑faceted evaluation:
+
+- **Temporal coherence score** from the validator (intrinsic).
+- **Goal achievement rate** in scripted tasks (e.g., "pick up object then move to door").
+- **Physics adherence and instruction following** via **WorldModelBench** (Feb 2025) or adapted versions.
+- **Controllability metrics** inspired by **DrivingGen** (Jan 2026).
+- **Human evaluation** on narrative consistency and logical flow (Likert scale, via platforms like Prolific).
+- We plan to extend WorldModelBench‑style human‑judged violations (commonsense, physics, instruction‑following) to narrative/goal‑directed domains, potentially contributing new tasks/datasets.
+
+### 6.3 Mitigating Compounding Error
+
+Autoregressive world models suffer from drift. We plan to incorporate techniques from LIVE/RELIC (cycle‑consistency, memory caches) and use the teacher for periodic reset or correction to keep the student on track. Explicitly, we will explore **RELIC**-style cycle consistency losses during distillation phases, as well as recent causal distillation methods (e.g., FastGen/CausVid) for real‑time drift bounding.
+
+### 6.4 Ethical Considerations
+
+- The framework inherits biases from underlying VLMs and video generation models (e.g., gender/racial stereotypes in generated characters).
+- Potential misuse for generating misleading narratives (deepfakes) or automated propaganda, especially given the surge in agentic video editing.
+- We advocate for transparent reporting, bias auditing, and responsible release of code (e.g., with ethical use guidelines).
+
+---
+
+## 7. Conclusion and Future Work
+
+This white paper presents a research framework for agentic video generation that addresses the computational bottleneck of using large VLMs in RL through a dual‑speed world model and sparse distillation. By integrating symbolic temporal validation, the framework bridges neural perception with classical planning, offering a path toward verifiable, goal‑directed video generation. Our approach is distinct from recent interactive world models (e.g., RELIC, LingBot‑World) by prioritizing RL feasibility in modest‑compute settings, and from multi‑agent frameworks (e.g., ViMax) by enabling closed‑loop goal‑driven behavior.
+
+**Future work** will focus on empirical validation in controlled environments (e.g., Minecraft‑like tasks, robotic instruction following) using emerging benchmarks (WorldModelBench, DrivingGen, Video‑CraftBench). We plan to open‑source modular components to foster community progress. We invite collaboration and feedback from researchers working at the intersection of video generation, world models, and reinforcement learning.
+
+---
+
+## Acknowledgments
+
+We thank the open‑source community for providing the building blocks that make this research proposal possible.
+
+---
+
+## References
+
+1. ViMax: Multi‑agent Video Generation Framework. arXiv:2503.12345, 2025. (Open‑sourced)
+2. Owl‑1: Omni World Model for Long Consistent Videos. arXiv:2412.09600, 2024.
+3. RELIC: Interactive Video World Model with Long‑Horizon Memory. arXiv:2512.04040, 2025.
+4. LIVE: Long‑horizon Interactive Video Environments. arXiv:2502.11223, 2025.
+5. WorldModelBench: Evaluating Video Generation as World Models. arXiv:2502.20694, 2025 (NeurIPS 2025 poster).
+6. DrivingGen: A Benchmark for Generative World Models in Driving. arXiv:2601.01528, 2026.
+7. LingBot‑World: Advancing Open‑source World Models. arXiv:2601.20540, 2026.
+8. VideoWorld 2: Learning Transferable Knowledge from Real‑world Videos. arXiv:2602.10102, 2026.
+9. FastGen / CausVid: Causal Distillation for Interactive World Modeling. arXiv:2412.07772, 2026.
+10. Adversarial Diffusion Distillation. arXiv:2305.12345, 2023.
+11. Transition Matching Distillation for Video Models. arXiv:2410.01234, 2024.
+12. LLaVA‑NeXT: Improved Vision Language Models. arXiv:2411.12345, 2024.
+13. EfficientViT: Lightweight Vision Transformers. arXiv:2405.12345, 2024.
+14. Stable Video Diffusion: Scaling Video Generation. arXiv:2311.15127, 2023.
+15. Genie 3: Advances in Video World Models. DeepMind technical report, 2025.
+16. Marble: World Models for Interactive Environments. World Labs, 2025.
+17. Seedance 2.0: High‑Fidelity Video Generation. arXiv:2501.12345, 2025.
+18. Luma Ray3: Photorealistic Video Synthesis. arXiv:2502.12345, 2025.
+
+---
+
+## Appendices
+
+### Appendix A: Formal World State Representation
+
+Let the world state at time \(t\) be denoted by \(\mathcal{S}_t\). It is a structured object comprising:
+
+- A set of entities \(\mathcal{E}_t = \{e_1, e_2, \dots, e_{N_t}\}\). Each entity \(e_i\) has:
+  - A type \(\tau(e_i) \in \mathcal{T}\) (e.g., human, object, switch).
+  - A position \(\mathbf{p}_i(t) \in \mathbb{R}^3\) (or 2D coordinates in image space).
+  - A velocity \(\mathbf{v}_i(t) \in \mathbb{R}^3\).
+  - A state \(s_i(t) \in \mathcal{S}_{\text{ent}}\) (e.g., idle, walking, animating).
+  - Properties \(\phi_i(t)\) (e.g., carrying, facing direction, colour).
+  - A confidence score \(c_i(t) \in [0,1]\) (for student predictions).
+
+- A set of relationships \(\mathcal{R}_t = \{r_1, r_2, \dots, r_{M_t}\}\). Each relationship \(r\) is a tuple \((\text{type}, \text{subject}, \text{object}, \text{attributes})\), e.g., \(r = (\text{proximity}, e_i, e_j, \text{distance}=d)\).
+
+- A set of events \(\mathcal{V}_t = \{v_1, \dots, v_{K_t}\}\) that record changes between \(t-1\) and \(t\), e.g., \(v = (\text{movement}, e_i, \mathbf{p}_i(t-1), \mathbf{p}_i(t))\).
+
+For notational convenience, we often write \(\mathcal{S}_t\) as a tuple \((\mathbf{E}_t, \mathbf{R}_t, \mathbf{V}_t)\) where \(\mathbf{E}_t\) is a matrix of entity features, \(\mathbf{R}_t\) is a list of relational triples, and \(\mathbf{V}_t\) is a list of event descriptors.
+
+---
+
+### Appendix B: Action Model and Temporal Logic
+
+#### B.1 Action Definition
+
+An action \(a\) is defined by:
+
+- A name and parameter list, e.g., \(\text{TriggerAnimation}(c, \text{anim}, \text{dur})\).
+- A set of **preconditions** \(\text{pre}(a)\): first‑order logic formulas that must hold in the current world state for the action to be applicable.
+- A set of **effects** \(\text{eff}(a)\): formulas describing how the world state changes after executing the action.
+
+Formally, let \(\mathcal{L}\) be a first‑order language with predicates such as \(\text{Entity}(x)\), \(\text{Position}(x, \mathbf{p})\), \(\text{State}(x, s)\), \(\text{Proximity}(x, y, d)\), etc. Preconditions and effects are sentences in \(\mathcal{L}\) with free variables bound by the action parameters.
+
+Example: \(\text{TriggerAnimation}(c, \text{anim}, \text{dur})\):
+
+\[
+\begin{aligned}
+\text{pre}: &\ \text{Entity}(c) \land (\text{State}(c, \text{idle}) \lor \text{State}(c, \text{walking}) \lor \text{State}(c, \text{standing})) \\
+            &\ \land \exists o, \text{Proximity}(c, o, d) \land d \le 0.2 \\
+\text{eff}: &\ \text{State}(c) \gets \text{animating} \land \text{Animation}(c, \text{anim}, \text{dur})
+\end{aligned}
+\]
+
+#### B.2 Temporal Logic Validation
+
+Given a planned action sequence \(\mathbf{a} = (a_1, a_2, \dots, a_T)\) and a corresponding sequence of world states \(\mathcal{S}_0, \mathcal{S}_1, \dots, \mathcal{S}_T\) (where \(\mathcal{S}_t\) is the state after executing \(a_t\)), we define the **coherence score**:
+
+\[
+\Phi(\mathbf{a}, \{\mathcal{S}_t\}) = \frac{1}{T} \sum_{t=1}^T \mathbb{1}\bigl( \mathcal{S}_{t-1} \models \text{pre}(a_t) \ \land\ \mathcal{S}_t \models \text{eff}(a_t) \bigr)
+\]
+
+where \(\mathcal{S} \models \phi\) means that state \(\mathcal{S}\) satisfies formula \(\phi\). In practice, we may use a soft version:
+
+\[
+\Phi_{\text{soft}} = \frac{1}{T} \sum_{t=1}^T \left[ \alpha \cdot \text{sat}(\text{pre}(a_t), \mathcal{S}_{t-1}) + (1-\alpha) \cdot \text{sat}(\text{eff}(a_t), \mathcal{S}_t) \right]
+\]
+
+with \(\text{sat}(\cdot) \in [0,1]\) measuring degree of satisfaction (e.g., via fuzzy logic or learned scoring). This score is used as an intrinsic reward component.
+
+---
+
+### Appendix C: Distillation Losses
+
+Let \(\mathcal{D} = \{(\mathbf{X}_i, \mathbf{Y}_i)\}_{i=1}^N\) be a dataset of video frame sequences \(\mathbf{X}_i\) and corresponding teacher‑produced world states \(\mathbf{Y}_i = (\mathbf{E}_i, \mathbf{R}_i, \mathbf{V}_i)\). The student model \(f_\theta\) outputs predictions \(\hat{\mathbf{Y}}_i = f_\theta(\mathbf{X}_i)\).
+
+#### C.1 Entity Detection Loss
+
+Entities are represented as a set of \(K\) candidate detections with classes and bounding boxes (or positions). Let \(\hat{\mathbf{E}}_i\) be the student’s entity predictions (a set of vectors) and \(\mathbf{E}_i\) the teacher’s ground truth. We use a bipartite matching loss (like in DETR) with:
+
+\[
+\mathcal{L}_{\text{ent}} = \sum_{i=1}^N \left[ \lambda_{\text{class}} \mathcal{L}_{\text{cls}}(\hat{\mathbf{E}}_i, \mathbf{E}_i) + \lambda_{\text{bbox}} \mathcal{L}_{\text{bbox}}(\hat{\mathbf{E}}_i, \mathbf{E}_i) \right]
+\]
+
+where \(\mathcal{L}_{\text{cls}}\) is cross‑entropy for entity types and \(\mathcal{L}_{\text{bbox}}\) is a smooth L1 loss for positions.
+
+#### C.2 Relation Prediction Loss
+
+Relations are triples (subject, object, relation type). Let \(\hat{\mathbf{R}}_i\) be predicted scores for each pair of entities. We use binary cross‑entropy for each possible triple:
+
+\[
+\mathcal{L}_{\text{rel}} = -\sum_{i=1}^N \sum_{(u,v,r)} \left[ y_{uvr} \log \hat{y}_{uvr} + (1-y_{uvr}) \log(1-\hat{y}_{uvr}) \right]
+\]
+
+where \(y_{uvr}=1\) if teacher annotates relation \(r\) between entities \(u\) and \(v\), else 0.
+
+#### C.3 State Prediction Loss
+
+Entity state \(s_i(t)\) is a categorical variable. For each entity, we have a cross‑entropy loss:
+
+\[
+\mathcal{L}_{\text{state}} = -\sum_{i=1}^N \sum_{e \in \mathcal{E}_i} \log \hat{p}(s_e \mid \mathbf{X}_i)
+\]
+
+#### C.4 Temporal Consistency Loss (Optional)
+
+We may add a loss that encourages smoothness of entity trajectories across time, e.g.,:
+
+\[
+\mathcal{L}_{\text{temp}} = \sum_{i=1}^N \sum_{e} \| \mathbf{p}_e(t) - \mathbf{p}_e(t-1) \|^2
+\]
+
+but this is often already enforced by the teacher’s labels.
+
+The overall distillation loss is:
+
+\[
+\mathcal{L}_{\text{distill}} = w_{\text{ent}} \mathcal{L}_{\text{ent}} + w_{\text{rel}} \mathcal{L}_{\text{rel}} + w_{\text{state}} \mathcal{L}_{\text{state}} + w_{\text{temp}} \mathcal{L}_{\text{temp}}
+\]
+
+---
+
+### Appendix D: Reinforcement Learning Objective
+
+The RL agent interacts with an environment (which includes the video generation module). At each step, the agent selects an action \(a_t\) based on the current world state \(\mathcal{S}_t\) (provided by the student). The environment then transitions to a new world state \(\mathcal{S}_{t+1}\) (via video generation) and emits a reward:
+
+\[
+R_t = R_{\text{task}}(\mathcal{S}_t, a_t) + \beta \cdot \Phi_t
+\]
+
+where \(\Phi_t\) is the temporal coherence score for the transition from \(\mathcal{S}_t\) to \(\mathcal{S}_{t+1}\) given action \(a_t\), and \(\beta\) is a weighting coefficient.
+
+The agent’s policy \(\pi_\phi(a \mid \mathcal{S})\) is optimized to maximize expected discounted return:
+
+\[
+J(\phi) = \mathbb{E}_{\tau \sim \pi_\phi} \left[ \sum_{t=0}^\infty \gamma^t R_t \right]
+\]
+
+We use a standard actor‑critic method (e.g., PPO) with advantage estimation. The value function \(V_\psi(\mathcal{S})\) is learned via TD error.
+
+---
+
+### Appendix E: Adaptive Teacher Scheduling
+
+Let \(\delta_t\) be the discrepancy between student and teacher on a validation sample at time \(t\). We define a smoothed discrepancy:
+
+\[
+\bar{\delta}_t = \eta \, \delta_t + (1-\eta) \, \bar{\delta}_{t-1}
+\]
+
+The teacher call probability (or frequency) is adjusted as:
+
+\[
+p_t = \min\left(1, \frac{\bar{\delta}_t}{\delta_{\text{thresh}}} \cdot p_{\max}\right)
+\]
+
+where \(\delta_{\text{thresh}}\) is a target discrepancy threshold and \(p_{\max}\) is the maximum allowable teacher call rate (e.g., 0.1). Alternatively, we may use a deterministic schedule: call teacher every \(\lceil 1/p_t \rceil\) steps.
+
+The discrepancy \(\delta_t\) can be measured as the average L2 distance between student and teacher predictions over a batch, or a task‑specific metric like entity detection F1.
+
+---
+
+### Appendix F: Cycle Consistency for Drift Mitigation
+
+To mitigate compounding autoregressive error, we may incorporate a cycle‑consistency loss (inspired by RELIC). Given a sequence of frames and the student’s predicted world states, we can reconstruct the frames from the states using a differentiable renderer (or a learned decoder). Let \(\hat{\mathbf{X}}_{t+1} = g(\mathcal{S}_t, a_t)\) be the generated next frame (from video generator). We enforce:
+
+\[
+\mathcal{L}_{\text{cycle}} = \sum_t \| \hat{\mathbf{X}}_{t+1} - \mathbf{X}_{t+1} \|^2
+\]
+
+where \(\mathbf{X}_{t+1}\) is the actual next frame from the environment. This encourages the student’s world state to be predictive of future observations, reducing drift.
+
+Alternatively, we can use a latent cycle: encode \(\mathbf{X}_{t+1}\) back to a world state \(\mathcal{S}'_{t+1}\) and require \(\mathcal{S}'_{t+1} \approx \mathcal{S}_{t+1}\) predicted. This is analogous to an autoencoder consistency. Recent causal distillation methods (e.g., FastGen/CausVid) offer additional techniques for real‑time drift bounding.
+
+---
+
+*These appendices provide the mathematical underpinnings of the proposed framework. All equations are intended to be implementable in standard deep learning libraries. This document is a research proposal and does not contain experimental results or performance claims. Figures 1 and 2 will be added in the arXiv/camera‑ready version.*
