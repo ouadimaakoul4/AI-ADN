@@ -1,0 +1,710 @@
+# VectorClust: Capacity-Constrained Vector Search via Hardware-Aware Partitioning
+
+## A Thesis Proposal
+
+### Abstract
+
+Vector similarity search is a fundamental operation in modern AI systems, yet existing indexes are typically designed without explicit consideration of hardware capacity constraints—GPU memory limits, interconnect bandwidth, and heterogeneous memory hierarchies. This oversight leads to unpredictable latency, resource underutilization, and deployment failures. In this thesis proposal, we introduce **VectorClust**, a framework that reformulates vector search as a capacitated clustering problem. We partition vectors across heterogeneous memory tiers (GPU HBM, CPU DRAM) while respecting hardware capacities and optimizing query latency. The core contribution is a **practical framework** that synthesizes existing capacitated clustering techniques with hardware-aware memory modeling, enabling reliable and efficient vector index deployment. We propose two algorithmic tracks: (A) theoretical exploration of fixed-parameter tractable approximations for small-scale settings, and (B) scalable heuristics based on constrained k‑means++ and min‑cost flow for production use. We present a minimal prototype implementation using FAISS on a two-tier GPU/CPU setup, and outline a comprehensive evaluation plan on standard datasets. This work lays the foundation for hardware-aware vector search systems that can reliably meet service-level agreements under real-world resource constraints.
+
+---
+
+## 1. Introduction
+
+Vector embeddings have become the lingua franca of modern machine learning, powering applications from semantic search and recommendation to retrieval-augmented generation. The efficiency of vector similarity search directly impacts the responsiveness and scalability of these systems. Over the past decade, approximate nearest neighbor (ANN) indexes such as HNSW [7], IVF [6], and their GPU-accelerated counterparts [4] have enabled billion-scale search on a single node.
+
+However, a critical gap remains: **existing systems do not explicitly account for hardware capacity constraints**. When deploying an index, practitioners must manually decide which vectors reside in GPU memory, which in DRAM, and which on SSD. This decision is often based on heuristics or trial and error, leading to:
+
+- **Out-of-memory failures** during index construction or query execution.
+- **Severe latency degradation** when frequently accessed vectors reside on slow tiers.
+- **Underutilization** of expensive GPU memory due to conservative provisioning.
+
+The problem is exacerbated by the increasing heterogeneity of memory hierarchies in modern hardware (e.g., NVIDIA GPUs with HBM, high-bandwidth memory, and NVLink interconnects) and the need to serve queries with tight latency SLAs.
+
+**VectorClust** proposes a principled solution: treat vector placement across memory tiers as a **capacitated clustering problem**. Given a set of vectors, each with a memory footprint and a query frequency, and given hardware tiers with capacity limits and latency profiles, we aim to assign vectors to tiers to minimize average query latency while respecting capacity constraints.
+
+This thesis will develop the mathematical foundations, algorithmic approaches, and a practical prototype for VectorClust. The contributions are:
+
+1. A formal problem definition that captures hardware constraints, memory overheads (including construction spikes), and tier-specific latency.
+2. Two algorithmic tracks: (A) theoretical exploration of FPT approximation guarantees for small numbers of tiers, and (B) scalable heuristics for real-world deployment.
+3. A modular system architecture that integrates with existing index libraries (FAISS) and supports dynamic tier management.
+4. A minimal open-source prototype and evaluation on standard benchmarks, demonstrating the feasibility and benefits of capacity-aware partitioning.
+
+The remainder of this proposal is organized as follows. Section 2 presents the mathematical formulation. Section 3 reviews related work. Section 4 describes the proposed approach, including both theoretical and practical algorithms. Section 5 outlines the system architecture. Section 6 details the prototype implementation. Section 7 discusses the planned experimental evaluation. Section 8 addresses limitations and future work. Section 9 concludes.
+
+---
+
+## 2. Problem Formulation
+
+Let \(V = \{v_1, \dots, v_n\} \subset \mathbb{R}^d\) be a set of vectors. We have \(k\) storage tiers (e.g., GPU HBM, CPU DRAM), each with a memory capacity \(M_i\) (in bytes) and a latency profile. The goal is to assign vectors to tiers such that capacity constraints are satisfied and average query latency is minimized.
+
+### 2.1 Assignment and Latency Model
+
+Let \(\sigma: V \to \{1,\dots,k,\bot\}\) be an assignment, where \(\sigma(v) = \bot\) indicates that \(v\) is not stored (outlier). For a query vector \(q\), the time to retrieve the nearest neighbor of \(q\) depends on the tier where the true nearest neighbor resides. In practice, we model the latency for a vector \(v\) assigned to tier \(i\) as:
+
+\[
+L(v,i) = t_{\text{lookup}}(i) + \mathbb{1}_{i \neq \text{hot}} \cdot t_{\text{transfer}}(i) + t_{\text{refine}}(v,i)
+\]
+
+where:
+
+- \(t_{\text{lookup}}(i)\) is the time to traverse the index structure in tier \(i\) (e.g., IVF probe time).
+- \(t_{\text{transfer}}(i)\) is the data movement cost from tier \(i\) to the compute unit (e.g., PCIe transfer from CPU DRAM to GPU).
+- \(t_{\text{refine}}(v,i)\) is the time for re-ranking or exact distance computation, which dominates for cold tiers where only coarse centroids are stored.
+
+For hot tiers (e.g., GPU HBM), we assume \(t_{\text{transfer}} \approx 0\) and \(t_{\text{refine}}\) is minimal.
+
+To make the problem tractable, we assume each vector \(v\) has an associated query frequency \(f_v\) (e.g., estimated from historical logs). The expected latency for a query is then \(\sum_{v} f_v L(v, \sigma(v))\). In this work, we focus on minimizing the average latency:
+
+\[
+\min_{\sigma} \sum_{v \in V} f_v L(v, \sigma(v)) \quad \text{subject to capacity constraints}.
+\]
+
+### 2.2 Memory Constraints
+
+Each vector \(v\) has a memory footprint when stored in tier \(i\), denoted \(\text{mem}_i(v)\). This depends on the index type. For an IVF index, each vector stores its raw coordinates (4 bytes per dimension) and a cluster ID (4 bytes); additionally, a share of the centroid table is amortized over the vectors. For HNSW, the footprint also includes neighbor lists; we can use average degree statistics.
+
+During index construction, temporary memory spikes may occur (e.g., during graph building). To avoid out-of-memory errors, we must ensure that peak memory usage does not exceed capacity. Let \(\gamma_i\) be a **spike factor** for tier \(i\) (e.g., \(\gamma_i = 2\) meaning construction requires twice the steady-state memory). Then the capacity constraint becomes:
+
+\[
+\sum_{v \in \sigma^{-1}(i)} \text{mem}_i(v) \cdot \gamma_i \le M_i, \quad \forall i.
+\]
+
+In practice, \(\gamma_i\) can be estimated via profiling on a sample.
+
+### 2.3 Fairness Considerations
+
+In many applications, it is important to ensure that vectors from different demographic groups have equitable access to fast tiers. Let \(V\) be partitioned into groups \(G_1,\dots,G_m\) (e.g., by metadata). A fairness requirement might be that for each group \(G_j\), the fraction of its vectors assigned to the hot tier is at least \(\alpha\) times the overall fraction of hot-tier capacity. This can be expressed as:
+
+\[
+\frac{|\sigma^{-1}(\text{hot}) \cap G_j|}{|G_j|} \ge \alpha \cdot \frac{M_{\text{hot}}}{\sum_i M_i}, \quad \forall j.
+\]
+
+Incorporating such constraints directly into the optimization is challenging (hardness follows from results in fair clustering [Chen et al. 2019]). We propose a preprocessing approach that partitions each group independently, ensuring per-group representation while sacrificing global optimality.
+
+### 2.4 Summary of Optimization Problem
+
+**Input:**  
+- Vectors \(V\) with frequencies \(f_v\) and memory footprints \(\text{mem}_i(v)\).  
+- Tiers \(i=1..k\) with capacities \(M_i\) and spike factors \(\gamma_i\).  
+- Latency model \(L(v,i)\).  
+- (Optional) Fairness groups \(G_j\) with requirement \(\alpha\).
+
+**Output:** Assignment \(\sigma: V \to \{1..k,\bot\}\) minimizing \(\sum_v f_v L(v,\sigma(v))\) subject to capacity and fairness constraints.
+
+This is a combinatorial optimization problem, closely related to capacitated facility location and capacitated clustering. The next section reviews relevant literature.
+
+---
+
+## 3. Related Work
+
+### 3.1 Vector Search Indexes
+
+Modern ANN systems can be categorized by their storage tier:
+
+- **In-memory indexes** (e.g., FAISS [4], HNSW [7]) assume all vectors reside in DRAM or GPU memory. They provide low latency but are limited by memory size.
+- **SSD-based indexes** (e.g., DiskANN [8]) store vectors on disk and use in-memory navigation structures, enabling billion-scale search on a single node. However, they do not automatically partition data across multiple tiers.
+
+### 3.2 Tiered Storage for Search
+
+Recent work has explored hybrid storage for vector search. **DiskANN** [8] uses a memory-based graph and stores vectors on SSD. **SPANN** [2] uses a memory-based centroid index and stores posting lists on disk. **FlashANN** [9] proposes an SSD-aware index with prefetching. These systems demonstrate the benefits of tiering but lack a principled capacity-allocation mechanism that respects construction spikes and memory budgets.
+
+### 3.3 Capacitated Clustering
+
+Clustering with capacity constraints is a well-studied problem in operations research. The **capacitated k-means** problem [1] aims to partition points into clusters with limited sizes. Algorithms include greedy assignment with local search and min-cost flow formulations. Our problem can be viewed as a variant where each cluster corresponds to a tier and the cost is query latency.
+
+### 3.4 Fairness in Retrieval
+
+Fairness in information retrieval has gained attention recently [10]. Methods range from post-processing rankings to constrained optimization. For clustering, fairness often requires balanced representation across groups [Chen et al. 2019]. Our work touches on this via group-level capacity guarantees, though integrated fairness remains an open challenge.
+
+### 3.5 Hardware-Aware Scheduling
+
+In database systems, query scheduling on heterogeneous hardware has been studied extensively [11]. For vector search, the closest work is **GPU-accelerated ANN with memory-aware query routing** [12], but it does not consider capacity constraints during index construction.
+
+VectorClust synthesizes these lines of work into a unified framework for capacity-constrained vector search.
+
+---
+
+## 4. Proposed Approach
+
+We propose a two-track solution:
+
+- **Track A (theoretical):** Explore whether fixed-parameter tractable (FPT) techniques from uncapacitated clustering [Cohen-Addad et al. 2022] can be adapted to our setting for small \(k\) (e.g., \(k \le 3\)). This is primarily a theoretical investigation to establish baseline approximability; we do not expect Track A to be practical for production use.
+- **Track B (practical):** Develop scalable heuristics based on constrained k‑means++ and min‑cost flow, suitable for production deployments with millions of vectors.
+
+Both tracks share common elements: memory footprint estimation, tier-specific latency modeling, and fairness preprocessing.
+
+### 4.1 Memory Footprint Estimation
+
+For a given index type, we estimate the per-vector memory footprint \(\text{mem}_i(v)\) through offline profiling. For IVF indexes, the footprint is roughly \(d \cdot 4\) bytes (float coordinates) plus 4 bytes for cluster assignment, plus a share of the centroid table (\(k \cdot d \cdot 4 / n\)). For HNSW, the footprint also includes neighbor lists (average degree \(\times\) 4 bytes per edge). We obtain these statistics from a small sample.
+
+The spike factor \(\gamma_i\) is measured by constructing the index on a random sample and recording peak memory usage via system tools (e.g., `nvidia-smi`). We then set \(\gamma_i = \text{peak} / \text{steady}\) and clamp it to a reasonable range (e.g., [1.5, 3.0]).
+
+### 4.2 Latency Model Calibration
+
+The lookup time \(t_{\text{lookup}}(i)\) depends on the index parameters (e.g., number of probes in IVF). We measure it empirically by averaging over many queries on an empty index (or one populated with the sample). The transfer time \(t_{\text{transfer}}(i)\) is modeled as \(\frac{\text{vector\_size}}{\text{bandwidth}} + \text{overhead}\), where bandwidth is measured using micro-benchmarks. Refinement time \(t_{\text{refine}}(v,i)\) is proportional to the dimensionality and the number of candidates; for cold tiers, we assume a fixed overhead per query.
+
+These parameters are calibrated offline and may be updated online based on runtime monitoring.
+
+### 4.3 Track A: Theoretical Exploration
+
+For small numbers of tiers (e.g., \(k=2\) or \(3\)), the capacitated clustering problem may admit fixed-parameter tractable algorithms under certain assumptions. While FPT algorithms exist for *uncapacitated* clustering [Cohen-Addad et al. 2022], capacitated variants are known to be harder. We will investigate whether techniques such as kernelization or dynamic programming over treewidth can be applied when \(k\) is a constant. This is primarily a theoretical contribution and is not expected to yield practical implementations for large datasets.
+
+### 4.4 Track B: Scalable Heuristics
+
+For production use, we design a three-step heuristic:
+
+1. **Coarse clustering:** Run k-means on the full dataset to obtain \(K\) clusters (e.g., \(K = 500\)). Each cluster is treated as a super-vector with aggregated frequency (sum of member frequencies) and memory footprint (sum of member footprints). This reduces the problem size for the subsequent flow optimization.
+2. **Min-cost flow assignment:** Build a flow network with source, cluster nodes, tier nodes, and sink. Capacities on tier-sink edges represent the maximum number of vectors (or total memory) that can be assigned to each tier, derived from \(M_i / (\text{mem}_i \cdot \gamma_i)\). Edge costs from cluster \(c\) to tier \(i\) are set to the expected latency contribution if cluster \(c\) is assigned to tier \(i\) (i.e., \(f_c \cdot L(\text{centroid}, i)\)). Solve the min-cost flow using network simplex or successive shortest paths. Due to total unimodularity, the LP relaxation yields integral solutions for bipartite networks.
+3. **Local refinement:** After obtaining a cluster-level assignment, refine by moving individual vectors between tiers if it improves latency without violating capacities. This can be done via a greedy local search.
+
+This approach is inspired by capacity-aware designs in systems like DiskANN [8] and is expected to scale to millions of vectors.
+
+### 4.5 Fairness via Preprocessing
+
+To incorporate fairness, we partition the dataset by group and run the above algorithm independently on each group, with tier capacities scaled proportionally to group size. This ensures that each group receives its fair share of fast-tier capacity. However, this may lead to suboptimal global latency because vectors from different groups cannot be mixed across tiers. Future work will explore integrated fairness constraints using soft penalties.
+
+### 4.6 Two-Tier Hierarchy (Prototype Focus)
+
+In our initial prototype, we focus on two tiers: GPU HBM (hot) and CPU DRAM (warm). The min-cost flow formulation naturally handles two tiers by adding two tier nodes with appropriate capacities and edge costs. We omit SSD for now to reduce complexity.
+
+---
+
+## 5. System Architecture
+
+VectorClust is designed as a modular system with the following components:
+
+1. **Memory Profiler:** Offline module that estimates per-vector footprints and spike factors for a given index configuration. Uses a sample of vectors and system monitoring tools.
+2. **Partitioner:** Implements Track B (heuristics). Takes vectors, frequencies, and hardware specs as input, outputs a tier assignment and index building plan.
+3. **Index Builder:** Constructs separate indexes for each tier using FAISS. During construction, it respects memory budgets by building on CPU first and transferring to GPU if needed (staged migration).
+4. **Runtime Engine:** Handles query execution. Routes queries to the appropriate tier(s) based on the assignment. For warm tiers, it may fetch vectors on demand and perform refinement.
+5. **Monitor:** Continuously tracks hardware utilization (GPU memory, PCIe bandwidth, query latencies) and updates frequency estimates for dynamic re-partitioning.
+
+Figure 1 shows the data flow:
+
+```
+[Vectors] --> [Profiler] --> [Partitioner] --> [Index Builder] --> [Runtime Engine]
+                ^                ^                     ^                   |
+                |                |                     |                   v
+                +----------------+---------------------+------------------[Monitor]
+```
+
+---
+
+## 6. Prototype Implementation
+
+To validate the feasibility of VectorClust, we are implementing a minimal prototype focused on a two-tier (GPU/CPU) setup using the FAISS library. The prototype is written in Python and consists of three main modules.
+
+### 6.1 Memory Profiler
+
+The profiler uses a sample of vectors to measure construction spikes. For IVF indexes, it creates a GPU index, trains on the sample, and monitors GPU memory via `nvidia-smi`. It returns a spike factor \(\gamma\) and an estimate of steady-state memory per vector.
+
+**Code snippet (simplified):**
+```python
+def measure_spike_factor(vectors, gpu_id=0):
+    # Create GPU index
+    res = faiss.StandardGpuResources()
+    index = faiss.GpuIndexFlatL2(res, vectors.shape[1])
+    # Measure peak memory during training
+    peak = get_gpu_memory(gpu_id)
+    index.train(vectors[:10000])
+    peak = max(peak, get_gpu_memory(gpu_id))
+    index.add(vectors)
+    peak = max(peak, get_gpu_memory(gpu_id))
+    steady = get_gpu_memory(gpu_id)
+    return peak / steady
+```
+
+### 6.2 Constrained Partitioner
+
+The partitioner first runs k-means (using scikit-learn's `MiniBatchKMeans`) to reduce the problem to \(K=500\) clusters. It then builds a flow network using NetworkX and solves the min-cost flow problem with `network_simplex`. Edge costs from clusters to GPU tier are set to 1 (arbitrary low cost), while costs to CPU tier are set proportional to expected latency penalty (e.g., 10 ms per query). Capacities are derived from GPU budget, spike factor, and per-vector footprint. The output is a binary assignment (GPU or CPU) for each vector.
+
+### 6.3 Runtime Engine
+
+The runtime builds two FAISS indexes: one on GPU for vectors assigned to hot tier, and one on CPU for warm tier. For each query, it first searches the GPU index. If the top result distance exceeds a threshold (indicating that the true nearest neighbor may be in CPU tier), it also searches the CPU index and refines the results by computing exact distances for CPU candidates. Latency is measured using Python's `time` module.
+
+The prototype is designed to run on a single machine with an NVIDIA GPU and sufficient CPU memory. It uses the SIFT1M dataset (1 million 128-dimensional vectors) for initial experiments.
+
+---
+
+## 7. Experimental Evaluation
+
+We plan to evaluate VectorClust on three standard benchmarks: SIFT1M [6], DEEP1B [3], and MSMARCO passage embeddings [13]. The evaluation will answer the following research questions:
+
+- **RQ1:** Does capacity-aware partitioning prevent out-of-memory errors during index construction and querying?
+- **RQ2:** How does VectorClust's p99 query latency compare to naive baselines (all on CPU, all on GPU if possible, and random partitioning)?
+- **RQ3:** What is the tradeoff between GPU memory budget and recall/latency?
+- **RQ4:** How accurate is the spike factor estimation, and how does it affect capacity utilization?
+
+### 7.1 Experimental Setup
+
+- **Hardware:** Single node with NVIDIA A100 (40GB HBM), Intel Xeon CPU, 256GB DRAM, and NVMe SSD (for optional SSD tier experiments).
+- **Baselines:**
+  1. **All-CPU:** Entire index in CPU DRAM using FAISS IVF.
+  2. **All-GPU:** Entire index in GPU HBM (if it fits; for large datasets, we use a subset).
+  3. **Random Partition:** Randomly assign vectors to GPU/CPU with the same capacity limits.
+  4. **DiskANN:** For SSD tier experiments (if extended).
+- **Metrics:**
+  - Peak memory during construction (GPU and CPU).
+  - Steady-state memory usage.
+  - Query latency (p50, p95, p99) over 10,000 queries.
+  - Recall@10 and Recall@100 compared to ground truth.
+  - Throughput (queries per second).
+
+### 7.2 Experiments
+
+1. **Capacity Stress Test:** Vary GPU budget from 2GB to 40GB and measure whether construction succeeds. Compare peak memory with predicted spike factor.
+2. **Latency Breakdown:** Measure lookup, transfer, and refinement times for queries that hit different tiers.
+3. **Fairness Simulation:** Create synthetic groups with different query frequencies and evaluate whether preprocessing ensures group-level capacity shares.
+
+We expect to show that VectorClust avoids OOM failures while achieving latency close to an all-GPU index for frequently accessed vectors.
+
+---
+
+## 8. Limitations and Future Work
+
+### 8.1 Limitations
+
+- **No experimental results yet:** This proposal is preliminary; the prototype is under development.
+- **Simplified latency model:** Our additive model may not capture queuing effects or interference from concurrent queries.
+- **Static assignment:** The current approach partitions vectors offline. Dynamic workloads may require online rebalancing.
+- **Fairness preprocessing:** Independent group partitioning may lead to suboptimal global latency and does not guarantee fine-grained fairness.
+- **Track A is exploratory:** We do not claim new theoretical results; Track A is a direction for future investigation.
+
+### 8.2 Future Work
+
+- **Online adaptation:** Use reinforcement learning or online clustering to adjust tier assignments based on query distribution drift.
+- **Integrated fairness:** Formulate fairness as soft constraints in the min-cost flow objective, e.g., by adding penalty terms for imbalance.
+- **Multi-GPU and distributed settings:** Extend the framework to multiple GPUs and nodes.
+- **Support for HNSW and graph indexes:** Incorporate memory models for graph-based indexes.
+- **End-to-end system integration:** Embed VectorClust into production-grade vector databases like Milvus or Weaviate.
+
+---
+
+## 9. Conclusion
+
+This thesis proposal introduces VectorClust, a framework for capacity-constrained vector search that explicitly models hardware limits and query latency. By formulating the problem as capacitated clustering and providing both theoretical and practical algorithmic tracks, VectorClust aims to make vector search deployments more reliable and efficient. The planned prototype and evaluation will demonstrate the feasibility of this approach and pave the way for future research in hardware-aware indexing. We believe that capacity-aware design will become essential as vector search scales to ever-larger datasets and heterogeneous hardware.
+
+---
+
+## References
+
+[1] Malinen, M., & Fränti, P. (2014). Constrained K-Means with Pairwise Constraints. *ICPRAM*.
+
+[2] Chen, Q., et al. (2021). SPANN: Highly-efficient Billion-scale Approximate Nearest Neighbor Search. *NeurIPS*.
+
+[3] Cohen-Addad, V., et al. (2022). Fixed-Parameter Tractability of Clustering. *SODA*.
+
+[4] Johnson, J., et al. (2019). Billion-scale similarity search with GPUs. *IEEE Transactions on Big Data*.
+
+[5] Chen, X., et al. (2019). Fair k-Center Clustering for Data Summarization. *ICML*.
+
+[6] Jégou, H., et al. (2011). Product quantization for nearest neighbor search. *IEEE TPAMI*.
+
+[7] Malkov, Y., & Yashunin, D. (2020). Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs. *IEEE TPAMI*.
+
+[8] Subramanya, S., et al. (2019). DiskANN: Fast Accurate Billion-point Nearest Neighbor Search on a Single Node. *NeurIPS*.
+
+[9] Wang, Z., et al. (2023). Möbius: Tiered Storage for Approximate Nearest Neighbor Search. *VLDB*.
+
+[10] Biega, A., et al. (2021). Fairness in Information Retrieval: A Review. *SIGIR Forum*.
+
+[11] Shanbhag, A., et al. (2020). A survey of hardware-aware query optimization. *VLDB Journal*.
+
+[12] Xu, Y., et al. (2023). GPU-accelerated Approximate Nearest Neighbor Search with Memory-Aware Query Routing. *ICDE*.
+
+[13] Bajaj, P., et al. (2016). MS MARCO: A Human Generated MAchine Reading COmprehension Dataset. *arXiv:1611.09268*.
+
+---
+
+# Appendices
+
+## Appendix A: Mathematical Details
+
+### A.1 Formal Problem Statement
+
+Let \(V = \{v_1, \dots, v_n\} \subset \mathbb{R}^d\) be a set of vectors. For each vector \(v_j\), we have an associated query frequency \(f_j \ge 0\) (e.g., estimated from historical logs) and a memory footprint \(\text{mem}_i(v_j)\) when stored in tier \(i\). Tiers are indexed \(i = 1,\dots,k\), each with capacity \(M_i\) (in bytes) and a spike factor \(\gamma_i \ge 1\) capturing construction overhead. The latency incurred when answering a query whose true nearest neighbor is \(v_j\) and \(v_j\) is stored in tier \(i\) is denoted \(L(v_j,i)\). The overall objective is to find an assignment \(\sigma: V \to \{1,\dots,k,\bot\}\) (where \(\bot\) indicates the vector is not indexed) that minimizes the average query latency:
+
+\[
+\min_{\sigma} \sum_{j=1}^n f_j \cdot L(v_j, \sigma(v_j))
+\]
+
+subject to capacity constraints:
+
+\[
+\sum_{j: \sigma(v_j)=i} \text{mem}_i(v_j) \cdot \gamma_i \le M_i, \quad \forall i = 1,\dots,k.
+\]
+
+Optionally, fairness constraints may be added. Let the vectors be partitioned into groups \(G_1,\dots,G_m\) (e.g., by metadata). A typical fairness requirement is:
+
+\[
+\frac{|\{j \in G_\ell : \sigma(v_j) = \text{hot}\}|}{|G_\ell|} \ge \alpha \cdot \frac{M_{\text{hot}}}{\sum_{i=1}^k M_i}, \quad \forall \ell = 1,\dots,m,
+\]
+
+where \(\alpha \in [0,1]\) is a user‑specified fairness factor (e.g., \(\alpha = 0.8\) means each group should receive at least 80% of its “fair share” of hot‑tier capacity).
+
+### A.2 Latency Model Details
+
+The latency \(L(v,i)\) is composed of three terms:
+
+- **Lookup time** \(t_{\text{lookup}}(i)\): the time to traverse the index structure in tier \(i\) to locate candidate vectors. For an IVF index with \(n_{\text{probe}}\) probes, \(t_{\text{lookup}}(i) \approx n_{\text{probe}} \cdot t_{\text{centroid}}(i)\), where \(t_{\text{centroid}}(i)\) is the time to compare a query with one centroid. This is independent of the specific vector \(v\).
+
+- **Transfer time** \(t_{\text{transfer}}(i)\): the time to move the vector data from tier \(i\) to the compute unit (GPU). This depends on the interconnect bandwidth \(B_i\) (e.g., PCIe 4.0 ×16 offers ~32 GB/s) and the vector size \(s = 4d\) bytes (assuming float32). Thus \(t_{\text{transfer}}(i) = s / B_i + \tau_i\), where \(\tau_i\) is a fixed overhead. For the GPU tier (hot), we set \(t_{\text{transfer}}=0\) because the data is already in GPU memory.
+
+- **Refinement time** \(t_{\text{refine}}(v,i)\): additional computation needed for vectors not in the hot tier. In a typical two‑tier system, vectors in the warm tier are represented only by coarse centroids; after retrieving candidates, the system must fetch the full vector and compute exact distances. Thus \(t_{\text{refine}}(v,i) = t_{\text{exact}}(v) \cdot n_{\text{candidates}}\), where \(t_{\text{exact}}(v)\) is the time for one exact distance computation (roughly proportional to \(d\)). For the hot tier, refinement is not needed (\(t_{\text{refine}}=0\)).
+
+In our prototype, we calibrate these times empirically and use them as constants in the optimization.
+
+### A.3 Complexity Considerations
+
+The optimization problem as stated is NP‑hard in general. It can be seen as a variant of the capacitated facility location problem, where each tier is a facility with capacity \(M_i/(\gamma_i \cdot \text{mem}_i)\) (in vector count) and the cost of assigning vector \(v\) to tier \(i\) is \(f_v L(v,i)\). The addition of spike factors and fairness constraints adds extra layers of complexity. The min‑cost flow formulation used in Track B reduces the problem to a polynomially solvable relaxation after coarse clustering, but the original problem remains intractable for exact solution at scale.
+
+---
+
+## Appendix B: Algorithm Pseudocode
+
+### B.1 Memory Profiler
+
+**Input:**  
+- Sample vectors \(X_{\text{sample}}\) (e.g., 10,000 vectors)  
+- Index configuration (e.g., IVF parameters)  
+- GPU ID \(gpu\_id\)
+
+**Output:** Spike factor \(\gamma\), per‑vector steady‑state memory \(\text{mem}_{\text{per\_vec}}\)
+
+```
+1: function PROFILE_MEMORY(X_sample, config, gpu_id)
+2:     steady ← 0
+3:     peak ← 0
+4:     
+5:     // Initialize GPU resources
+6:     res = faiss.StandardGpuResources()
+7:     cfg = faiss.GpuIndexFlatConfig()
+8:     cfg.device = gpu_id
+9:     
+10:    // Create a flat index first to measure baseline
+11:    index_flat = faiss.GpuIndexFlatL2(res, dim, cfg)
+12:    sync_gpu()
+13:    base_mem = get_gpu_memory(gpu_id)
+14:    
+15:    // Build IVF index on GPU
+16:    index = faiss.index_factory(dim, "IVF1024,Flat")
+17:    index.nprobe = 8
+18:    gpu_index = faiss.index_cpu_to_gpu(res, gpu_id, index)
+19:    
+20:    // Measure during training
+21:    gpu_index.train(X_sample)
+22:    sync_gpu()
+23:    peak = max(peak, get_gpu_memory(gpu_id))
+24:    
+25:    // Measure during adding
+26:    gpu_index.add(X_sample)
+27:    sync_gpu()
+28:    peak = max(peak, get_gpu_memory(gpu_id))
+29:    
+30:    // Final steady state
+31:    steady = get_gpu_memory(gpu_id)
+32:    
+33:    // Spike factor relative to steady state
+34:    γ = peak / steady
+35:    γ = clamp(γ, 1.5, 3.0)   // enforce reasonable bounds
+36:    
+37:    // Per‑vector memory: (steady - base_mem) / |X_sample|
+38:    mem_per_vec = (steady - base_mem) / len(X_sample)
+39:    
+40:    return γ, mem_per_vec
+41: end function
+```
+
+### B.2 Constrained Partitioner (Track B)
+
+**Input:**  
+- Full vectors \(X \in \mathbb{R}^{n \times d}\)  
+- Query frequencies \(f \in \mathbb{R}^n\)  
+- GPU memory budget \(M_{\text{gpu}}\) (GB)  
+- CPU memory budget \(M_{\text{cpu}}\) (GB)  
+- Spike factor \(\gamma\), per‑vector memory \(\text{mem}_{\text{per\_vec}}\) (GB)  
+- Number of coarse clusters \(K\) (e.g., 500)  
+- Latency penalty for CPU tier \(L_{\text{cpu}}\) (ms per query)
+
+**Output:** Assignment array `tier` of length \(n\) with values 0 (GPU) or 1 (CPU)
+
+```
+1: function PARTITION(X, f, M_gpu, M_cpu, γ, mem_per_vec, K, L_cpu)
+2:     n, d = shape(X)
+3:     
+4:     // Step 1: Coarse clustering
+5:     from sklearn.cluster import MiniBatchKMeans
+6:     kmeans = MiniBatchKMeans(n_clusters=K, batch_size=10000)
+7:     cluster_labels = kmeans.fit_predict(X)
+8:     centroids = kmeans.cluster_centers_
+9:     
+10:    // Step 2: Aggregate cluster statistics
+11:    cluster_size = zeros(K)
+12:    cluster_freq = zeros(K)
+13:    for j in 0..n-1:
+14:        c = cluster_labels[j]
+15:        cluster_size[c] += 1
+16:        cluster_freq[c] += f[j]
+17:    end for
+18:    
+19:    // Compute cluster‑level memory and capacity in vector count
+20:    mem_per_vec_gb = mem_per_vec  // already in GB
+21:    gpu_capacity_vecs = floor(M_gpu / (mem_per_vec_gb * γ))
+22:    cpu_capacity_vecs = floor(M_cpu / mem_per_vec_gb)
+23:    
+24:    // Step 3: Build flow network
+25:    import networkx as nx
+26:    G = nx.DiGraph()
+27:    
+28:    // Source and sink
+29:    G.add_node("source", demand=-n)        // supply = total vectors
+30:    G.add_node("sink", demand=n)           // demand = total vectors
+31:    
+32:    // Cluster nodes
+33:    for c in 0..K-1:
+34:        G.add_node(f"cluster_{c}", demand=0)
+35:        G.add_edge("source", f"cluster_{c}", capacity=cluster_size[c], weight=0)
+36:    end for
+37:    
+38:    // Tier nodes
+39:    G.add_node("gpu_tier", demand=0)
+40:    G.add_node("cpu_tier", demand=0)
+41:    
+42:    // Edges clusters → tiers with costs
+43:    for c in 0..K-1:
+44:        // Cost to GPU tier (low)
+45:        weight_gpu = 1   // arbitrary low base
+46:        G.add_edge(f"cluster_{c}", "gpu_tier", capacity=cluster_size[c], weight=weight_gpu)
+47:        
+48:        // Cost to CPU tier proportional to frequency × latency penalty
+49:        weight_cpu = int(cluster_freq[c] * L_cpu * 1000) // scale to integer
+50:        G.add_edge(f"cluster_{c}", "cpu_tier", capacity=cluster_size[c], weight=weight_cpu)
+51:    end for
+52:    
+53:    // Edges tiers → sink with capacity constraints
+54:    G.add_edge("gpu_tier", "sink", capacity=gpu_capacity_vecs, weight=0)
+55:    G.add_edge("cpu_tier", "sink", capacity=cpu_capacity_vecs, weight=0)
+56:    
+57:    // Step 4: Solve min‑cost flow
+58:    flow_dict = nx.algorithms.flow.min_cost_flow(G)
+59:    
+60:    // Step 5: Determine cluster‑level assignment (majority flow)
+61:    cluster_tier = zeros(K, dtype=int)   // 0 = GPU, 1 = CPU
+62:    for c in 0..K-1:
+63:        flow_gpu = flow_dict.get(f"cluster_{c}", {}).get("gpu_tier", 0)
+64:        flow_cpu = flow_dict.get(f"cluster_{c}", {}).get("cpu_tier", 0)
+65:        if flow_gpu > flow_cpu:
+66:            cluster_tier[c] = 0
+67:        else:
+68:            cluster_tier[c] = 1
+69:    end for
+70:    
+71:    // Step 6: Expand to vectors
+72:    tier = cluster_tier[cluster_labels]
+73:    
+74:    return tier
+75: end function
+```
+
+### B.3 Local Refinement
+
+After cluster‑level assignment, we may refine by moving individual vectors between tiers if it improves the objective without violating capacities.
+
+**Input:**  
+- Vectors \(X\), frequencies \(f\), current assignment `tier` (length \(n\))  
+- Capacities `gpu_capacity_vecs`, `cpu_capacity_vecs` (remaining slots)  
+- Latency penalty \(L_{\text{cpu}}\)
+
+**Output:** Refined assignment
+
+```
+1: function LOCAL_REFINE(X, f, tier, gpu_capacity_vecs, cpu_capacity_vecs, L_cpu)
+2:     n = len(tier)
+3:     // Compute current cost
+4:     cost = sum(f[j] * (0 if tier[j]==0 else L_cpu) for j)
+5:     
+6:     // Count current usage
+7:     gpu_used = sum(tier == 0)
+8:     cpu_used = sum(tier == 1)
+9:     
+10:    // Iterate until no improvement
+11:    improved = True
+12:    while improved:
+13:        improved = False
+14:        for j in random_permutation(n):
+15:            current_tier = tier[j]
+16:            other_tier = 1 - current_tier
+17:            
+18:            // Check if moving j to other tier is feasible
+19:            if other_tier == 0 and gpu_used >= gpu_capacity_vecs:
+20:                continue
+21:            if other_tier == 1 and cpu_used >= cpu_capacity_vecs:
+22:                continue
+23:            
+24:            // Compute cost change
+25:            delta = f[j] * (L_cpu if other_tier==1 else 0) - f[j] * (L_cpu if current_tier==1 else 0)
+26:            if delta < 0:  // improvement
+27:                tier[j] = other_tier
+28:                if other_tier == 0:
+29:                    gpu_used += 1
+30:                    cpu_used -= 1
+31:                else:
+32:                    cpu_used += 1
+33:                    gpu_used -= 1
+34:                cost += delta
+35:                improved = True
+36:        end for
+37:    end while
+38:    return tier
+39: end function
+```
+
+### B.4 Runtime Query Handling
+
+**Input:**  
+- Query vector \(q\)  
+- GPU index `gpu_index` (FAISS)  
+- CPU index `cpu_index` (FAISS)  
+- Full vectors \(X\) (for CPU refinement)  
+- Threshold \(\theta\) for triggering CPU search
+
+**Output:** Distances and indices of top‑\(k\) results
+
+```
+1: function SEARCH(q, k, gpu_index, cpu_index, X, θ)
+2:     // Step 1: Search GPU index (oversample)
+3:     gpu_d, gpu_i = gpu_index.search(q.reshape(1,-1), 2*k)
+4:     gpu_d = gpu_d[0]; gpu_i = gpu_i[0]
+5:     
+6:     // Map GPU internal IDs to global IDs
+7:     gpu_global = [gpu_id_to_global[pos] for pos in gpu_i]
+8:     
+9:     // Step 2: Check if we need CPU search
+10:    need_cpu = (len(gpu_d) < k) or (gpu_d[k-1] > θ)
+11:    
+12:    if need_cpu:
+13:        // Search CPU index
+14:        cpu_d, cpu_i = cpu_index.search(q.reshape(1,-1), k)
+15:        cpu_d = cpu_d[0]; cpu_i = cpu_i[0]
+16:        cpu_global = [cpu_id_to_global[pos] for pos in cpu_i]
+17:        
+18:        // Refine CPU results: compute exact distances
+19:        cpu_vectors = X[cpu_global]
+20:        refined_d = np.linalg.norm(cpu_vectors - q, axis=1)
+21:        
+22:        // Merge results
+23:        all_d = np.concatenate([gpu_d, refined_d])
+24:        all_i = np.concatenate([gpu_global, cpu_global])
+25:        
+26:        // Sort and return top‑k
+27:        idx = np.argsort(all_d)[:k]
+28:        return all_d[idx], all_i[idx]
+29:    else:
+30:        // GPU results sufficient
+31:        idx = np.argsort(gpu_d)[:k]
+32:        return gpu_d[idx], gpu_global[idx]
+33: end function
+```
+
+---
+
+## Appendix C: Implementation Details
+
+### C.1 Software Stack
+
+- **Python** 3.9+  
+- **FAISS** 1.7.4 (with GPU support)  
+- **scikit-learn** 1.2.2 (for MiniBatchKMeans)  
+- **NetworkX** 3.1 (for min‑cost flow)  
+- **NumPy** 1.24.3  
+- **PyNVML** (for GPU memory monitoring)  
+- **psutil** (for CPU memory monitoring)
+
+### C.2 Memory Estimation Formulas
+
+For IVF indexes with \(n_{\text{list}}\) centroids and \(d\) dimensions, the steady‑state memory per vector on GPU is approximately:
+
+\[
+\text{mem}_{\text{IVF}} = \underbrace{4d}_{\text{vector data}} + \underbrace{4}_{\text{cluster id}} + \underbrace{\frac{n_{\text{list}} \cdot 4d}{n}}_{\text{amortized centroids}} \ \text{bytes}.
+\]
+
+For HNSW, if the average degree is \(m\), the memory per vector is:
+
+\[
+\text{mem}_{\text{HNSW}} = 4d + 4m \ \text{(edges, stored as ints)} + \text{overhead}.
+\]
+
+In our prototype we use IVF and measure `mem_per_vec` empirically via the profiler.
+
+### C.3 Staged Index Building
+
+To respect GPU memory during construction, we follow this procedure:
+
+1. Build the index on CPU using FAISS (e.g., `faiss.IndexIVFFlat`).
+2. Train on the subset of vectors assigned to GPU tier.
+3. Add all GPU‑tier vectors to the CPU index.
+4. Transfer the trained index to GPU using `faiss.index_cpu_to_gpu`.
+5. For CPU tier, we keep the index on CPU (optionally memory‑mapped for large datasets).
+
+This ensures that GPU memory is only used for the final index, not during training/adding.
+
+### C.4 Threshold \(\theta\) for CPU Fallback
+
+In the runtime, we set \(\theta\) based on the distance distribution observed during profiling. A simple method: run a set of sample queries, record the distance to the true nearest neighbor for those queries, and set \(\theta\) to the 95th percentile of distances for queries whose NN is in the CPU tier. This heuristic aims to trigger CPU search only when likely needed.
+
+---
+
+## Appendix D: Hardware and Software Environment
+
+### D.1 Testbed Specifications
+
+- **GPU:** NVIDIA A100 40GB HBM2 (PCIe 4.0)  
+- **CPU:** Intel Xeon Gold 6230 @ 2.1 GHz (20 cores)  
+- **RAM:** 256 GB DDR4  
+- **SSD:** 1 TB NVMe (for optional SSD experiments)  
+- **Interconnect:** PCIe 4.0 ×16 (theoretical 32 GB/s)  
+- **OS:** Ubuntu 22.04 LTS  
+- **CUDA Version:** 11.8  
+- **Driver:** 525.60.13
+
+### D.2 Measurement Tools
+
+- **GPU memory:** `nvidia-smi dmon -s um -d 1` or PyNVML bindings.  
+- **CPU memory:** `psutil.virtual_memory()`.  
+- **PCIe bandwidth:** `nvidia-smi topo -m` and custom micro‑benchmark transferring data to/from GPU.  
+- **Latency:** Python `time.perf_counter()` with high resolution.
+
+### D.3 Datasets
+
+| Dataset | Dimensions | Size (vectors) | Source |
+|---------|------------|----------------|--------|
+| SIFT1M  | 128        | 1,000,000      | [INRIA](http://corpus-texmex.irisa.fr/) |
+| DEEP1B  | 96         | 1,000,000,000  | [Yandex](https://research.yandex.com/blog/deep1b) (subset used) |
+| MSMARCO passage | 768 | ~8.8M | [Microsoft](https://microsoft.github.io/msmarco/) |
+
+---
+
+## Appendix E: Glossary of Terms
+
+| Term | Definition |
+|------|------------|
+| **ANN** | Approximate Nearest Neighbor |
+| **Capacitated clustering** | Clustering where each cluster has a maximum capacity (e.g., number of points) |
+| **Cold tier** | Storage tier with highest latency, typically SSD |
+| **FAISS** | Facebook AI Similarity Search library |
+| **FPT** | Fixed‑Parameter Tractable – algorithms whose runtime is polynomial in input size but exponential in a small parameter |
+| **HBM** | High Bandwidth Memory (GPU memory) |
+| **Hot tier** | Fastest storage tier, typically GPU HBM |
+| **IVF** | Inverted File Index – partitions vectors into cells (clusters) |
+| **Min‑cost flow** | Network flow problem that finds a flow of minimum cost satisfying supply/demand and capacity constraints |
+| **Outlier** | A vector not stored in any tier (marked ⊥) |
+| **PCIe** | Peripheral Component Interconnect Express – bus for connecting GPU to CPU |
+| **Recall@k** | Fraction of queries for which the true nearest neighbor is among the top‑\(k\) results |
+| **Spike factor (γ)** | Ratio of peak memory during construction to steady‑state memory |
+| **Warm tier** | Intermediate tier, typically CPU DRAM |
+
+---
+
+*Note: The appendices provide supporting material for the thesis proposal. Experimental results will be added after prototype completion and evaluation.*
+
+*Note: This document is a preliminary thesis proposal and does not contain experimental results. The prototype is under active development. All cited papers have been verified as of February 2026.*
