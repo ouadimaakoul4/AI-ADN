@@ -1,0 +1,595 @@
+
+Predictive Motor Intelligence for Adaptive and Energy-Efficient Robotic Arm Manipulation
+
+---
+
+Abstract
+
+Robotic manipulators traditionally rely on reactive control architectures that correct errors after they occur, leading to suboptimal smoothness, energy efficiency, and robustness. This proposal introduces Predictive Motor Intelligence (PMI)—a novel paradigm that embeds a learned forward dynamics model directly into the control loop. By continuously simulating future states, the controller can anticipate deviations and apply preemptive corrections. The research will develop a hybrid framework combining deep learning architectures (LSTM, Transformers) with nonlinear control theory, ensuring stability through Lyapunov-based analysis. The approach will be validated in high-fidelity simulators and on a physical 7-DOF manipulator, with the goal of achieving significant improvements in trajectory tracking, jerk minimization, energy consumption, and disturbance rejection. This work bridges the gap between biological motor control and robotic systems, paving the way for more intelligent and efficient autonomous manipulation.
+
+---
+
+1. Introduction
+
+Robotic manipulation remains a cornerstone challenge in modern robotics. Despite significant advances in reinforcement learning, trajectory optimization, and model predictive control (MPC), robotic arms still exhibit limitations in smoothness, adaptability, robustness, and energy efficiency. Most existing control architectures operate reactively: they correct deviations after errors occur rather than anticipating them. In contrast, biological motor systems rely on internal predictive models—often termed forward models—that simulate future states before execution, enabling smooth and coordinated action.
+
+This research proposes a paradigm shift: Predictive Motor Intelligence (PMI)—a learned internal forward dynamics model integrated directly into the robotic control loop. The core idea is to replace purely reactive feedback with predictive feedback: instead of comparing the current state to the desired state, the controller compares a predicted future state to the desired trajectory and applies corrections preemptively. This anticipatory mechanism is expected to yield smoother trajectories, lower energy consumption, and greater robustness to disturbances.
+
+The central hypothesis is that a predictive internal model can fundamentally improve manipulation performance compared to classical reactive controllers. This proposal outlines a comprehensive research plan to develop, implement, and validate the PMI framework, combining deep learning for system identification with rigorous nonlinear control theory to ensure stability and safety.
+
+---
+
+2. Research Problem and Hypothesis
+
+Problem Statement
+
+Traditional robotic arm control follows a sequential pipeline: perception, planning, and reactive control (e.g., PID or computed torque). This architecture lacks an internal predictive representation of the arm’s dynamics, leading to several inherent limitations:
+
+· Oscillatory or jerky trajectories due to delayed error correction.
+· Sensitivity to disturbances because feedback only acts after the disturbance has affected the state.
+· Inefficient energy usage from high-frequency corrective torques.
+· Limited generalization across tasks and environments, as the controller does not anticipate changing dynamics.
+
+Core Research Question
+
+Can a learned predictive internal motor model, when integrated into the control loop, improve trajectory smoothness, control stability, energy efficiency, and robustness in robotic arm manipulation compared to classical reactive control systems?
+
+Hypothesis
+
+A predictive internal motor model embedded in the control loop will:
+
+· Reduce trajectory tracking error.
+· Minimize jerk (improve smoothness).
+· Decrease energy consumption.
+· Improve disturbance rejection.
+· Enhance adaptability in dynamic environments.
+
+---
+
+3. Mathematical Framework
+
+3.1 Robot Dynamics
+
+Consider an n-degree-of-freedom (DOF) serial manipulator. The equations of motion are given by:
+
+M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau + \tau_{\text{ext}}
+
+where:
+
+· q, \dot{q}, \ddot{q} \in \mathbb{R}^n are joint positions, velocities, and accelerations.
+· M(q) \in \mathbb{R}^{n \times n} is the mass matrix.
+· C(q,\dot{q})\dot{q} \in \mathbb{R}^n represents Coriolis and centrifugal forces.
+· g(q) \in \mathbb{R}^n is the gravity vector.
+· \tau \in \mathbb{R}^n is the control torque.
+· \tau_{\text{ext}} \in \mathbb{R}^n represents external disturbances (e.g., contact forces).
+
+Define the state vector x = \begin{bmatrix} q \\ \dot{q} \end{bmatrix} \in \mathbb{R}^{2n}. The continuous-time dynamics can be written as \dot{x} = f(x, \tau, \tau_{\text{ext}}). For control design, we consider the discrete-time approximation with sampling time \Delta t:
+
+x_{t+1} = f_d(x_t, \tau_t) + \epsilon_t
+
+where f_d encapsulates the nominal discrete dynamics and \epsilon_t represents unmodeled effects and disturbances.
+
+3.2 Predictive Motor Intelligence Model
+
+The core of PMI is a learned forward model \hat{f}_\theta that approximates the true dynamics:
+
+\hat{x}_{t+1} = \hat{f}_\theta(x_t, \tau_t)
+
+The model is trained to minimize one-step-ahead prediction error over a dataset \mathcal{D} = \{(x_t, \tau_t, x_{t+1})\}:
+
+\min_{\theta} \sum_{(x_t,\tau_t,x_{t+1}) \in \mathcal{D}} \left\| x_{t+1} - \hat{f}_\theta(x_t, \tau_t) \right\|^2
+
+For multi-step prediction, the model can be rolled out autoregressively:
+
+\hat{x}_{t+k+1} = \hat{f}_\theta(\hat{x}_{t+k}, \tau_{t+k}), \quad k=0,1,\ldots,H-1
+
+where H is the prediction horizon.
+
+3.3 Predictive Control Law
+
+Traditional reactive control (e.g., PD) uses the current error:
+
+\tau_t^{\text{PD}} = K_p (q_d - q_t) + K_d (\dot{q}_d - \dot{q}_t)
+
+In PMI, the feedback is based on the predicted future state:
+
+\tau_t^{\text{PMI}} = K_p (q_d - \hat{q}_{t+1}) + K_d (\dot{q}_d - \hat{\dot{q}}_{t+1})
+
+where \hat{q}_{t+1}, \hat{\dot{q}}_{t+1} are the components of \hat{x}_{t+1}. This formulation anticipates deviations before they physically occur, allowing preemptive corrections.
+
+3.4 Optimization Objective
+
+For a given desired trajectory (q_d(t), \dot{q}_d(t)), the controller aims to minimize a cost function over a horizon H:
+
+J = \sum_{k=0}^{H} \left[ \| q_{t+k} - q_d(t+k) \|_Q^2 + \| \tau_{t+k} \|_R^2 + \lambda \| \dddot{q}_{t+k} \|^2 \right]
+
+where:
+
+· \| \cdot \|_Q^2 and \| \cdot \|_R^2 are weighted quadratic norms.
+· \lambda \| \dddot{q} \|^2 penalizes jerk (time derivative of acceleration), promoting smoothness.
+· Energy consumption is quantified as E = \int_0^T |\tau^T \dot{q}| \, dt.
+
+3.5 Stability Analysis
+
+To ensure the closed-loop system remains stable despite the use of a learned approximate model, we employ Lyapunov theory. Define the tracking error e = q - q_d and the filtered tracking error s = \dot{e} + \Lambda e with \Lambda > 0. Consider the Lyapunov candidate:
+
+V(s) = \frac{1}{2} s^T s
+
+The time derivative of V along the system trajectories is:
+
+\dot{V} = s^T \dot{s}
+
+Substituting the robot dynamics and the predictive control law, and accounting for the modeling error \Delta f = f_d - \hat{f}_\theta, we obtain:
+
+\dot{V} = -s^T K s + s^T (\Delta f + \tau_{\text{ext}})
+
+where K is a positive definite gain matrix. If the modeling error and disturbances are bounded, i.e., \|\Delta f + \tau_{\text{ext}}\| \leq \epsilon, then choosing K such that the minimum eigenvalue \lambda_{\min}(K) > \epsilon / \|s\| ensures \dot{V} \leq 0 outside a small region. This guarantees uniform ultimate boundedness (UUB) of the tracking error. For enhanced robustness, a sliding-mode term can be added:
+
+\tau = \tau^{\text{PMI}} - \rho \, \text{sgn}(s)
+
+with \rho \geq \epsilon, ensuring asymptotic convergence to the sliding surface s=0 despite uncertainties.
+
+---
+
+4. Proposed Architecture
+
+4.1 Hierarchical Control Structure
+
+The PMI framework is implemented as a hierarchical control system with multiple timescales:
+
+Component Architecture Update Frequency Responsibility
+High-Level Simulator Transformer 10 Hz Long-horizon path planning, obstacle avoidance, task sequencing
+Low-Level Predictor LSTM / GRU 500 Hz Short-term state prediction, micro-corrections for tracking and jerk reduction
+Safety Filter Classical MPC / Lyapunov-based 1 kHz Enforce joint limits, torque constraints, and stability guarantees
+
+The high-level simulator receives task goals and generates a nominal trajectory. The low-level predictor runs a learned forward model to estimate future states at high frequency, and the predictive control law computes torque commands. The safety filter continuously monitors the commanded torques and overrides them if they would violate safety constraints, ensuring that the neural predictions never lead to unsafe actions.
+
+4.2 Neural Architectures for Forward Model
+
+Three candidate architectures will be evaluated for the forward model \hat{f}_\theta:
+
+· Recurrent (LSTM/GRU): Suitable for short-term predictions where temporal dependencies are limited. The hidden state acts as a "motor memory" capturing momentum and friction effects. Low latency makes it ideal for the 500 Hz loop.
+· Transformer-based: Self-attention mechanisms allow the model to weigh the importance of past states over longer horizons. This is beneficial for tasks requiring long-range dependencies, such as anticipating the effect of a planned sequence of actions. Transformers will be used in the 10 Hz high-level simulator.
+· Probabilistic/Diffusion Models: To handle uncertainty (e.g., during contact or with soft objects), a probabilistic model outputs a distribution P(\hat{x}_{t+1} | x_t, \tau_t) rather than a point estimate. This provides uncertainty quantification, which can be used to adjust control gains or trigger fallback strategies.
+
+4.3 Learning Mechanism
+
+The forward model is initially trained offline using data collected from "motor babbling"—random exploratory trajectories in simulation. The dataset comprises state-action pairs (x_t, \tau_t, x_{t+1}). Training minimizes one-step prediction error, with regularization to avoid overfitting.
+
+During deployment, the model can be fine-tuned online using streaming data. An experience replay buffer stores recent transitions, and periodic gradient updates adapt the model to changes in the robot's dynamics (e.g., payload variations, wear). To prevent catastrophic forgetting, a small fraction of initial training data is retained.
+
+---
+
+5. Methodology
+
+5.1 Simulation Environments
+
+Development and initial validation will be conducted in high-fidelity physics simulators:
+
+· PyBullet and MuJoCo for accurate rigid-body dynamics and contact modeling.
+· NVIDIA Isaac Gym for GPU-accelerated training and reinforcement learning baselines.
+
+A 7-DOF manipulator (modeled after the Franka Emika Panda) will be used as the primary test platform. Tasks will include trajectory tracking (minimum-jerk point-to-point motions, high-speed figure-8 patterns), object manipulation (pick-and-place, peg-in-hole), and interactions with dynamic obstacles.
+
+5.2 Baseline Comparisons
+
+The PMI framework will be compared against:
+
+· Classical PD/PID control (reactive baseline).
+· Standard Model Predictive Control (MPC) with a known dynamics model.
+· End-to-end Reinforcement Learning policies (e.g., PPO, SAC).
+· MPC with learned dynamics (a hybrid approach where the learned model is used within the MPC optimization).
+
+All baselines will be evaluated under identical conditions.
+
+5.3 Evaluation Metrics
+
+Performance will be quantified using:
+
+· Tracking Error: Root Mean Square Error (RMSE) between actual and desired joint positions.
+· Smoothness: Integral of squared jerk \int \|\dddot{q}\|^2 dt.
+· Energy Consumption: Total mechanical work E = \int |\tau^T \dot{q}| dt.
+· Disturbance Rejection: Settling time and maximum deviation after impulsive disturbances.
+· Success Rate: Percentage of successful task completions.
+· Generalization: Performance on unseen trajectories and payloads.
+
+5.4 Hardware Validation
+
+To demonstrate real-world applicability, the PMI controller will be deployed on a physical 7-DOF manipulator (e.g., Franka Emika Panda) equipped with joint torque sensors and a wrist force/torque sensor. The computing architecture will consist of an NVIDIA Jetson Orin AGX for neural inference (using TensorRT for low-latency execution) and a real-time microcontroller (STM32H7) for the 1 kHz safety filter. Communication will be via EtherCAT. Validation phases include:
+
+· Shadow mode: Running PMI in parallel without applying its torques to verify predictions.
+· Low-gain testing: Gradually increasing PMI influence while monitoring stability.
+· Full control: Evaluating performance on pick-and-place tasks with varying payloads.
+
+---
+
+6. Expected Contributions
+
+This research will make the following original contributions:
+
+1. Predictive Motor Intelligence (PMI) Framework: A novel control paradigm integrating learned forward dynamics directly into the feedback loop, enabling anticipatory corrections.
+2. Hybrid Neural-Control Architecture: A hierarchical system combining high-level Transformer-based planning, low-level LSTM prediction, and a Lyapunov-based safety filter.
+3. Stability Guarantees for Learned Controllers: Theoretical analysis proving uniform ultimate boundedness of tracking error under bounded modeling errors, bridging deep learning and nonlinear control.
+4. Quantitative Improvements: Demonstrated reductions in tracking error, jerk, and energy consumption compared to state-of-the-art baselines in both simulation and hardware.
+5. Open-Source Benchmark: A simulation and hardware benchmark for predictive robotic control, facilitating future research.
+
+---
+
+7. Potential Applications
+
+The PMI framework has broad applicability:
+
+· Industrial robotics: More energy-efficient and precise automation.
+· Humanoid robotics: Smoother, more natural movements.
+· Space robotics: Robust manipulation under communication latency.
+· Assistive and prosthetic devices: Adaptive control that anticipates user intent.
+· Autonomous service robots: Reliable operation in unstructured environments.
+
+---
+
+8. Timeline
+
+Year Activities
+1 Literature review; setup of simulation frameworks; implementation of baseline controllers (PD, MPC, RL); data collection via motor babbling.
+2 Development of neural forward models (LSTM, Transformer, probabilistic); integration into PMI control loop; stability analysis and theoretical proofs; initial simulation experiments.
+3 Extensive simulation benchmarking; hardware setup and shadow-mode testing; refinement of online learning; publications on PMI architecture and results.
+4 Full hardware validation; generalization studies; thesis writing; final publications and dissemination.
+
+---
+
+9. Scientific Impact
+
+This research sits at the intersection of nonlinear control theory, deep learning, predictive modeling, and biologically inspired robotics. By moving beyond reactive error correction toward internal simulation, it aims to equip robotic arms with a form of motor intelligence that mirrors biological systems. The PMI framework has the potential to redefine how we design controllers for autonomous manipulation, making robots not just reactive machines but proactive agents capable of smooth, efficient, and robust interaction with the world.
+
+---
+
+References
+
+[1] M. W. Spong, S. Hutchinson, and M. Vidyasagar, Robot Modeling and Control. Wiley, 2006.
+
+[2] D. M. Wolpert and M. Kawato, "Multiple paired forward and inverse models for motor control," Neural Networks, 1998.
+
+[3] J.-J. E. Slotine and W. Li, Applied Nonlinear Control. Prentice Hall, 1991.
+
+[4] S. Levine et al., "Learning hand-eye coordination for robotic grasping with deep learning and large-scale data collection," IJRR, 2018.
+
+[5] A. Nagabandi et al., "Neural network dynamics models for model-based deep reinforcement learning," CoRL, 2017.
+
+[6] L. Hewing et al., "Learning-based model predictive control: Toward safe learning in control," Annual Review of Control, Robotics, and Autonomous Systems, 2020.
+
+[7] A. Vaswani et al., "Attention is all you need," NeurIPS, 2017.
+
+[8] S. Hochreiter and J. Schmidhuber, "Long short-term memory," Neural Computation, 1997.
+
+Appendices
+
+Appendix A: Detailed Derivation of Robot Dynamics
+
+A.1 Lagrangian Formulation
+
+For an n-DOF serial manipulator, the equations of motion are derived from the Euler-Lagrange equations. Let q \in \mathbb{R}^n be the vector of generalized joint coordinates. The Lagrangian \mathcal{L}(q,\dot{q}) = \mathcal{T}(q,\dot{q}) - \mathcal{U}(q) is the difference between kinetic and potential energy. The kinetic energy is quadratic in \dot{q}:
+
+\mathcal{T}(q,\dot{q}) = \frac{1}{2} \dot{q}^T M(q) \dot{q}
+
+where M(q) \in \mathbb{R}^{n \times n} is the symmetric positive-definite mass matrix. The potential energy \mathcal{U}(q) accounts for gravity and possibly elastic effects.
+
+The Euler-Lagrange equations yield:
+
+\frac{d}{dt} \left( \frac{\partial \mathcal{L}}{\partial \dot{q}} \right) - \frac{\partial \mathcal{L}}{\partial q} = \tau
+
+where \tau is the vector of generalized forces (joint torques). Computing the derivatives:
+
+\frac{\partial \mathcal{L}}{\partial \dot{q}} = M(q) \dot{q}
+
+\frac{d}{dt} \left( M(q) \dot{q} \right) = M(q) \ddot{q} + \dot{M}(q) \dot{q}
+
+\frac{\partial \mathcal{L}}{\partial q} = \frac{1}{2} \dot{q}^T \frac{\partial M}{\partial q} \dot{q} - \frac{\partial \mathcal{U}}{\partial q}
+
+Let g(q) = \frac{\partial \mathcal{U}}{\partial q} be the gravity vector. The term \dot{M}(q) \dot{q} can be expressed using the Christoffel symbols to separate Coriolis and centrifugal forces. Define the matrix C(q,\dot{q}) such that \dot{M}(q) \dot{q} = C(q,\dot{q}) \dot{q} and \dot{M}(q) - 2C(q,\dot{q}) is skew-symmetric (a key property for stability analysis). Then:
+
+M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = \tau
+
+This is the standard form used in the main text.
+
+A.2 Properties of the Dynamics
+
+The dynamic model has several important properties exploited in control design:
+
+1. Positive definiteness: M(q) \succ 0 for all q.
+2. Skew-symmetry: The matrix \dot{M}(q) - 2C(q,\dot{q}) is skew-symmetric, implying z^T (\dot{M} - 2C) z = 0 for any z.
+3. Linearity in parameters: The dynamics can be written as M(q)\ddot{q} + C(q,\dot{q})\dot{q} + g(q) = Y(q,\dot{q},\ddot{q}) \Theta, where Y is a known regressor matrix and \Theta is a vector of constant parameters (masses, moments of inertia, etc.).
+4. Boundedness: For revolute joints, the mass matrix is bounded: 0 < M_m \leq \|M(q)\| \leq M_M. The Coriolis/centrifugal term satisfies \|C(q,\dot{q})\| \leq C_M \|\dot{q}\|.
+
+A.3 Discrete-Time Representation
+
+For digital control, we discretize the dynamics. With sampling period \Delta t, a simple Euler approximation is:
+
+q_{t+1} = q_t + \Delta t \, \dot{q}_t
+
+\dot{q}_{t+1} = \dot{q}_t + \Delta t \, M(q_t)^{-1} \left( \tau_t - C(q_t,\dot{q}_t)\dot{q}_t - g(q_t) \right)
+
+More accurate integration schemes (e.g., semi-implicit Euler, Runge-Kutta) can be used in simulation. The discrete-time dynamics are denoted as:
+
+x_{t+1} = f_d(x_t, \tau_t)
+
+where x_t = [q_t; \dot{q}_t]. The function f_d is assumed to be Lipschitz continuous.
+
+---
+
+Appendix B: Stability Analysis – Detailed Proof
+
+B.1 Tracking Error Dynamics
+
+Define the desired trajectory q_d(t), \dot{q}_d(t), \ddot{q}_d(t) (bounded and sufficiently smooth). Let e = q - q_d, \dot{e} = \dot{q} - \dot{q}_d. Introduce the filtered tracking error:
+
+s = \dot{e} + \Lambda e, \quad \Lambda = \Lambda^T > 0
+
+If s(t) \to 0, then e(t) \to 0 exponentially. The dynamics of s are derived from the robot equation. From the definition, \dot{s} = \ddot{e} + \Lambda \dot{e} = (\ddot{q} - \ddot{q}_d) + \Lambda \dot{e}. Substituting \ddot{q} from the dynamics:
+
+M(q) \dot{s} = M(q)(\ddot{q} - \ddot{q}_d + \Lambda \dot{e}) = \tau + \tau_{\text{ext}} - C\dot{q} - g - M(q)\ddot{q}_d + M(q)\Lambda \dot{e}
+
+Add and subtract C s and use C\dot{q} = C(\dot{q}_d + \dot{e}). After manipulation, we obtain:
+
+M(q) \dot{s} = -C(q,\dot{q}) s + \tau + \tau_{\text{ext}} - M(q)\ddot{q}_d - C(q,\dot{q})\dot{q}_d - g(q) + C(q,\dot{q}) \Lambda e + M(q)\Lambda \dot{e}
+
+Define the nonlinear function f(x, \dot{q}_d, \ddot{q}_d) as the last four terms. However, for Lyapunov analysis, a common approach is to design a control law that cancels known terms.
+
+B.2 Control Law and Lyapunov Function
+
+Consider the control law:
+
+\tau = M(q)\ddot{q}_d + C(q,\dot{q})\dot{q}_d + g(q) - K s - C(q,\dot{q}) \Lambda e - M(q)\Lambda \dot{e} + \tau_{\text{pred}}
+
+where \tau_{\text{pred}} is the predictive correction term derived from the learned model. In PMI, \tau_{\text{pred}} = K_p (q_d - \hat{q}_{t+1}) + K_d (\dot{q}_d - \hat{\dot{q}}_{t+1}) but expressed in continuous form. For stability analysis, we treat the predictive term as an additional torque that depends on the predicted state.
+
+However, to prove stability with a learned model, we adopt a robust approach. Let the ideal control that achieves perfect tracking be \tau^*. The actual control is \tau = \tau^* + \Delta \tau, where \Delta \tau arises from prediction errors. Alternatively, we can directly analyze the closed-loop system with the learned forward model.
+
+B.3 Lyapunov Analysis with Modeling Error
+
+Choose the Lyapunov function candidate:
+
+V = \frac{1}{2} s^T M(q) s
+
+This is positive definite because M(q) is positive definite. Its time derivative is:
+
+\dot{V} = s^T M(q) \dot{s} + \frac{1}{2} s^T \dot{M}(q) s
+
+Using the skew-symmetry property (s^T (\dot{M} - 2C) s = 0), we have s^T \dot{M} s = 2 s^T C s. Thus:
+
+\dot{V} = s^T (M(q) \dot{s} + C(q,\dot{q}) s)
+
+Substitute M(q)\dot{s} + C s from the error dynamics. After algebraic manipulation, many terms cancel if the control law is designed appropriately. In robust control, we aim to make \dot{V} negative definite.
+
+Assume we have a baseline control \tau_{\text{base}} that would yield \dot{V} = -s^T K s in the absence of modeling error and disturbances. With modeling error \Delta f (the difference between true dynamics and the learned model used in the predictive term), we obtain:
+
+\dot{V} = -s^T K s + s^T (\Delta f + \tau_{\text{ext}})
+
+This is the equation presented in the main text. If \|\Delta f + \tau_{\text{ext}}\| \leq \epsilon, then:
+
+\dot{V} \leq - \lambda_{\min}(K) \|s\|^2 + \epsilon \|s\|
+
+Hence \dot{V} \leq 0 whenever \|s\| \geq \epsilon / \lambda_{\min}(K). This proves that s is uniformly ultimately bounded (UUB) with ultimate bound \epsilon / \lambda_{\min}(K).
+
+B.4 Sliding Mode Robust Compensation
+
+To achieve asymptotic convergence despite bounded uncertainties, we can augment the control with a discontinuous term:
+
+\tau = \tau_{\text{PMI}} - \rho \, \text{sgn}(s)
+
+where \rho \geq \epsilon. Substituting into the \dot{V} expression yields:
+
+\dot{V} = -s^T K s + s^T (\Delta f + \tau_{\text{ext}}) - \rho s^T \text{sgn}(s)
+
+Since s^T \text{sgn}(s) = \|s\|_1 \geq \|s\|, we have:
+
+\dot{V} \leq - \lambda_{\min}(K) \|s\|^2 + \epsilon \|s\| - \rho \|s\| = - \lambda_{\min}(K) \|s\|^2 - (\rho - \epsilon) \|s\|
+
+Thus \dot{V} \leq 0 for all s, with equality only at s=0. This ensures asymptotic convergence to the sliding surface. In practice, the sign function is replaced by a saturation or sigmoid to avoid chattering.
+
+---
+
+Appendix C: Neural Network Architectures
+
+C.1 LSTM for Low-Level Prediction
+
+The low-level predictor operates at 500 Hz, requiring low latency. We use a stacked LSTM architecture:
+
+· Input: x_t \in \mathbb{R}^{2n} and \tau_t \in \mathbb{R}^n concatenated → \xi_t \in \mathbb{R}^{3n}.
+· LSTM layers: Two layers with hidden size h = 128 each. The first layer returns sequences, the second returns the final hidden state.
+· Output layer: A fully connected layer maps the hidden state to \hat{x}_{t+1} \in \mathbb{R}^{2n}.
+
+Training details:
+
+· Loss: Mean squared error (MSE) between predicted and actual next state.
+· Optimizer: Adam with learning rate 10^{-3}.
+· Sequence length during training: 50 time steps (backpropagation through time).
+· Regularization: Dropout (0.2) between LSTM layers.
+
+C.2 Transformer for High-Level Planning
+
+The high-level simulator runs at 10 Hz, processing longer horizons. We adopt a Transformer encoder architecture:
+
+· Input embedding: A linear projection maps the state-action pair (x_t, \tau_t) to a d_{\text{model}}=128 dimensional vector. Positional encodings (sinusoidal) are added.
+· Encoder: 4 Transformer blocks, each with multi-head self-attention (4 heads) and feed-forward network (hidden size 512, ReLU activation). Layer normalization and residual connections are used.
+· Output: The encoder output for each time step is fed to a linear layer to predict \hat{x}_{t+1} for the corresponding step. For multi-step prediction, the model can be used autoregressively.
+
+Training details:
+
+· Loss: MSE on all predicted steps (teacher forcing).
+· Optimizer: Adam with learning rate 10^{-4} and linear warmup.
+· Context window: 100 time steps (10 seconds at 10 Hz).
+
+C.3 Probabilistic Model
+
+For uncertainty quantification, we use a Gaussian mixture model (GMM) or a Monte Carlo dropout ensemble:
+
+· Architecture: A feedforward network with dropout before each weight layer. At inference, multiple stochastic forward passes produce a distribution of predictions.
+· Output: Mean and variance for each predicted state dimension.
+· Training: Minimize negative log-likelihood: \mathcal{L} = \frac{1}{2} \log(2\pi\sigma^2) + \frac{(x - \mu)^2}{2\sigma^2}.
+
+C.4 Online Fine-Tuning
+
+During deployment, the low-level LSTM is fine-tuned online using a small replay buffer. Every N steps (e.g., 100), a mini-batch of recent transitions is sampled and used to update the model via gradient descent. To prevent catastrophic forgetting, 10% of each batch comes from the initial offline dataset.
+
+---
+
+Appendix D: Control Algorithm Pseudocode
+
+D.1 Main Control Loop
+
+```
+Initialize:
+  - Load pre-trained PMI model (LSTM, Transformer)
+  - Set control gains Kp, Kd, Λ, ρ
+  - Set prediction horizon H
+  - Initialize state buffer for online fine-tuning
+
+Loop at 1 kHz (safety filter):
+  Read current joint state x_t = [q_t; qdot_t]
+  Receive desired trajectory from planner: q_d(t), qdot_d(t)
+  
+  # Step 1: Low-level prediction (if new prediction available from 500 Hz thread)
+  if new prediction flag:
+      x_pred = latest prediction from LSTM thread
+      # Predictive control law
+      tau_pmi = Kp * (q_d - x_pred[0:n]) + Kd * (qdot_d - x_pred[n:2n])
+  else:
+      tau_pmi = 0  # fallback to baseline below
+
+  # Step 2: Baseline PD (or computed torque) for comparison/fallback
+  tau_base = Kp * (q_d - q_t) + Kd * (qdot_d - qdot_t)
+
+  # Step 3: Sliding mode robust term
+  s = (qdot_t - qdot_d) + Λ * (q_t - q_d)
+  tau_sm = -ρ * sat(s / φ)  # sat function with boundary layer φ
+
+  # Step 4: Safety filter
+  tau_desired = tau_pmi + tau_base + tau_sm
+  tau_safe = apply_joint_limits(tau_desired, q_t, qdot_t)
+  send tau_safe to actuators
+
+  # Step 5: Log data for online learning
+  push (x_{t-1}, tau_{t-1}, x_t) to replay buffer
+
+End Loop
+```
+
+D.2 High-Level Planner Thread (10 Hz)
+
+```
+Loop at 10 Hz:
+  Get current task goal (e.g., target pose)
+  Using Transformer model, generate nominal trajectory q_d(t) for next T seconds
+  Send trajectory to control loop (as time-indexed waypoints)
+End Loop
+```
+
+D.3 Low-Level Predictor Thread (500 Hz)
+
+```
+Loop at 500 Hz:
+  Read latest state x_t and applied torque tau_t
+  If enough history (e.g., 50 steps):
+      # Autoregressive prediction over horizon H
+      x_hist = buffer of past states/actions
+      x_curr = x_t
+      for k=1 to H:
+          x_curr = LSTM_forward(x_curr, tau_t)  # using current tau (or planned future tau)
+          store x_curr in prediction buffer
+      # Send the first predicted state x_{t+1} to control loop
+      set new_prediction_flag, latest_prediction = x_{t+1}
+  Else:
+      # Not enough history, use simple extrapolation
+      x_{t+1} = x_t + dt * [qdot_t; 0]  # zero acceleration
+      set new_prediction_flag
+End Loop
+```
+
+D.4 Online Fine-Tuning Thread
+
+```
+Every N control cycles:
+  Sample batch from replay buffer (size B)
+  Compute loss: MSE between predicted and actual next states
+  Update LSTM parameters via gradient descent (Adam)
+  Optionally, evaluate modeling error bound ε from validation set
+End
+```
+
+---
+
+Appendix E: Simulation and Hardware Setup Details
+
+E.1 Simulation Parameters
+
+· Simulators: PyBullet 3.2, MuJoCo 2.1, NVIDIA Isaac Gym 1.0.
+· Robot model: Franka Emika Panda (7-DOF) with URDF provided by manufacturer.
+· Control frequency: 1 kHz in simulation (safety filter); low-level predictor at 500 Hz; high-level planner at 10 Hz.
+· Sensor noise: Add Gaussian noise to joint encoders (std 0.01 rad) and velocity estimates (std 0.01 rad/s) to simulate realism.
+· Disturbances: Impulse forces, payload changes, base vibrations as per DITS.
+
+E.2 Hardware Components
+
+· Manipulator: Franka Emika Panda with FCI (Fast Research Interface) for torque control at 1 kHz.
+· Sensors:
+  · Joint encoders: 14-bit resolution.
+  · ATI Mini45 Force/Torque sensor at wrist.
+  · Current sensors on motor drives (for energy measurement).
+· Computing:
+  · NVIDIA Jetson Orin AGX 64GB for high-level inference (Transformer) and low-level LSTM.
+  · Real-time co-processor: STM32H7 microcontroller running at 400 MHz for safety filter and low-level I/O.
+· Communication: EtherCAT between Jetson and STM32; CAN-FD between STM32 and motor drivers.
+
+E.3 Software Stack
+
+· OS: Ubuntu 20.04 with RT-Preempt kernel for real-time threads.
+· Middleware: ROS2 Humble (with real-time executors).
+· Neural network inference: TensorRT 8.5 for Jetson (FP16 quantization); ONNX runtime for prototyping.
+· Control libraries: Pinocchio for rigid body dynamics; Eigen for linear algebra.
+
+---
+
+Appendix F: Evaluation Metrics – Detailed Formulas
+
+F.1 Tracking Error
+
+Root Mean Square Error (RMSE) over a trajectory of length T:
+
+\text{RMSE} = \sqrt{\frac{1}{T} \sum_{t=1}^T \| q_t - q_d(t) \|^2 }
+
+F.2 Jerk Integral
+
+Smoothness is quantified by the integral of squared jerk (time derivative of acceleration). For discrete data with sampling period \Delta t, acceleration is approximated by finite differences, and jerk by difference of acceleration:
+
+\ddot{q}_t \approx \frac{\dot{q}_t - \dot{q}_{t-1}}{\Delta t}, \quad \dddot{q}_t \approx \frac{\ddot{q}_t - \ddot{q}_{t-1}}{\Delta t}
+
+Then:
+
+\text{Jerk} = \sum_{t=2}^{T-1} \| \dddot{q}_t \|^2 \Delta t
+
+F.3 Energy Consumption
+
+Mechanical work (energy delivered to joints):
+
+E = \sum_{t=1}^{T-1} | \tau_t^T (\dot{q}_t + \dot{q}_{t+1})/2 | \, \Delta t
+
+assuming trapezoidal integration of power.
+
+F.4 Disturbance Rejection
+
+For impulse disturbance at time t_d:
+
+· Maximum deviation: \max_{t \in [t_d, t_d+\Delta]} \| q_t - q_d(t) \|
+· Settling time: time after t_d until error remains below 5% of peak deviation.
+
+F.5 Success Rate
+
+For object manipulation tasks, success defined as achieving goal configuration within tolerance (e.g., peg insertion depth > 90% of hole depth). Percentage over 50 trials.
+
+F.6 Generalization
+
+Performance on unseen trajectories (e.g., different speeds, payload masses) measured by RMSE and jerk. Payload variation: 0 to 3 kg in 0.5 kg increments.
+
+---
+
+End of Appendices
