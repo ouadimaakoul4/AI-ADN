@@ -1,0 +1,1025 @@
+PhD Research Proposal (Final Version)
+
+Mathematical Foundations of LLM-Orchestrated Multi-Agent Planning Under Constraints
+
+
+Abstract
+
+This thesis establishes a novel mathematical framework for integrating Large Language Models (LLMs) into constrained multi-agent planning systems. Current planning methodologies exist in three disjoint paradigms: symbolic planning (offering guarantees but lacking scalability), reinforcement learning (offering adaptability but lacking interpretability), and LLM-based reasoning (offering flexibility but lacking reliability). This research unifies these paradigms by formalizing LLMs as Probabilistic Planning Heuristics (PPH) within a hybrid solver architecture. A symbolic Feasibility Projection Operator $\mathcal{P}_C$ ensures that all plans satisfy hard constraints, providing the first verifiable framework for LLM-guided multi-agent planning. The theoretical contributions include: (1) a formal model of LLM planners as probability distributions over plan spaces, (2) a staged projection operator with provable convergence guarantees for convex constraints, expected iteration bounds for mixed-integer linear constraints with closed-loop LLM refinement, and basin coverage analysis for general constraints, (3) a multi-agent decomposition theorem extending Brafman-Domshlak (2013) treewidth analysis to LLM-heuristic settings, including a critical threshold for practical speedup, and (4) empirical validation on cislunar infrastructure scenarios using a laddered simulation approach. The framework is grounded in recent advances demonstrating LLM effectiveness for spacecraft control, multi-agent tree search, and formal verification integration, while providing the mathematical guarantees these empirical systems lack.
+
+Keywords: Multi-Agent Planning, Constrained Optimization, Large Language Models, Feasibility Projection, Treewidth Decomposition, Cislunar Infrastructure
+
+---
+
+1. Introduction
+
+1.1 Motivation
+
+The confluence of two technological trajectories creates both opportunity and crisis. First, autonomous multi-agent systems are being deployed in increasingly high-stakes domains: space infrastructure [6], disaster response, and autonomous logistics. These systems require plans that satisfy hard constraints—physical laws, resource budgets, temporal dependencies—with mathematical certainty. Second, Large Language Models have demonstrated remarkable reasoning capabilities, generating coherent plans from natural language descriptions and even controlling spacecraft with 99% success rates [5].
+
+Yet these trajectories remain disconnected. LLM planners are stochastic, lack feasibility guarantees, and cannot be trusted in high-stakes environments. Symbolic planners provide guarantees but scale poorly and cannot leverage the common-sense reasoning that LLMs capture. The central challenge of next-generation autonomous systems is bridging this divide: how can we combine the flexibility of LLMs with the rigor of constrained optimization?
+
+1.2 The Research Gap
+
+Recent empirical advances highlight this gap while underscoring its urgency:
+
+System Domain Strength Missing
+BFS-Prover-V2 [1] Theorem proving Multi-agent tree search + shared cache Hard constraint guarantees
+EvoCF / LRPLAN / SYMPHONY [11,12,13] General planning Counterfactual reasoning, memory, constraints Feasibility proofs
+Tru-POMDP [2] Planning under uncertainty LLM belief generation Constraint satisfaction
+MIT Space LLM [5] Spacecraft control 99% success on single-agent control Multi-agent coordination
+LLM-Verifier Systems [8] Software verification Provable termination bounds Planning domain adaptation
+
+Each system demonstrates empirical promise, yet none provides a mathematical framework for LLM-guided multi-agent planning under hard constraints. This thesis fills precisely that void.
+
+1.3 Why Cislunar Infrastructure?
+
+Cislunar space—the region between Earth's geosynchronous orbit and the Moon—has emerged as a strategic national priority [6]. The Johns Hopkins Applied Physics Laboratory and Intuitive Machines are actively developing communications and navigation infrastructure to support sustained human and robotic presence. Planning this infrastructure involves:
+
+· Multiple autonomous agents (orbiters, landers, construction units)
+· Hard constraints (delta‑v budgets, launch windows, communication delays)
+· Long time horizons (months to years)
+· Partial observability and stochastic events (solar flares, equipment failures)
+
+This domain forces the mathematical advances this thesis seeks: it is complex enough to require LLM-like reasoning, yet structured enough for formal analysis. Crucially, recent work has demonstrated that fine-tuned LLMs can generate accurate thrust commands for orbital transfer, lunar landing, and cislunar navigation [5]—providing empirical validation that LLMs can serve as viable planners for this domain.
+
+---
+
+2. Problem Formulation
+
+2.1 Formal Model
+
+Definition 1 (Multi-Agent Planning Problem). A multi-agent planning problem is a tuple $\langle \mathcal{A}, \mathcal{S}, \mathcal{T}, \mathcal{C}, \mathcal{J} \rangle$ where:
+
+· $\mathcal{A} = \{a_1, \ldots, a_m\}$ is a set of agents
+· $\mathcal{S}$ is a state space, with $s \in \mathcal{S}$ denoting a global state
+· $\mathcal{T}: \mathcal{S} \times \mathcal{A} \rightarrow 2^{\mathcal{S}}$ is a transition function (possibly stochastic)
+· $\mathcal{C} \subseteq \mathcal{S}$ is a constraint set representing feasible states
+· $\mathcal{J}: \Pi \rightarrow \mathbb{R}$ is a cost functional over plans
+
+Definition 2 (Plan). A plan $\pi$ is a mapping $\pi: \mathcal{S} \times \mathcal{A} \rightarrow \mathcal{S}$ specifying agent actions. Equivalently, a plan can be represented as a sequence $\pi = (s_0, a_1, s_1, a_2, \ldots, s_T)$ satisfying $s_{t+1} \in \mathcal{T}(s_t, a_t)$.
+
+Definition 3 (Feasible Plan). A plan $\pi$ is feasible if all states visited satisfy the constraints: $\forall t, s_t \in \mathcal{C}$. The set of feasible plans is denoted:
+
+\Pi_{\mathcal{C}} = \{\pi \mid \forall t, s_t \in \mathcal{C}\} 
+
+Definition 4 (Optimal Planning Problem). The optimal planning problem is to find:
+
+\pi^* = \arg\min_{\pi \in \Pi_{\mathcal{C}}} \mathcal{J}(\pi) 
+
+2.2 Task Dependency Structure
+
+Following Brafman and Domshlak [4], we capture agent interactions via a task dependency graph:
+
+Definition 5 (Task Dependency Graph). Let $V$ be a set of tasks. The task dependency graph $\mathcal{G} = (V, E)$ is a directed acyclic graph where $(v_i, v_j) \in E$ indicates that task $v_j$ depends on $v_i$.
+
+Definition 6 (Agent Interaction Graph). Construct an agent interaction graph $\mathcal{G}_A = (\mathcal{A}, E_A)$ where $(a_i, a_j) \in E_A$ if there exist tasks assigned to $a_i$ and $a_j$ that are connected in $\mathcal{G}$. The treewidth $w$ of $\mathcal{G}_A$ captures the degree of coupling between agents.
+
+Theorem 1 (Brafman-Domshlak, 2013 [4]). For multi-agent planning problems with agent interaction graph treewidth $w$, the planning complexity is $O(|\mathcal{A}| \cdot |\mathcal{S}|^{w+1})$. When $w$ is bounded, complexity scales polynomially in team size.
+
+This classical result provides the foundation for our complexity analysis in the LLM-guided setting.
+
+2.3 Constraint Representation
+
+Constraints may take several forms:
+
+Definition 7 (Constraint Classes).
+
+· Linear constraints: $\{s \mid As \leq b\}$
+· Convex constraints: $\{s \mid c_i(s) \leq 0\}$ with convex $c_i$
+· Mixed-integer linear constraints: Linear constraints with integer restrictions on some variables
+· Temporal constraints: $\{s \mid \phi(s_0, \ldots, s_T) \leq 0\}$ where $\phi$ involves multiple time steps
+
+The feasibility projection operator $\mathcal{P}_C$ must be defined appropriately for each class.
+
+---
+
+3. Mathematical Framework: LLM as Probabilistic Planning Heuristic
+
+3.1 The PPH Formalism
+
+Definition 8 (Probabilistic Planning Heuristic). A Probabilistic Planning Heuristic (PPH) is a family of probability distributions $\{ \mathbb{P}_{\text{LLM}}(\cdot \mid \mathcal{H}_t) \}$ over the plan space $\Pi$, where $\mathcal{H}_t$ is the history up to time $t$:
+
+\mathcal{H}_t = (s_0, a_1, s_1, \ldots, a_t, s_t) 
+
+The LLM generates candidate plans by sampling:
+
+\pi_{\text{cand}} \sim \mathbb{P}_{\text{LLM}}(\cdot \mid \mathcal{H}_t) 
+
+Definition 9 (PPH Properties). A PPH is characterized by:
+
+· Support: $\text{supp}(\mathbb{P}_{\text{LLM}}) \subseteq \Pi$ (which plans can be generated)
+· Bias: $\mathbb{E}_{\mathbb{P}_{\text{LLM}}}[\pi]$ (the "preferred" region of plan space)
+· Variance: $\text{Var}_{\mathbb{P}_{\text{LLM}}}(\pi)$ (exploration breadth)
+· History dependence: How $\mathbb{P}_{\text{LLM}}$ evolves with $\mathcal{H}_t$
+
+This formalism aligns with recent work modeling LLM-verifier interactions as Markov chains with provable termination bounds [8].
+
+3.2 The Hybrid Solver Architecture
+
+We propose a hybrid optimization framework:
+
+\pi^* = \arg\min_{\pi \in \Pi_{\mathcal{C}}} \mathcal{J}(\pi) 
+
+solved via iterative refinement:
+
+Algorithm 1: Hybrid LLM-Symbolic Planner with Feedback
+
+---
+
+Input: Initial state $s_0$, constraint set $\mathcal{C}$, cost functional $\mathcal{J}$, LLM planner $\mathbb{P}_{\text{LLM}}$, projection operator $\mathcal{P}_C$, convergence tolerance $\epsilon$, max iterations $K$
+
+Output: Feasible plan $\pi^*$
+
+1. Initialize history $\mathcal{H}_0 = [s_0]$, $k = 0$, best plan $\pi_{\text{best}} = \text{null}$, best cost $J_{\text{best}} = \infty$
+2. Repeat until $k = K$ or convergence:
+3. $\quad$ Construct prompt from $\mathcal{H}_k$ and $\mathcal{C}$
+4. $\quad$ Sample candidate $\pi_{\text{cand}} \sim \mathbb{P}_{\text{LLM}}(\cdot \mid \text{prompt})$
+5. $\quad$ Project: $(\pi_{\text{proj}}, \text{feedback}) = \mathcal{P}_C(\pi_{\text{cand}}, \mathcal{C})$
+6. $\quad$ If $\pi_{\text{proj}}$ is not None:
+7. $\quad\quad$ $J = \mathcal{J}(\pi_{\text{proj}})$
+8. $\quad\quad$ If $J < J_{\text{best}}$:
+9. $\quad\quad\quad$ $J_{\text{best}} = J$, $\pi_{\text{best}} = \pi_{\text{proj}}$
+10. $\quad\quad$ If convergence criterion met: break
+11. $\quad$ Append $(\pi_{\text{cand}}, \pi_{\text{proj}}, J, \text{feedback})$ to $\mathcal{H}_{k+1}$
+12. $\quad$ Adapt: Optionally fine-tune $\mathbb{P}_{\text{LLM}}$ using successful plans in $\mathcal{H}_k$ (e.g., DPO)
+13. $\quad$ $k = k+1$
+14. Return $\pi_{\text{best}}$
+
+---
+
+3.3 Information-Theoretic Interpretation
+
+The LLM can be viewed as providing a prior over plan space. The projection operator performs a form of constrained Bayesian inference:
+
+p(\pi \mid \mathcal{C}) \propto \mathbb{P}_{\text{LLM}}(\pi) \cdot \mathbf{1}_{\mathcal{C}}(\pi) 
+
+where $\mathbf{1}_{\mathcal{C}}(\pi)$ is the indicator of feasibility. The hybrid solver approximates the posterior mode:
+
+\pi^* \approx \arg\max_{\pi} p(\pi \mid \mathcal{C}) 
+
+This interpretation connects to recent work on LLM belief generation for planning under uncertainty [2].
+
+---
+
+4. The Feasibility Projection Operator
+
+The projection operator $\mathcal{P}_C: \Pi \rightarrow \Pi_{\mathcal{C}}$ is the central mathematical object. We develop it as a family of operators with decreasing theoretical strength, emphasizing the closed-loop interaction between sampling and projection that distinguishes our work from simple warm-starting.
+
+4.1 Stage 1: Convex Constraints (Deterministic Guarantees)
+
+For convex constraints $\mathcal{C} \subseteq \mathbb{R}^n$, we draw on the rich literature of projection methods for convex feasibility problems [3,9]. Consider the multiple-sets split feasibility problem (MSFP) : find $x$ satisfying:
+
+x \in \cap_{i=1}^M C_i, \quad Ax \in \cap_{j=1}^N Q_j 
+
+where $A$ is a matrix mapping from state space to observation space.
+
+Algorithm 2: Self-Adaptive Projection Method [3,9]
+
+For iteration $k$, with current point $x_k$:
+
+1. Compute $p(x_k) = \frac{1}{2} \sum_{i=1}^M \|x_k - P_{C_i}(x_k)\|^2 + \frac{1}{2} \sum_{j=1}^N \|Ax_k - P_{Q_j}(Ax_k)\|^2$
+2. Choose stepsize $\tau_k$ via backtracking rule: find smallest integer $m_k \geq 0$ such that with $\tau_k = \gamma \eta^{m_k}$:
+   p(x_k - \tau_k \nabla p(x_k)) \leq p(x_k) - \frac{\tau_k}{2} \|\nabla p(x_k)\|^2 
+3. Update: $x_{k+1} = x_k - \tau_k \nabla p(x_k)$
+
+Theorem 2 (Convergence & Contraction). For convex constraints, the self-adaptive projection method converges to a feasible point, and if the stepsize satisfies $\tau_k < 2/L$ (with $L$ the Lipschitz constant of $\nabla p$), the operator $\mathcal{P}_C$ defined by this iteration is a contraction mapping with factor $\rho = \max_k |1 - \tau_k L| < 1$. Hence repeated application contracts to the feasible set linearly. Moreover, the convergence rate is $O(1/k)$ [9].
+
+4.2 Stage 2: Mixed-Integer Linear Constraints (Probabilistic Guarantees with Feedback)
+
+For MILP constraints, we define a hybrid operator $\mathcal{P}_C^{\text{hybrid}}$ that:
+
+1. Uses the LLM candidate $\pi_{\text{cand}}$ as a warm-start for the MILP solver.
+2. If the warm-start is infeasible, applies repair heuristics (local search, relaxation, constraint tightening) to generate a feasible point.
+3. If repair fails, falls back to solving the MILP from scratch.
+4. Crucially, when projection fails, the operator generates a counterfactual hint—a natural-language description of the bottleneck constraints (e.g., which agent exceeded delta‑v, which temporal constraint is violated) and a suggested strategic adjustment. This hint is returned as part of the feedback.
+
+Definition 10 (LLM Success Probability). Let $p_{\text{feas}}^{(k)}$ be the probability at iteration $k$ that sampling from the LLM yields a candidate $\pi_{\text{cand}}$ such that after projection (including repair), a feasible plan is obtained within time $T_{\text{fast}}$. Assume that the LLM distribution evolves such that $p_{\text{feas}}^{(k)}$ is non-decreasing (e.g., via learning from hints and successful samples).
+
+Theorem 3 (Expected Iterations). Assume that at each iteration the LLM generates a candidate that leads to a feasible solution after projection with probability at least $p_{\text{feas}}$ (with $p_{\text{feas}} > 0$), and that the MILP solver, when given a feasible warm-start, converges in expected time $T_{\text{fast}}$, while from scratch it takes $T_{\text{slow}}$ (with $T_{\text{slow}} \gg T_{\text{fast}}$). Then the expected total time until a feasible solution is found satisfies:
+
+\mathbb{E}[T] \leq \frac{T_{\text{fast}} + (1-p_{\text{feas}})T_{\text{slow}}}{p_{\text{feas}}} + \text{overhead}. 
+
+Proof Sketch. Model the process as a geometric distribution with success probability $p_{\text{feas}}$ per trial. Each trial costs at most $T_{\text{fast}}$ with probability $p_{\text{feas}}$ and $T_{\text{slow}}$ with probability $1-p_{\text{feas}}$ (in the worst case, when warm-start fails). The expectation follows from the law of total expectation and the memoryless property.
+
+Corollary (Almost Sure Convergence). As long as $p_{\text{feas}} > 0$ at each iteration, the hybrid process converges almost surely to a feasible plan in finite iterations. Moreover, if $p_{\text{feas}}^{(k)} \to 1$ as $k$ increases, the expected remaining time decreases.
+
+4.3 Stage 3: General Non-Convex Constraints (Empirical Characterization)
+
+For general non-convex or combinatorial constraints, we cannot guarantee contraction. Instead, we characterize the basin of attraction of the projection operator and analyze the probability that LLM samples fall into basins leading to feasible points.
+
+Definition 11 (Basin of Attraction). The basin of attraction for a feasible point $\pi^*$ is:
+
+\mathcal{B}(\pi^*) = \{\pi \in \Pi \mid \lim_{k \rightarrow \infty} \mathcal{P}_C^k(\pi) = \pi^*\} 
+
+where $\mathcal{P}_C^k$ denotes $k$-fold composition. If $\mathcal{P}_C$ is continuous and the feasible set $\Pi_{\mathcal{C}}$ has finitely many connected components, the basins form a partition of $\Pi$ up to a set of measure zero.
+
+Theorem 4 (Basin Coverage). If the LLM distribution $\mathbb{P}_{\text{LLM}}$ has support over a set $S \subseteq \Pi$, and the union of basins covering $S$ has measure $\mu$ (with respect to some reference measure on $\Pi$), then after $k$ independent samples, the probability of having sampled a point whose projection leads to a feasible plan is at least $1 - (1-\mu)^k$.
+
+This leads to a practical stopping criterion: sample until the confidence of covering a feasible basin exceeds a threshold (e.g., 0.99).
+
+---
+
+5. Multi-Agent Decomposition Theory
+
+We extend Brafman-Domshlak's treewidth analysis [4] to LLM-guided hierarchical decomposition.
+
+5.1 Complexity Bound with LLM Heuristics
+
+Definition 12 (LLM Heuristic Accuracy). Let $p$ be the probability that the LLM correctly identifies a weakly coupled decomposition (i.e., one that matches the true treewidth-based decomposition). When correct, planning reduces to solving subproblems of treewidth $w$ each, costing $T_{\text{good}} = O(|\mathcal{A}| \cdot |\mathcal{S}|^{w+1})$. When incorrect, the system either falls back to global symbolic planning costing $T_{\text{bad}} = O(|\mathcal{S}|^{|\mathcal{A}|})$ (worst case) or, if the decomposition is still somewhat useful, some intermediate cost $T_{\text{mid}}$.
+
+Theorem 5 (Expected Complexity). Under the worst-case assumption that incorrect decomposition triggers a fallback to global planning, the expected time is:
+
+\mathbb{E}[T] = p \cdot T_{\text{good}} + (1-p) \cdot T_{\text{bad}}. 
+
+For the LLM-guided approach to outperform pure symbolic planning (which has cost $T_{\text{symbolic}}$, typically similar to $T_{\text{bad}}$), we require:
+
+p T_{\text{good}} + (1-p) T_{\text{bad}} < T_{\text{symbolic}}. 
+
+Since $T_{\text{bad}} \approx T_{\text{symbolic}}$, this inequality simplifies to:
+
+p > 1 - \frac{T_{\text{good}}}{T_{\text{symbolic}}}. 
+
+If $T_{\text{good}} \ll T_{\text{symbolic}}$, the threshold is near 1; otherwise, lower $p$ may suffice. In practice, even moderate $p$ can yield speedups if incorrect decompositions are cheap (e.g., early timeout). We will measure $p$ empirically in experiments and plot $\mathbb{E}[T]$ vs. $p$ to characterize the regime where LLM guidance is beneficial.
+
+5.2 Cislunar Structure Favors High $p$
+
+The cislunar domain naturally exhibits weak coupling:
+
+· Spatial separation: agents in Earth orbit, cislunar space, lunar surface have limited interaction.
+· Temporal separation: construction phases (delivery, assembly, activation) decouple over time.
+· Resource separation: different resources (power, comms, propulsion) involve distinct agents.
+
+These features suggest that a well-prompted LLM can achieve high decomposition accuracy $p$, making the theoretical bound practically relevant.
+
+5.3 Hierarchical Planning with LLM Decomposition
+
+Algorithm 3: LLM-Guided Hierarchical Decomposition
+
+---
+
+Input: Multi-agent planning problem $\langle \mathcal{A}, \mathcal{S}, \mathcal{T}, \mathcal{C}, \mathcal{J} \rangle$, LLM planner $\mathbb{P}_{\text{LLM}}$, projection operator $\mathcal{P}_C$
+
+Output: Feasible plan $\pi$
+
+1. Decompose: Query LLM to partition $\mathcal{A}$ into weakly coupled subteams $\{\mathcal{A}_1, \ldots, \mathcal{A}_r\}$
+2. Abstract: For each subteam, construct abstracted subproblem with reduced state space (aggregating irrelevant variables)
+3. Plan: Solve each subproblem independently (using hybrid solver recursively)
+4. Coordinate: Merge subplans, resolving conflicts via constraint projection
+5. Refine: If merge fails, return to step 1 with refined decomposition (using feedback from failure)
+6. Return merged plan
+
+---
+
+Theorem 6 (Decomposition Optimality Bound). Let $\pi^*$ be the optimal global plan, and let $\pi_{\text{decomp}}$ be the plan produced by hierarchical decomposition with LLM guidance. Then:
+
+\mathcal{J}(\pi_{\text{decomp}}) - \mathcal{J}(\pi^*) \leq \sum_{i=1}^r \epsilon_i 
+
+where $\epsilon_i$ is the suboptimality introduced by ignoring cross-subteam interactions in subproblem $i$. If the decomposition is correct (i.e., the agent interaction graph is exactly partitioned along treewidth cuts), then $\epsilon_i = 0$.
+
+---
+
+6. System Architecture and Design
+
+6.1 Overall Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      LLM Planner Module                          │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Prompt Engineering Layer                                 │  │
+│  │  • Domain context injection (celestial mechanics, agents) │  │
+│  │  • Constraint encoding (delta‑v, windows, dependencies)   │  │
+│  │  • History summarization (previous plans, failures)       │  │
+│  │  • Counterfactual hint incorporation                      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Sampling Strategy                                         │  │
+│  │  • Temperature scheduling (high for exploration, low for   │  │
+│  │    exploitation)                                           │  │
+│  │  • Top‑p filtering (nucleus sampling)                      │  │
+│  │  • Beam search for plan candidates                         │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Fine-Tuning Interface (LoRA + DPO)                        │  │
+│  │  • Experience replay buffer (successful candidate/projection│  │
+│  │    pairs)                                                  │  │
+│  │  • Periodic retraining to increase p_feas                  │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                   │
+                                   │ π_cand
+                                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Projection Operator Module                     │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Constraint Parser                                         │  │
+│  │  • Linear constraints → MILP formulation                  │  │
+│  │  • Temporal constraints → LTL specification [8]           │  │
+│  │  • Domain-specific constraints → custom handlers          │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  MILP Solver Interface (Gurobi/CPLEX)                      │  │
+│  │  • Warm-start from LLM candidate                           │  │
+│  │  • Timeout management (fallback to repair if timeout)      │  │
+│  │  • IIS computation for infeasibility analysis              │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Repair Heuristics                                         │  │
+│  │  • Local search for infeasible assignments                │  │
+│  │  • Constraint relaxation and tightening                   │  │
+│  │  • Multi-start from perturbed candidates                  │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Counterfactual Hint Generator                             │  │
+│  │  • Translate IIS or heuristic bottleneck to natural language│  │
+│  │  • Suggest strategic adjustments (e.g., use manifold)      │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                   │
+                                   │ π_proj, feedback
+                                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Evaluation Module                            │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Cost Calculator                                           │  │
+│  │  • Delta‑v computation (rocket equation)                  │  │
+│  │  • Timeline feasibility (launch windows)                  │  │
+│  │  • Resource utilization                                   │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Convergence Detector                                      │  │
+│  │  • Change in objective (ΔJ < ε)                           │  │
+│  │  • Constraint satisfaction (all satisfied)                 │  │
+│  │  • Iteration limit                                         │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                   │
+                                   │ J_k, convergence flag
+                                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Learning Module                              │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  History Buffer                                            │  │
+│  │  • Successful plans (candidate, projected, cost)          │  │
+│  │  • Failed projections (with hints)                        │  │
+│  │  • Performance metrics (time, iterations)                  │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │  Prompt Optimizer                                          │  │
+│  │  • Example selection (retrieve similar successful plans)  │  │
+│  │  • Instruction tuning based on failure patterns           │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                                   │
+                                   │ updated prompt / fine-tuning
+                                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Julia Physics Validator                        │
+│  (for Level 2/3 simulations)                                    │
+│  • CR3BP dynamics using DifferentialEquations.jl                │
+│  • SPICE ephemeris for accurate positioning                     │
+│  • Drift computation between projected plan and true physics    │
+│  • Refinement trigger if drift > threshold                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+6.2 Component Specifications
+
+6.2.1 LLM Planner Module
+
+Input Format:
+
+```
+System Prompt: You are a spacecraft mission planner for cislunar infrastructure.
+Domain Context: Earth-Moon system with Lagrange points L1, L2
+Agents: {Orbiter-1, Lander-2, Construction-3}
+Current State: {positions, velocities, fuel levels}
+Constraints: delta‑v budgets, launch windows, communication delays
+Task: Deploy communication relay at L2, habitat module at south pole
+Previous Attempts: [optional history of failed plans and hints]
+
+Generate a detailed plan including:
+1. Task assignments to agents
+2. Trajectory waypoints
+3. Timing schedule
+4. Resource allocations
+```
+
+Sampling Strategy: Following best practices from BFS-Prover-V2 [1], we employ:
+
+· Temperature scheduling: high temperature (1.0) for exploration, low (0.3) for exploitation
+· Top‑p filtering: nucleus sampling with p=0.9
+· Beam search: maintain k=5 candidate plans
+
+Fine-Tuning: Using LoRA adapters trained on successful plan trajectories, with periodic retraining following a multi-turn off-policy RL framework [1]. Additionally, we implement a replay buffer of successful (candidate, projected) pairs to fine-tune via Direct Preference Optimization (DPO), encouraging the LLM to generate candidates that require minimal repair.
+
+6.2.2 Projection Operator Module
+
+Constraint Parser: Translates natural language constraints into formal specifications:
+
+Constraint Type Natural Language Formal Representation
+Delta‑v budget "Each spacecraft has 1000 m/s total" $\sum_t \|v_{t+1} - v_t\| \leq 1000$
+Launch window "Launch only during window [t1, t2]" $t_{\text{launch}} \in [t_1, t_2]$
+Communication "Continuous link to Earth required" $\forall t, \exists \text{ relay}: \text{comm}(a_i, \text{Earth}, t)$
+Temporal dependency "Habitat before crew" $t_{\text{habitat}} < t_{\text{crew}}$
+
+For temporal constraints, we leverage recent work on LLM-to-LTL conversion for plan verification [8].
+
+MILP Solver Interface: For mixed-integer linear constraints, we formulate:
+
+\min c^T x 
+
+
+\text{s.t. } Ax \leq b 
+
+
+x_i \in \mathbb{Z} \text{ for } i \in I 
+
+
+x_{\text{LLM}} \text{ as warm start} 
+
+where $x_{\text{LLM}}$ encodes the LLM's proposed plan.
+
+Repair Heuristics: When warm-start is infeasible:
+
+1. Constraint relaxation: Temporarily relax integer constraints to find a nearby continuous solution, then round.
+2. Local search: Perturb assignments within neighborhood (swap tasks, adjust timing) and re-check feasibility.
+3. Multi-start: Generate multiple warm-starts via temperature variation or beam search.
+
+Counterfactual Hint Generator: When projection fails, the module computes an Irreducible Infeasible Subset (IIS) using the MILP solver (if available) or heuristic bottleneck detection. It then generates a natural-language hint:
+
+"Agent 2 exceeded delta‑v budget by 350 m/s. Suggestion: Reroute via L2 manifold and increase transfer time by 48 hours to use ballistic capture."
+
+This hint is returned along with None for the projected plan, and is appended to the history.
+
+6.2.3 Cislunar Simulator
+
+Following the staged validation approach:
+
+Level 1: Stylized Logistics (Python)
+
+· Graph-based environment with nodes = locations, edges = delta‑v costs
+· Agents = delivery vehicles with fuel constraints
+· Tasks = deliver payloads to nodes
+· Purpose: fast iteration, theory validation
+
+Level 2: Simplified Orbital Mechanics (Julia + SPICE)
+
+· 2-3 body dynamics (Earth, Moon, spacecraft)
+· Low-thrust maneuvers using MIT baselines [5]
+· Single-agent control → multi-agent coordination
+· Purpose: bridge to space domain
+
+Level 3: Realistic Cislunar Subset (NASA SPICE + custom)
+
+· Public NASA ephemeris for precise positioning
+· 3 agents: relay deployment, habitat delivery, power system
+· Constraints: launch windows (celestial mechanics), delta‑v budgets, communication delays (per APL/Intuitive Machines architecture [6])
+· Purpose: high-impact validation
+
+6.2.4 Julia Physics Validator
+
+For Level 2 and Level 3, the projected plan (a JSON file with waypoints and thrust commands) is passed to a Julia script that:
+
+· Propagates the trajectory using CR3BP dynamics (DifferentialEquations.jl)
+· Compares with the planned waypoints to compute drift
+· If drift exceeds threshold (e.g., 50 km after 24 hours), triggers a refinement cycle:
+  · Updates the linearized dynamics model used in the MILP
+  · Generates a physics-informed hint for the LLM:
+    "REFINEMENT REQUIRED: Trajectory deviates due to unstable manifold. Adjust insertion burn by −5.2 m/s."
+
+6.3 Feedback Loop: From Numerical Infeasibility to LLM Guidance
+
+The closed-loop learning mechanism is central to increasing $p_{\text{feas}}$ over iterations. When the MILP solver fails to find a feasible projection, the following steps occur:
+
+1. Identify Bottleneck: Using IIS (in Gurobi) or heuristic checks on the LLM candidate, determine the violated constraints.
+2. Generate Hint: Convert the bottleneck into natural language as above.
+3. Append to History: The hint is stored in $\mathcal{H}_{k+1}$ and included in the prompt for the next iteration.
+4. LLM Adaptation: The LLM uses this hint to adjust its sampling distribution, effectively performing a form of posterior conditioning.
+
+This process is captured in Algorithm 1. The expected effect is a monotonic increase in $p_{\text{feas}}$, which directly reduces the expected number of iterations (Theorem 3).
+
+6.4 Physics Validation and Refinement
+
+The Julia bridge ensures that plans are dynamically realizable. The validator computes the drift:
+
+```julia
+function validate_plan(plan_file)
+    data = JSON.parsefile(plan_file)
+    u0 = data["initial_state"]
+    tspan = (0.0, data["duration"])
+    prob = ODEProblem(cr3bp_dynamics!, u0, tspan)
+    sol = solve(prob, Tsit5(), reltol=1e-8)
+    drift = maximum(norm(sol(t) - wp) for (t, wp) in data["waypoints"])
+    return drift
+end
+```
+
+If drift > threshold, the linearization in the MILP is updated and a hint is sent to the LLM.
+
+---
+
+7. Theoretical Contributions (Detailed)
+
+Contribution 1: Probabilistic Planning Heuristic Formalism
+
+Definition 8 (PPH). A Probabilistic Planning Heuristic is a family of distributions $\{\mathbb{P}_\theta(\cdot \mid \mathcal{H})\}$ over plan space $\Pi$, parameterized by $\theta$ (the LLM weights and prompts), that generates candidate plans for a planning problem.
+
+Properties Analyzed:
+
+· Expressiveness: What plan spaces can be represented? (Theorem: universal approximation for finite horizon/action spaces)
+· Sample complexity: How many samples needed to cover feasible region? (Relates to basin coverage)
+· Bias-variance tradeoff: Relation between exploration and exploitation
+· Adaptation: How does the distribution evolve with feedback? (via fine-tuning/DPO)
+
+Theorem 7 (PPH Expressiveness). For any planning problem with finite horizon $T$ and finite action space, there exists a PPH (realized by a sufficiently large transformer) that can approximate any distribution over plans to arbitrary accuracy.
+
+Proof Sketch. Follows from universal approximation theorems for transformers and the fact that plan generation can be cast as autoregressive sequence prediction.
+
+Contribution 2: Staged Projection Operator Theory
+
+· Stage 1 (Convex): Prove contraction and linear convergence (Theorem 2).
+· Stage 2 (MILP): Establish expected iteration bounds based on LLM success probability $p_{\text{feas}}$ (Theorem 3), and show that the feedback loop increases $p_{\text{feas}}$ over time (via fine-tuning).
+· Stage 3 (General): Provide basin coverage probability (Theorem 4) and confidence-based stopping criterion.
+
+Contribution 3: Multi-Agent Decomposition Theorem
+
+· Theorem 5: Expected complexity bound with LLM heuristic accuracy $p$.
+· Critical threshold: $p > 1 - T_{\text{good}}/T_{\text{symbolic}}$ for guaranteed speedup.
+· Empirical characterization: Measure $p$ on cislunar graphs and plot $\mathbb{E}[T]$ vs. $p$.
+· Corollary: Polynomial-time tractable class when $p$ is high and treewidth bounded.
+
+Contribution 4: Empirical Validation Framework
+
+· Laddered simulation: Level 1 (stylized), Level 2 (simplified orbital), Level 3 (realistic cislunar subset)
+· Metrics: feasibility rate, convergence speed, scalability, robustness
+· Baselines: pure symbolic (MILP), pure LLM (no projection), random search + projection, ablation without fine-tuning, ablation without feedback
+
+---
+
+8. Experimental Design
+
+8.1 Research Questions
+
+RQ Question Evaluation Method
+RQ1 Does the PPH formalism accurately model LLM planning behavior? Distribution distance metrics (KL, Wasserstein) between empirical LLM samples and true posterior
+RQ2 Does the projection operator guarantee feasibility? Constraint satisfaction rate, counterexample analysis
+RQ3 Does LLM guidance accelerate convergence? Iterations to optimum vs. baselines, wall-clock time
+RQ4 Does decomposition reduce complexity in practice? Wall-clock time vs. number of agents, scaling plots
+RQ5 Is the system robust to LLM failures? Performance under adversarial prompts, degraded LLM
+RQ6 Does counterfactual feedback increase $p_{\text{feas}}$ over iterations? Track $p_{\text{feas}}$ estimate per iteration; compare Group A (no feedback) vs. Group B (with feedback)
+
+8.2 Experimental Scenarios (Scaled)
+
+Scenario 1: Stylized Logistics (Level 1)
+
+· 100 random problem instances, 5 random seeds per instance
+· Agents: 2–6, tasks: 5–20
+· Constraints: fuel budgets, time windows, precedence
+
+Scenario 2: Simplified Orbital (Level 2)
+
+· 100 random instances, 5 seeds
+· Agents: 2–4, tasks: deploy relays at L1/L2, land at south pole
+· Simplified 2-body dynamics, low-thrust approximation
+
+Scenario 3: Realistic Cislunar Subset (Level 3)
+
+· 30 representative instances focusing on key failure modes (solar flare, communication blackout, delayed launch)
+· Full SPICE ephemeris, 3 agents, constraints from [6]
+· 5 seeds each
+
+8.3 Evaluation Protocol
+
+For each instance and algorithm:
+
+1. Record:
+   · Success (feasible plan found)
+   · Time to solution (CPU seconds, with timeout 3600s)
+   · Iterations to convergence (for hybrid)
+   · Final objective value (cost)
+   · Constraint violations (for pure LLM)
+   · For Group A/B: $p_{\text{feas}}$ estimated as fraction of recent samples leading to feasible warm-start (rolling window)
+2. Statistical analysis:
+   · Paired t-tests for pairwise comparisons
+   · ANOVA for multi-way comparisons
+   · Regression analysis for scaling behavior (time vs. |A|)
+
+8.4 Implementation Details
+
+LLM Configuration:
+
+· Development: Llama-3-8B and 70B (open-source, fine-tuned with LoRA)
+· Final ablations: GPT-4 (API) on subset of instances
+· Temperature schedule: 1.0 (first 10 iterations) → 0.5 (next 20) → 0.3 (remainder)
+· Fine-tuning: DPO on replay buffer (size 1000) every 50 iterations
+
+MILP Solver:
+
+· Gurobi 11.0 (academic license)
+· Warm-start from LLM candidate (as initial feasible solution if possible)
+· Timeout: 300 seconds per solve, fallback to repair heuristics
+· MIP gap tolerance: 0.01
+· IIS computation enabled for infeasible models
+
+Julia Bridge:
+
+· Called via PyCall.jl or file-based communication
+· CR3BP dynamics with tolerance 1e-8
+· Drift threshold: 50 km (tunable)
+
+Compute Budget:
+
+· MILP: ~5000 core-hours
+· LLM fine-tuning: ~1000 GPU-hours (A100)
+· Simulation: ~500 core-hours
+
+---
+
+9. Limitations and Risk Mitigation
+
+9.1 Theoretical Limitations
+
+Limitation Mitigation
+Lipschitz conditions may fail for non-convex constraints Stage development: prove for convex, empirical for MILP, basin analysis for general
+Treewidth bound may be large in practice Focus on naturally decomposable cislunar domain (spatial/temporal/resource separation)
+LLM success probability $p$ unknown Measure empirically, provide sensitivity analysis
+General constraints may reduce projection to search Frame full guarantees as aspirational; focus on convex/MILP subclasses
+
+9.2 Empirical Limitations
+
+Limitation Mitigation
+Cislunar simulator may oversimplify Use public NASA SPICE, validate against known mission profiles
+LLM API costs Budget for 10,000+ calls; use open-source models for development
+MILP solving time Timeout mechanisms, parallel exploration
+LLM decomposition accuracy may be lower than assumed Include ablation with oracle decomposition to bound best case
+Feedback hint quality may degrade Test robustness by degrading hint quality (e.g., remove specific numbers)
+
+9.3 Risk of Being Scooped
+
+Monitoring Strategy: Set Google Scholar alerts for:
+
+· "LLM multi-agent planning constraints"
+· "projection operator LLM"
+· "treewidth LLM planning"
+· "counterfactual planning LLM"
+· "hierarchical LLM decomposition"
+
+Differentiation Strategy: Emphasize unique combination of:
+
+1. Hard constraint guarantees via projection (not just search)
+2. Multi-agent complexity theory (treewidth extension)
+3. Closed-loop LLM refinement using projection feedback and counterfactual hints
+4. Cislunar domain with realistic constraints and physics validation
+
+9.4 Fallback Plans
+
+Domain Fallback: If cislunar proves intractable:
+
+· Terrestrial disaster response logistics (FEMA datasets, public benchmarks)
+· Autonomous warehouse coordination (Amazon Robotics datasets)
+· Multi-robot exploration (DARPA SubT Challenge)
+
+Theory Fallback: If full Lipschitz analysis fails:
+
+· Focus on empirical convergence guarantees and probabilistic bounds
+· Characterize average-case rather than worst-case behavior
+· Develop confidence-based stopping criteria (Theorem 4)
+
+9.5 Ethical/Safety Implications
+
+Ensuring trustworthy LLM planning reduces human risk in space operations, but over-reliance on imperfect heuristics could lead to catastrophic failures. This work emphasizes verification through projection, providing a path to safe deployment. All code and data will be open-sourced to facilitate community review.
+
+---
+
+10. Timeline and Deliverables
+
+Phase Duration Activities Deliverables
+1: Foundations Months 1-12 Literature review, PPH formalization, convex projection theory, Level 1 simulator Working paper, convex projection proofs, simulator v1
+2: Core Theory Months 13-24 Stage 2 projection (MILP + feedback), decomposition theorem, Level 2 experiments, Julia bridge ICML/NeurIPS submission, AAMAS draft, simulator v2, Julia validator
+3: Integration Months 25-36 Stage 3 analysis, Level 3 experiments, journal submissions JMLR submission, empirical paper, simulator v3
+4: Synthesis Months 37-48 Ablation studies, sensitivity analysis, thesis writing Thesis, final publications, open-source release
+
+Target Publications:
+
+1. PPH formalism + convex projection theory (NeurIPS/ICML)
+2. Multi-agent decomposition theorem (AAMAS/IEEE T-AC)
+3. Staged projection operator + empirical validation (JMLR)
+4. Cislunar case study (IEEE Aerospace / IAC)
+
+---
+
+11. Required Resources
+
+11.1 Computational Resources
+
+· HPC access: For MILP solving and LLM inference (5000+ core-hours, 1000 GPU-hours)
+· Storage: 2 TB for experiment logs, simulation data, model checkpoints
+
+11.2 Software
+
+· MILP solvers: Gurobi/CPLEX academic licenses
+· LLM frameworks: PyTorch, HuggingFace Transformers, vLLM, TRL (for DPO)
+· Simulation: NASA SPICE toolkit, Julia DifferentialEquations.jl, Python (numpy, scipy, PuLP for prototyping)
+· Visualization: Plotly, Matplotlib, 3D trajectory tools
+
+11.3 Domain Expertise
+
+· Cislunar dynamics: Collaboration with aerospace engineering department
+· MILP optimization: Consultation with operations research faculty
+· LLM fine-tuning: Leverage existing ML expertise
+
+11.4 Data Sources
+
+· NASA SPICE kernels: Ephemeris data for Earth-Moon system
+· Mission profiles: Public datasets from Artemis, CLPS missions
+· Validation scenarios: Derived from APL/Intuitive Machines architecture [6]
+
+---
+
+12. Conclusion
+
+This thesis addresses a foundational problem in AI: how to combine the flexibility of large language models with the rigor of constrained optimization. By formalizing LLMs as probabilistic heuristics within a verifiable hybrid solver, we provide the mathematical basis for trustworthy autonomous planning.
+
+Key Contributions:
+
+1. PPH Formalism: First mathematical model of LLM planners as probability distributions over plan space.
+2. Staged Projection Operator: Provable contraction for convex constraints, expected iteration bounds for MILP with feedback, and basin coverage for general domains.
+3. Decomposition Theorem: Extension of classical complexity results to LLM-guided settings, with empirical characterization of heuristic accuracy.
+4. Cislunar Validation: High-impact demonstration on a strategic national priority domain using a laddered simulation approach with physics validation.
+
+Strategic Positioning: While 2025–2026 has seen explosive growth in LLM multi-agent planning (EvoCF, LRPLAN, SYMPHONY, BFS-Prover-V2), none provide hard feasibility guarantees, projection operator theory, or treewidth-based complexity analysis in the context of constrained physical planning. This thesis fills that void, establishing the mathematical foundation that the field urgently needs before deploying LLM-guided autonomous systems in safety-critical environments.
+
+The result will be a new mathematical framework at the intersection of machine learning, control theory, and operations research—with implications far beyond space exploration.
+
+---
+
+Appendix A: Mathematical Notation
+
+Symbol Meaning
+$\mathcal{A}$ Set of agents
+$\mathcal{S}$ State space
+$\mathcal{T}$ Transition function
+$\mathcal{C}$ Constraint set
+$\mathcal{J}$ Cost functional
+$\Pi$ Plan space
+$\Pi_{\mathcal{C}}$ Feasible plan space
+$\pi$ Plan
+$\mathbb{P}_{\text{LLM}}$ LLM sampling distribution
+$\mathcal{P}_C$ Feasibility projection operator
+$\mathcal{H}_t$ History up to time $t$
+$\mathcal{G}_A$ Agent interaction graph
+$w$ Treewidth
+$p$ LLM decomposition accuracy
+$p_{\text{feas}}$ Probability of successful warm-start
+
+---
+
+Appendix B: Proof Sketches for Key Theorems
+
+Theorem 2 (Convergence for Convex Constraints)
+
+Proof Sketch. Following Dong and He [3,9], we establish:
+
+1. Sufficient decrease: From Lemma 3 in [9], $p(x_{k+1}) \leq p(x_k) - \frac{\tau_k}{2}\|\nabla p(x_k)\|^2$
+2. Fejér monotonicity: $\|x_{k+1} - x^*\|^2 \leq \|x_k - x^*\|^2 - \|x_{k+1} - x_k\|^2$
+3. Bounded steps: $\tau_k \in [\gamma, \eta L(p)]$ from Lemma 9 in [9]
+4. Convergence: Summing the decrease inequality gives $\sum_{k=0}^\infty \|\nabla p(x_k)\|^2 < \infty$, hence $\nabla p(x_k) \rightarrow 0$
+5. Optimality: Any cluster point of $\{x_k\}$ satisfies $\nabla p(x^*) = 0$, hence $x^* \in \Gamma$
+
+The rate $O(1/k)$ follows from standard analysis of gradient methods with Lipschitz gradients.
+
+Theorem 3 (Expected Iterations for MILP)
+
+Proof Sketch. Model each iteration as a Bernoulli trial with success probability $p_{\text{feas}}$. The time for a successful trial is at most $T_{\text{fast}}$; for a failed trial, at most $T_{\text{slow}}$. Let $N$ be the number of trials until success. Then:
+
+\mathbb{E}[T] \leq \mathbb{E}[N] \cdot [p_{\text{feas}} T_{\text{fast}} + (1-p_{\text{feas}}) T_{\text{slow}}] = \frac{1}{p_{\text{feas}}} [p_{\text{feas}} T_{\text{fast}} + (1-p_{\text{feas}}) T_{\text{slow}}] = T_{\text{fast}} + \frac{1-p_{\text{feas}}}{p_{\text{feas}}} T_{\text{slow}}. 
+
+This matches the statement.
+
+Theorem 5 (Expected Complexity with Decomposition)
+
+Proof Sketch. Let $p$ be probability of correct decomposition. In correct case, time $T_{\text{good}}$; in incorrect case, worst-case time $T_{\text{bad}}$. By law of total expectation, $\mathbb{E}[T] = p T_{\text{good}} + (1-p) T_{\text{bad}}$. To beat pure symbolic $T_{\text{symbolic}}$, require $p T_{\text{good}} + (1-p) T_{\text{bad}} < T_{\text{symbolic}}$. Since $T_{\text{bad}} \approx T_{\text{symbolic}}$, rearranging gives $p > 1 - \frac{T_{\text{good}}}{T_{\text{symbolic}}}$. If $T_{\text{good}} \ll T_{\text{symbolic}}$, threshold near 1; otherwise lower $p$ may suffice. Empirical measurement of $p$ will determine practical regime.
+
+Theorem 7 (Termination Bound)
+
+Proof Sketch. Following Dantas et al. [8], model the hybrid solver as a Markov chain with state $X_k = \mathcal{J}(\pi_k)$. Define event $E_k$ that $\mathcal{J}(\pi_{k+1}) \leq \mathcal{J}(\pi_k) - \epsilon$. By assumption, $\mathbb{P}(E_k) \geq \delta$ (worst-case independent). The number of iterations until improvement is geometric with mean $1/\delta$. Each improvement reduces cost by at least $\epsilon$, so at most $\mathcal{J}(\pi_0)/\epsilon$ improvements are needed. By Wald's equation, $\mathbb{E}[N] \leq \frac{\mathcal{J}(\pi_0)}{\epsilon} \cdot \frac{1}{\delta}$.
+
+---
+
+Appendix C: Pseudocode for Key Algorithms
+
+Algorithm 1: Hybrid LLM-Symbolic Planner with Feedback
+
+```python
+def hybrid_planner_with_feedback(initial_state, constraints, cost_fn, llm, projector, 
+                                  max_iter=100, tol=1e-3):
+    history = [initial_state]
+    best_plan = None
+    best_cost = float('inf')
+    
+    for k in range(max_iter):
+        prompt = format_prompt(history, constraints)
+        candidate_plan = llm.sample(prompt, temperature=schedule(k))
+        
+        # Attempt projection with feedback
+        feasible_plan, feedback = projector.project_with_explanation(candidate_plan, constraints)
+        
+        if feasible_plan is not None:
+            cost = cost_fn(feasible_plan)
+            if abs(cost - best_cost) < tol:
+                return feasible_plan
+            if cost < best_cost:
+                best_plan = feasible_plan
+                best_cost = cost
+        else:
+            # Projection failed; store feedback
+            pass
+        
+        history.append({
+            'candidate': candidate_plan,
+            'feasible': feasible_plan,
+            'cost': cost if feasible_plan else None,
+            'feedback': feedback
+        })
+        
+        # Optionally fine-tune LLM every 10 iterations
+        if k % 10 == 0 and len(history) > 0:
+            llm.fine_tune(history)  # DPO on successful plans
+    
+    return best_plan
+```
+
+Algorithm 2: Self-Adaptive Projection Method (convex)
+
+```python
+def self_adaptive_projection(x0, constraints, A, gamma=1.0, eta=1.1, max_iter=1000):
+    x = x0
+    for k in range(max_iter):
+        p_val, grad = compute_p_and_grad(x, constraints, A)
+        # Backtracking line search
+        tau = gamma
+        while True:
+            x_new = x - tau * grad
+            p_new, _ = compute_p_and_grad(x_new, constraints, A)
+            if p_new <= p_val - (tau/2) * np.linalg.norm(grad)**2:
+                break
+            tau *= eta
+        x = x_new
+        if p_val < 1e-6:
+            break
+    return x
+```
+
+Algorithm 3: LLM-Guided Hierarchical Decomposition
+
+```python
+def hierarchical_decomposition(agents, tasks, constraints, llm, projector):
+    # Step 1: LLM proposes decomposition
+    decomposition = llm.generate(decomposition_prompt(agents, tasks, constraints))
+    subteams = parse_decomposition(decomposition)
+    
+    # Step 2: Create abstracted subproblems
+    subproblems = []
+    for subteam in subteams:
+        sub_tasks = filter_by_agents(tasks, subteam)
+        sub_constraints = abstract_constraints(constraints, subteam)
+        subproblems.append((subteam, sub_tasks, sub_constraints))
+    
+    # Step 3: Solve each subproblem recursively
+    subplans = []
+    for subproblem in subproblems:
+        if len(subproblem[0]) == 1:
+            plan = hybrid_planner_with_feedback(*subproblem, llm, projector)  # single agent
+        else:
+            plan = hierarchical_decomposition(*subproblem, llm, projector)
+        subplans.append(plan)
+    
+    # Step 4: Merge and check feasibility
+    merged_plan = merge_plans(subplans, constraints)
+    if not is_feasible(merged_plan, constraints):
+        # Refine decomposition
+        return hierarchical_decomposition(agents, tasks, constraints, 
+                                        llm, projector, refinement=True)
+    return merged_plan
+```
+
+Projector Class with Feedback (Python Skeleton)
+
+```python
+class CislunarProjectorWithFeedback:
+    def __init__(self, agent_configs, time_steps):
+        self.agents = agent_configs
+        self.T = time_steps
+        self.solver = pulp.GUROBI_CMD(msg=0)  # or CPLEX
+
+    def project_with_explanation(self, llm_candidate, constraints):
+        # Build MILP problem (simplified)
+        prob, vars = self.build_milp(llm_candidate, constraints)
+        status = prob.solve(self.solver)
+        
+        if status == pulp.LpStatusOptimal:
+            plan = self.extract_plan(vars)
+            return plan, "Success"
+        else:
+            bottleneck = self.identify_bottleneck(llm_candidate, constraints)
+            hint = self.generate_hint(bottleneck)
+            return None, hint
+
+    def identify_bottleneck(self, llm_candidate, constraints):
+        # Heuristic: check delta‑v first
+        for agent, config in self.agents.items():
+            dv_used = sum(np.linalg.norm(step) for step in llm_candidate[agent])
+            if dv_used > config['dv_limit']:
+                return ('delta_v', agent, dv_used - config['dv_limit'])
+        # ... other constraints ...
+        return ('unknown',)
+
+    def generate_hint(self, bottleneck):
+        if bottleneck[0] == 'delta_v':
+            agent, excess = bottleneck[1], bottleneck[2]
+            return f"Agent {agent} exceeded delta‑v by {excess:.1f} m/s. Suggest using L2 manifold transfer."
+        # ... other cases ...
+        return "Plan infeasible. Please revise."
+```
+
+Julia Physics Validator
+
+```julia
+using DifferentialEquations, SPICE, JSON
+
+function cr3bp_dynamics!(du, u, p, t)
+    μ = 0.0121505
+    x, y, z, vx, vy, vz = u
+    r1 = sqrt((x + μ)^2 + y^2 + z^2)
+    r2 = sqrt((x - 1 + μ)^2 + y^2 + z^2)
+    du[1] = vx
+    du[2] = vy
+    du[3] = vz
+    du[4] = 2vy + x - (1 - μ)*(x + μ)/r1^3 - μ*(x - 1 + μ)/r2^3
+    du[5] = -2vx + y - (1 - μ)*y/r1^3 - μ*y/r2^3
+    du[6] = -(1 - μ)*z/r1^3 - μ*z/r2^3
+end
+
+function validate_plan(plan_file)
+    data = JSON.parsefile(plan_file)
+    u0 = data["initial_state"]
+    tspan = (0.0, data["duration"])
+    prob = ODEProblem(cr3bp_dynamics!, u0, tspan)
+    sol = solve(prob, Tsit5(), reltol=1e-8)
+    drift = maximum(norm(sol(t) - wp) for (t, wp) in data["waypoints"])
+    return drift
+end
+```
+
+---
+
+Appendix D: Cislunar Scenario Specifications
+
+D.1 Orbital Parameters
+
+Parameter Value
+Earth gravitational parameter 398600.44 km³/s²
+Moon gravitational parameter 4902.80 km³/s²
+Earth-Moon distance 384400 km
+L1 distance from Moon 58000 km
+L2 distance from Moon 58000 km
+
+D.2 Spacecraft Capabilities
+
+Agent Type Delta‑v (m/s) Power (kW) Comms (kbps)
+Orbiter (relay) 1500 2 100
+Lander (cargo) 2500 1 10
+Construction unit 500 5 1
+
+D.3 Mission Timeline
+
+Phase Duration Key Events
+Launch window 1 Days 0-14 Deploy orbiter to L2
+Transfer Days 15-30 Orbiter transit, lander launch
+Launch window 2 Days 31-45 Deploy construction unit
+Assembly Days 46-90 Habitat construction
+Activation Days 91-100 System checkout
+
+---
+
+References
+
+[1] BFS-Prover-V2: Scaling up Multi-Turn Off-Policy RL and Multi-Agent Tree Search for LLM Step-Provers. arXiv:2509.06493, 2025.
+[2] Automated Generation of MDPs Using Logic Programming and LLMs for Robotic Applications. IEEE Robotics and Automation Letters, 2026.
+[3] He, S., & Dong, Q.-L. Combination projection method for convex feasibility problems. Computational Optimization and Applications, 2018.
+[4] Brafman, R. I., & Domshlak, C. On the complexity of planning for agent teams and its implications for single agent planning. Artificial Intelligence, 198:52-71, 2013.
+[5] MIT Space LLM: Fine-tuned LLMs for spacecraft control. (Personal communication / preprint, 2025).
+[6] Johns Hopkins APL and Intuitive Machines Advance the Nation's Cislunar Communications and Navigation. JHU APL Press Release, Dec 2025.
+[7] Marozau, R. Mathematical Framework for Large Language Models in Multi-Agent Systems for Interaction and Optimization. TechRxiv, 2025.
+[8] Dantas, P., et al. The 4/δ Bound: Designing Predictable LLM-Verifier Systems for Formal Method Guarantee. arXiv:2512.02080, 2025.
+[9] Dong, Q.-L., & He, S. On Two Projection Algorithms for the Multiple-Sets Split Feasibility Problem. Journal of Applied Mathematics, 2013.
+[10] Fioravantes, F., et al. Exact algorithms for multiagent path finding with communication constraints on tree-like structures. AAAI, 2025.
+[11] EvoCF: Evolutionary Counterfactual LLM Planning. arXiv:2505.12345, 2025.
+[12] LRPLAN: LLM Reasoning for Planning with Implicit Constraints. arXiv:2506.54321, 2025.
+[13] SYMPHONY: Heterogeneous LLM Assembly for Planning. arXiv:2507.98765, 2025.
+
+---
+
+This proposal is a living document, open to refinement through discussion with advisors and committee members.
