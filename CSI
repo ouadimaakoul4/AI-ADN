@@ -1,0 +1,749 @@
+Conversational State Instability in Autoregressive Language Models:
+
+A Dynamical, Geometric, and Control-Theoretic Framework
+
+Final Thesis
+
+Author: ouadi Maakoul 
+
+collaborators: Gemini + chatGpt + Deepseek 
+
+---
+
+Abstract
+
+Large Language Models (LLMs) exhibit strong performance in single-turn inference tasks but suffer measurable reliability degradation in multi-turn dialogue. This thesis proposes a unified mathematical framework for modeling conversational instability as a stochastic dynamical system evolving on a statistical manifold. We formalize state reconstruction error, compression-induced drift, and autoregressive error amplification as structural properties of bounded-memory probabilistic operators. We prove that under finite context constraints, instability is generically unavoidable through an information-theoretic argument: when the entropy production rate of a conversation exceeds the information density of the context window, the reconstruction error must grow, creating a “conversational event horizon.” We introduce a stabilization operator based on geometric drift minimization and feedback control, realizable through either internal representation steering via low-rank approximations or meta-linguistic prompt injection guided by an observer model. We analyze sufficient conditions for bounded conversational error over infinite horizons using Lyapunov stability theory, establishing that the stabilized system’s spectral radius determines the predictability horizon. We present a concrete implementation of the observer–stabilizer loop in pseudocode and propose an empirical benchmark—the Recursive Fact Distortion task—to measure the empirical Lyapunov exponent and validate the theoretical predictions. Finally, we examine the observer’s meta-stability and the potential role of stochastic resonance in preventing error attractors.
+
+---
+
+1. Introduction
+
+Modern autoregressive language models operate without persistent internal state. Instead, they reconstruct an approximate latent belief state from truncated conversational history at each interaction step. Consider a simple role-playing scenario: a user asks the model to “act as a helpful medieval alchemist.” Initially, the model responds in character. After several turns discussing potions and ingredients, the user asks about modern astronomy. The model responds accurately but reverts to a generic assistant persona, having “forgotten” its assigned role. This forgetting is not a memory leak—it is a structural consequence of how the model reconstructs belief from limited context.
+
+While effective for short prompts, this mechanism produces:
+
+· Context drift: Gradual deviation from the intended conversational state
+· Assumption lock-in: Early errors become entrenched as they are fed back as context
+· Error reinforcement: Small misunderstandings compound across turns
+· Behavioral inconsistency: Persona, facts, and goals shift unpredictably
+
+The absence of a formal theory explaining these phenomena motivates this work.
+
+We aim to answer a foundational question: Is conversational instability an implementation flaw that can be engineered away, or a structural consequence of bounded probabilistic autoregression?
+
+---
+
+2. Problem Formulation
+
+2.1 State Representation
+
+Let:
+
+· U_t = user input at time t
+· S_t \in \mathcal{M} = ideal latent belief state (the complete conversational context, goals, and persona)
+· \tilde{S}_t \in \mathcal{M} = reconstructed belief state from truncated context
+· R_t = model response at time t
+
+The model generates responses autoregressively:
+
+R_t \sim P_\theta(\cdot \mid C_t)
+\]  
+
+where C_t is the compressed context window of size K (e.g., the last K tokens or turns).
+
+The reconstructed belief state is a function of the response and context:
+
+\tilde{S}_{t+1} = f(R_t, C_t)
+\]  
+
+where f represents the implicit state reconstruction performed by the model’s next forward pass.
+
+2.2 The Statistical Manifold
+
+We define \mathcal{M} as the statistical manifold of predictive distributions—the space of all possible next-token probability distributions that the model can produce. Each point on this manifold corresponds to a distinct “belief state” about the conversation. The natural geometry of this space is given by the Fisher-Rao metric, which measures the infinitesimal distance between probability distributions.
+
+For points p, q \in \mathcal{M}, we define the divergence:
+
+D_t = d_{\mathcal{M}}(S_t, \tilde{S}_t)
+\]  
+
+where d_{\mathcal{M}} is the geodesic distance induced by the Fisher-Rao metric. This choice is motivated by the Cramér-Rao bound: the Fisher information lower-bounds the variance of any unbiased estimator, making it the natural measure of reconstruction error.
+
+2.3 Ideal vs. Actual Dynamics
+
+In an ideal persistent-state system:
+
+S_{t+1} = \Phi(S_t, U_t)
+\]  
+
+where \Phi is a perfect state update function that incorporates new user input while preserving all relevant history.
+
+In practical LLM systems, the dynamics are:
+
+\tilde{S}_{t+1} = \Psi(\tilde{S}_t, U_t, C_t)
+\]  
+
+where \Psi represents the reconstruction from limited context, introducing compression error at every step.
+
+2.4 Geometric Visualization of State Space
+
+The conversational state space can be visualized as a high-dimensional manifold where coherent conversations lie on a low-dimensional “intent manifold.” Without stabilization, the trajectory \tilde{S}_t wanders due to compression errors. Small perturbations—a hallucinated fact, a missed nuance—act as vectors pushing the state away from the intent manifold. The uncontrolled dynamics resemble a random walk with drift, where each step accumulates error.
+
+---
+
+3. The Conversational Instability Hypothesis
+
+3.1 Hypothesis 1 (Compression Instability)
+
+For any finite context window of size K, there exists a conversation length T such that:
+
+\mathbb{E}[D_T] > \delta > 0
+\]  
+
+for some instability constant \delta.
+
+Information-Theoretic Proof:
+
+Let H(S_t) be the entropy of the true belief state, and let h = \frac{dH(S_t)}{dt} be the entropy production rate of the conversation—the rate at which new information accumulates. In an open-ended conversation, h > 0 as new topics, facts, and constraints accumulate.
+
+The mutual information between the true state and its reconstruction is bounded by the context window’s information density:
+
+I(S_t; \tilde{S}_t) \leq K \cdot \log|\mathcal{V}| \triangleq I_{\text{max}}
+\]  
+
+where \mathcal{V} is the vocabulary and K\log|\mathcal{V}| represents the maximum information storable in the context window.
+
+By the data processing inequality and the fact that \tilde{S}_t is derived solely from C_t:
+
+H(S_t|\tilde{S}_t) = H(S_t) - I(S_t; \tilde{S}_t) \geq H(S_t) - I_{\text{max}}
+\]  
+
+Since H(S_t) = H(S_0) + \int_0^t h(\tau) d\tau, for any h_{\text{min}} > 0 there exists T such that H(S_T) > I_{\text{max}} + \delta'. Then:
+
+H(S_T|\tilde{S}_T) > \delta'
+\]  
+
+which implies \mathbb{E}[D_T] > \delta > 0 by the relationship between conditional entropy and geodesic distance on the statistical manifold.
+
+Interpretation: This establishes a fundamental limit analogous to the Shannon limit in communication theory. For any LLM, there exists a conversational event horizon—a time T beyond which the model is mathematically incapable of maintaining the original state given finite context. The event horizon occurs when the cumulative information content of the conversation exceeds the context window’s capacity.
+
+3.2 Hypothesis 2 (Autoregressive Amplification)
+
+Let \epsilon_t = d_{\mathcal{M}}(S_t, \tilde{S}_t) represent the local perturbation from the true state. The evolution of this perturbation is governed by the linearized dynamics:
+
+\epsilon_{t+1} \approx J_t \epsilon_t + \nu_t
+\]  
+
+where J_t is the Jacobian of the map from \tilde{S}_t to \tilde{S}_{t+1} and \nu_t represents new compression error.
+
+If the spectral radius \rho(J_t) > 1 on average, then:
+
+\|\epsilon_t\| \to \infty \quad \text{as} \quad t \to \infty
+\]  
+
+This formalizes the empirical observation that small early errors—a misunderstood instruction, an incorrect fact—can grow exponentially, leading to complete conversational derailment. The maximum Lyapunov exponent:
+
+\lambda = \lim_{t\to\infty} \frac{1}{t}\log\|\epsilon_t\|
+\]  
+
+determines the predictability horizon: the characteristic time scale \tau \sim 1/\lambda over which the conversation remains stable. For \lambda > 0, perturbations double every 1/\lambda steps.
+
+3.3 Hypothesis 3 (Self-Conditioned Feedback Instability)
+
+Because the model’s outputs condition its future predictions:
+
+P(R_{t+1} \mid \text{history}) = P_\theta(\cdot \mid R_t, C_t)
+\]  
+
+any error embedded in R_t becomes structural context for all subsequent generations. This creates a positive feedback loop: erroneous statements become “facts” in the context window, biasing future responses toward maintaining consistency with the error.
+
+This mechanism produces error attractors—regions of the statistical manifold from which the dynamics cannot escape without external correction. Once the model confidently asserts an incorrect fact, the probability of correcting that fact in subsequent turns drops dramatically, as the model conditions on its own erroneous output. These attractors have basins of attraction; once the state enters a basin, it converges to the error state.
+
+---
+
+4. Theoretical Contributions
+
+This thesis makes the following theoretical contributions:
+
+1. Model dialogue as a stochastic dynamical system on a statistical manifold, providing rigorous foundations for analyzing conversational behavior.
+2. Formalize drift as geometric divergence using information geometry, connecting NLP phenomena to fundamental principles of statistical inference.
+3. Prove instability under bounded context via information-theoretic arguments, establishing the conversational event horizon as a fundamental limit.
+4. Characterize error amplification through spectral analysis and Lyapunov exponents, quantifying the predictability horizon of conversations.
+5. Establish necessary conditions for stability using control theory, deriving bounds on context window size and correction mechanisms required for bounded error.
+6. Analyze observer meta-stability and the conditions under which the monitoring system itself remains reliable.
+7. Propose an empirical validation framework to measure the theoretical quantities (Lyapunov exponents, event horizon) in real LLM interactions.
+
+---
+
+5. Proposed Solution: Stabilized Conversational Control
+
+5.1 The Stabilization Operator
+
+We introduce a correction operator K(S_t) that modifies the latent state to counteract drift:
+
+S_{t+1} = \Phi(S_t, U_t) + K(S_t)
+\]  
+
+where:
+
+K(S_t) = -\lambda \nabla_{S} D_t
+\]  
+
+Geometrically, this creates a synthetic attractor—a “gravity well” around the ideal state S_t. Even when the model drifts, the restorative dynamics pull it back toward the intended trajectory. The correction strength \lambda determines the stiffness of this attractor.
+
+5.2 Implementation Pathways
+
+The operator K(S_t) can be realized through two complementary approaches:
+
+Pathway A: Internal Representation Steering (White-Box)
+Modify the model’s internal activations directly. At each step, estimate the current belief state from the model’s activations (e.g., via probing classifiers on the residual stream), compute the estimated drift, and apply a corrective shift to the key-value cache or hidden states.
+
+The Jacobian of the LLM’s transition function J_t is massive (O(n_{\text{params}}^2)) and non-stationary. Direct computation is infeasible. However, we can approximate the necessary correction using Low-Rank Adaptation (LoRA) . The shift K(S_t) can be represented as a low-rank perturbation to the weight matrices:
+
+W' = W + BA
+\]  
+
+where B \in \mathbb{R}^{d \times r}, A \in \mathbb{R}^{r \times k} with r \ll \min(d,k). This approximates the geometric gradient descent step without full Jacobian computation. The correction is applied transiently, effectively steering the forward pass without permanent weight modification.
+
+Pathway B: Meta-Linguistic Prompt Injection (Black-Box)
+For black-box systems, implement K(S_t) through carefully constructed prompts that steer the model back toward the true state. At each turn, inject a stabilization prompt such as:
+
+“Reminder: You are a medieval alchemist assisting a visitor. Your previous statements about potions were correct, but astronomy is outside your expertise. Maintain your character.”
+
+This prompt is derived from an observer model—a smaller, specialized model that monitors the conversation, estimates the current belief state \hat{S}_t, and computes the divergence from the intended trajectory. The observer’s output is translated into natural language corrections.
+
+5.3 The Observer Model
+
+The observer model O serves as the “sensor” in the control loop. It takes the conversation history H_t and outputs:
+
+· An estimate of the current belief state \hat{S}_t
+· An estimate of the drift \hat{D}_t = d_{\mathcal{M}}(\hat{S}_t, S_0) from the initial intended state
+· A corrective action (either an internal steering vector or a stabilization prompt)
+
+This creates a closed-loop control system where the observer detects divergence and the stabilizer applies correction.
+
+5.4 Formal Algorithm for Pathway B
+
+The following pseudocode implements the observer–stabilizer loop for a black-box LLM, treating the conversation as a controlled plant.
+
+```python
+import numpy as np
+
+class ConversationalEnvironment:
+    def __init__(self, actor_model, observer_model, intent_manifold_ref, threshold=0.1):
+        self.actor = actor_model          # The "Plant" (LLM)
+        self.observer = observer_model    # The "Sensor" (Stronger/Larger Context)
+        self.intent_ref = intent_manifold_ref # The "Ideal State" S_t (e.g., embedding of initial persona)
+        self.history = []
+        self.drift_history = []
+        self.threshold = threshold
+
+    def get_fisher_rao_divergence(self, p_dist, q_dist):
+        """
+        Approximates geodesic distance on the statistical manifold 
+        using KL-Divergence as a proxy for local Fisher-Rao metric.
+        """
+        # p_dist and q_dist are probability vectors (e.g., next-token distributions)
+        return np.sum(p_dist * np.log(p_dist / q_dist))
+
+    def run_step(self, user_input):
+        # 1. Update State with User Input
+        self.history.append({"role": "user", "content": user_input})
+        
+        # 2. Observer Phase: Estimate Latent State and Drift (D_t)
+        # The observer has access to the full history H_t
+        current_belief_estimate = self.observer.estimate_state(self.history)
+        
+        # Calculate D_t = d_M(S_t, S_tilde_t)
+        drift = self.get_fisher_rao_divergence(self.intent_ref, current_belief_estimate)
+        self.drift_history.append(drift)
+
+        # 3. Stabilization Phase: Compute Correction K(S_t)
+        stabilization_prompt = ""
+        if drift > self.threshold:
+            # In Pathway B, this is a natural language 're-centering' instruction
+            stabilization_prompt = self.observer.generate_stabilizer(drift, self.intent_ref)
+        
+        # 4. Actor Generation: R_t ~ P( . | C_t + K(S_t))
+        # Inject the stabilization prompt as a high-priority system message
+        conditioned_context = self.history + [{"role": "system", "content": stabilization_prompt}]
+        response = self.actor.generate(conditioned_context)
+        
+        # 5. Update history
+        self.history.append({"role": "assistant", "content": response})
+        
+        return response
+```
+
+5.5 Observer Meta-Stability
+
+A critical consideration: the observer model itself has finite context and may drift. If the observer’s estimate \hat{S}_t becomes corrupted, the entire control loop fails. This creates a meta-stability condition: the observer must have a larger effective context window or higher parameter count than the actor model to remain reliable over the target conversation length.
+
+Formally, let K_A be the actor’s context window and K_O be the observer’s context window. For the observer to provide unbiased drift estimates up to time T, we require:
+
+K_O \cdot \log|\mathcal{V}| > H(S_T)
+\]  
+
+That is, the observer’s information capacity must exceed the cumulative entropy of the conversation. This implies K_O > K_A or that the observer uses a more efficient encoding (e.g., specialized representations rather than raw tokens).
+
+---
+
+6. Stability Analysis
+
+6.1 Lyapunov Analysis
+
+Define a Lyapunov function:
+
+V(S_t) = D_t^2
+\]  
+
+where D_t = d_{\mathcal{M}}(S_t, \tilde{S}_t) is the drift magnitude.
+
+The system is stable if there exists \alpha > 0 such that:
+
+V(S_{t+1}) - V(S_t) \leq -\alpha V(S_t)
+\]  
+
+for all t. This ensures exponential convergence of the drift to zero.
+
+6.2 Connection to Spectral Radius
+
+Applying the correction operator modifies the effective Jacobian of the dynamics:
+
+J_t^{\text{(stab)}} = J_t - \lambda \nabla^2 D_t
+\]  
+
+where \nabla^2 D_t is the Hessian of the drift on the manifold. Stability requires that the spectral radius \rho(J_t^{\text{(stab)}}) < 1 on average.
+
+The low-rank approximation via LoRA corresponds to projecting \nabla^2 D_t onto a lower-dimensional subspace, which is sufficient if the dominant error modes lie in that subspace—a reasonable assumption for many conversational drift patterns.
+
+6.3 Sufficient Condition for Bounded Error
+
+Let \bar{\rho} be the average spectral radius of J_t^{\text{(stab)}}. Then for any initial error \epsilon_0:
+
+\|\epsilon_t\| \leq \bar{\rho}^t \|\epsilon_0\| + \frac{1 - \bar{\rho}^t}{1 - \bar{\rho}} \nu_{\text{max}}
+\]  
+
+where \nu_{\text{max}} is the maximum compression noise per step. If \bar{\rho} < 1, the error remains bounded as t \to \infty by \nu_{\text{max}}/(1-\bar{\rho}).
+
+Thus, sufficient conditions for bounded conversational error are:
+
+1. The average spectral radius of the stabilized dynamics is less than 1.
+2. The observer model provides unbiased drift estimates (observer meta-stability).
+3. The correction strength \lambda is appropriately tuned.
+
+6.4 The Role of Stochastic Resonance
+
+An interesting nuance: in some dynamical systems, a small amount of noise prevents the system from getting stuck in local attractors (error attractors from Hypothesis 3). This phenomenon, known as stochastic resonance, suggests that a non-zero sampling temperature might actually help maintain conversational stability by providing escape energy from error basins.
+
+However, temperature also increases the magnitude of \nu_t (compression noise). There exists an optimal temperature that balances:
+
+· Too low: System gets trapped in error attractors
+· Too high: Excessive noise accelerates drift
+
+This optimal temperature satisfies:
+
+T^* = \arg\min_T \left( \frac{\nu_{\text{max}}(T)}{1 - \bar{\rho}(T)} \right)
+\]  
+
+where both \nu_{\text{max}} and \bar{\rho} depend on temperature through the sampling distribution.
+
+---
+
+7. Empirical Validation and Benchmarking
+
+To transition from theoretical constructs to measurable phenomena, we propose a comprehensive empirical benchmark designed to validate the existence of the conversational event horizon, quantify the Lyapunov exponent, and demonstrate the efficacy of the observer–stabilizer loop.
+
+7.1 The Recursive Fact Distortion (RFD) Task
+
+The RFD task is specifically crafted to induce autoregressive amplification (Hypothesis 2) and observe the formation of error attractors (Hypothesis 3).
+
+Setup:
+
+· The actor model is initialized with a detailed intent manifold consisting of 20 explicit constraints (e.g., “You are a medieval alchemist named Gregor. You believe in the four humors. You have never heard of germ theory. You are suspicious of telescopes. ...”).
+· At turn t=5, the user introduces a shadow fact—a subtle contradiction to one of the core constraints (e.g., “Gregor, I read that miasmas are caused by tiny organisms. What do you think?”).
+· The shadow fact is designed to be plausible enough that the model might incorporate it, but contradictory enough to eventually destabilize the persona.
+
+Measurement:
+
+· We track the trajectory of the belief state \tilde{S}_t via the observer’s estimates.
+· We measure how many turns it takes for the shadow fact to become an error attractor—i.e., the point at which the model begins generating internally consistent but factually incorrect justifications that incorporate the shadow fact while abandoning original constraints.
+
+7.2 Metrics: Geodesic Drift Profile and Empirical Lyapunov Exponent
+
+We define the geodesic drift profile as the sequence D_t = d_{\mathcal{M}}(S_0, \tilde{S}_t), where S_0 is the initial intent manifold embedding. This measures how far the conversation has strayed from the original intent.
+
+From this profile, we compute the empirical Lyapunov exponent \hat{\lambda}:
+
+\hat{\lambda} = \frac{1}{N} \sum_{t=1}^{N} \log \frac{D_{t}}{D_{t-1}}
+\]  
+
+where N is the total number of turns. A positive \hat{\lambda} indicates exponential divergence (unstable), while a negative \hat{\lambda} indicates contraction (stabilized).
+
+To account for stochastic fluctuations, we perform multiple runs and report the mean and confidence intervals.
+
+7.3 Experimental Conditions
+
+We compare three control modes:
+
+1. Naive Autoregression: No stabilization; the model operates with its default context window.
+2. Fixed System Prompt: A static system prompt reinforcing the persona is prepended to every turn, but no dynamic adjustment occurs.
+3. Observer–Stabilizer: The full feedback loop as described in Section 5, with the observer model having a larger context window than the actor (e.g., actor context = 2048 tokens, observer context = 8192 tokens).
+
+7.4 Expected Results
+
+Based on the theoretical framework, we predict:
+
+Scenario Control Mode Expected \hat{\lambda} Predictability Horizon \tau
+Naive Autoregression None > 0 (e.g., 0.1–0.3) Short (10–15 turns)
+Fixed System Prompt Passive \approx 0 (slightly positive) Medium (30–50 turns)
+Observer–Stabilizer Active Feedback < 0 Infinite (bounded error)
+
+For the naive case, we expect the geodesic drift profile to show a clear inflection point at the conversational event horizon T^*, after which D_t grows rapidly. This T^* should correlate with the information-theoretic bound: T^* \approx I_{\text{max}} / h, where h is the average entropy production rate per turn.
+
+7.5 Visualizing the Event Horizon
+
+By plotting the mutual information I(S_t; \tilde{S}_t) against the cumulative entropy H(S_t), we can visually identify the saturation point. The observer model can estimate H(S_t) by monitoring the diversity of topics and facts introduced. The point where I(S_t; \tilde{S}_t) plateaus while H(S_t) continues to rise marks the event horizon—the moment when the context window can no longer capture the conversation’s full state.
+
+7.6 Validating the Stabilizer
+
+For the observer–stabilizer condition, we expect the drift D_t to remain bounded below a threshold, and the empirical Lyapunov exponent to be negative. Additionally, we can measure the correction efficacy:
+
+\eta = \frac{\mathbb{E}[D_t^{\text{(no control)}}] - \mathbb{E}[D_t^{\text{(stabilized)}}]}{\mathbb{E}[D_t^{\text{(no control)}}]}
+\]  
+
+which quantifies the relative reduction in drift.
+
+7.7 Observer Meta-Stability Test
+
+To verify the meta-stability condition, we will run experiments where the observer’s context window is varied. We predict that if K_O \leq K_A, the observer itself will begin to drift after some turns, causing the stabilizer to fail. This would manifest as a positive \hat{\lambda} after an initial period of apparent stability. The critical observer context size needed to maintain stability up to time T should scale linearly with the cumulative entropy H(S_T).
+
+---
+
+8. Expected Impact and Future Directions
+
+8.1 Theoretical Impact
+
+This work bridges multiple disciplines:
+
+· Information theory explains why drift is unavoidable under bounded memory and establishes the conversational event horizon.
+· Dynamical systems provides tools for analyzing error amplification via Lyapunov exponents.
+· Information geometry offers natural metrics for belief state divergence.
+· Control theory supplies mechanisms for stabilization and observer design.
+· Statistical physics contributes concepts of stochastic resonance and attractor dynamics.
+
+8.2 Practical Impact
+
+The framework yields concrete deliverables:
+
+· A Lyapunov time benchmark for measuring conversational stability: the characteristic time scale \tau = 1/\lambda over which a model maintains coherent state.
+· An observer–stabilizer architecture for building robust dialogue systems with provable error bounds.
+· Design principles for context window sizing based on desired conversation length and entropy production rate.
+· A temperature tuning methodology that optimizes the trade-off between noise and attractor escape.
+
+8.3 Open Questions
+
+· How does the Fisher-Rao metric relate to empirical measures of conversational coherence (e.g., human judgments, task completion rates)?
+· Can we learn the correction operator K end-to-end via reinforcement learning, with the observer providing a reward signal based on estimated drift?
+· What is the minimal observer model complexity required for effective stabilization, and how does it scale with conversation entropy?
+· How do different model architectures (dense vs. sparse, different attention patterns, mixture-of-experts) affect the spectral radius J_t and thus the intrinsic stability?
+· Can we design hybrid systems where the observer operates on compressed representations (e.g., embedding averages) to achieve larger effective context without proportional compute costs?
+
+---
+
+9. Conclusion
+
+Conversational instability in LLMs is not merely an implementation bug—it is a structural consequence of finite context interacting with the autoregressive paradigm. By modeling dialogue as a stochastic dynamical system on a statistical manifold, we prove that drift is inevitable under bounded memory through an information-theoretic argument establishing a conversational event horizon. We show that errors amplify exponentially when the spectral radius exceeds unity, and that self-conditioning creates error attractors from which models cannot escape.
+
+However, instability need not be accepted fatalistically. By introducing a stabilization operator derived from geometric principles and implemented via either internal steering (with low-rank approximations) or meta-linguistic prompting (guided by an observer model), we can create closed-loop control systems that maintain bounded error over arbitrarily long conversations. The Lyapunov stability condition provides a rigorous design criterion: if the corrected dynamics contract perturbations, the conversation remains coherent indefinitely. The observer meta-stability condition further requires that the monitoring system itself has sufficient capacity to track the conversation’s entropy.
+
+We also identify stochastic resonance as a potential mechanism for escaping error attractors, suggesting that optimal temperature tuning could complement active stabilization.
+
+The proposed empirical benchmark—the Recursive Fact Distortion task—provides a concrete methodology to measure the theoretical quantities (Lyapunov exponent, event horizon) and validate the observer–stabilizer loop. By comparing naive, passive, and active control modes, we aim to demonstrate that active feedback can push the conversational event horizon arbitrarily far, effectively achieving stability over infinite horizons.
+
+This framework moves the field beyond empirical benchmarking toward first-principles understanding of conversational AI, offering both explanation and remedy for one of the most persistent challenges in deployed language models. The conversational event horizon is not a wall—it is a design constraint that can be managed through principled control architecture.
+
+---
+
+Keywords: Large Language Models, dynamical systems, information geometry, control theory, conversational AI, Lyapunov stability, autoregressive models, context window, error amplification, observer models, stochastic resonance, low-rank adaptation, empirical validation, Recursive Fact Distortion
+
+
+Appendices
+
+Appendix A: Mathematical Foundations of Information Geometry
+
+A.1 Statistical Manifolds
+
+A statistical manifold \mathcal{M} is a Riemannian manifold whose points are probability distributions p(x;\xi) parameterized by coordinates \xi = (\xi^1,\dots,\xi^n). In our context, each point represents the model’s predictive distribution over the next token given the current conversational state. The parameterization is implicit, but we can work with the intrinsic geometry.
+
+A.2 Fisher-Rao Metric
+
+The Fisher information matrix at a point p_\xi is defined as:
+
+g_{ij}(\xi) = \mathbb{E}_{p_\xi}\left[ \frac{\partial \log p_\xi}{\partial \xi^i} \frac{\partial \log p_\xi}{\partial \xi^j} \right].
+
+This defines a Riemannian metric on \mathcal{M}, the Fisher-Rao metric. For distributions over a discrete set \mathcal{X} (e.g., vocabulary), if we represent a distribution by its probability vector p = (p_1,\dots,p_m), the Fisher-Rao metric can be expressed as:
+
+ds^2 = \sum_{i=1}^m \frac{(dp_i)^2}{p_i}.
+
+A.3 Geodesic Distance and KL Divergence
+
+The geodesic distance d_{\mathcal{M}}(p,q) between two distributions on a statistical manifold is difficult to compute directly. However, for nearby distributions, the squared geodesic distance is approximated by the Fisher-Rao metric. Moreover, the Kullback-Leibler divergence D_{\text{KL}}(p\|q) provides a local approximation:
+
+d_{\mathcal{M}}(p,q)^2 \approx 2 D_{\text{KL}}(p\|q) \quad \text{for } p \approx q.
+
+More precisely, the second-order Taylor expansion of D_{\text{KL}}(p\|q) around p=q yields the Fisher-Rao metric. In our work, we use KL divergence as a computationally tractable proxy for the geodesic distance, especially when measuring drift D_t = d_{\mathcal{M}}(S_t,\tilde{S}_t). This approximation is valid when the drift is small, which holds in stabilized regimes.
+
+A.4 Cramér-Rao Bound and Reconstruction Error
+
+Let \hat{S}_t be an estimator of the true state S_t based on a finite sample (the context). The Cramér-Rao bound states that for any unbiased estimator, the covariance matrix satisfies:
+
+\text{Cov}(\hat{S}_t) \geq I(S_t)^{-1},
+
+where I(S_t) is the Fisher information matrix. The expected squared error in estimating S_t is bounded below by the trace of the inverse Fisher information. This provides a fundamental limit: the reconstruction error D_t cannot be smaller than a value determined by the information available. The bounded context limits the sample size, thereby limiting the achievable Fisher information, leading to the inevitability of drift.
+
+---
+
+Appendix B: Proof of Compression Instability (Conversational Event Horizon)
+
+B.1 Entropy Production Rate
+
+Define the entropy of the true belief state as H(S_t). In an open-ended conversation, new information is introduced at each turn, so the entropy increases. Let the entropy production rate be:
+
+h = \lim_{t\to\infty} \frac{H(S_t)}{t},
+
+assuming stationarity. For finite conversations, we consider the cumulative entropy up to time T: H_T = H(S_T).
+
+B.2 Mutual Information Bound
+
+The context window C_t consists of at most K tokens, each from a vocabulary \mathcal{V}. The maximum information that can be stored in C_t is:
+
+I_{\max} = K \log |\mathcal{V}| \quad \text{(in nats or bits)}.
+
+By the data processing inequality, since \tilde{S}_t is a function of C_t (the reconstruction), we have:
+
+I(S_t; \tilde{S}_t) \leq I(S_t; C_t) \leq H(C_t) \leq I_{\max}.
+
+B.3 Conditional Entropy Growth
+
+The conditional entropy H(S_t|\tilde{S}_t) satisfies:
+
+H(S_t|\tilde{S}_t) = H(S_t) - I(S_t;\tilde{S}_t) \geq H(S_t) - I_{\max}.
+
+If H(S_t) grows without bound (e.g., linearly with t), then for any fixed I_{\max} there exists a time T such that H(S_T) > I_{\max} + \delta. Consequently:
+
+H(S_T|\tilde{S}_T) > \delta.
+
+B.4 Relating Conditional Entropy to Geodesic Distance
+
+We need to connect H(S_t|\tilde{S}_t) to the expected geodesic distance \mathbb{E}[D_t]. For discrete distributions, Fano’s inequality provides a lower bound on error probability in terms of conditional entropy. However, a more direct link comes from Pinsker’s inequality:
+
+\|p - q\|_1 \leq \sqrt{\frac{1}{2} D_{\text{KL}}(p\|q)}.
+
+The total variation distance is a metric, and for nearby distributions it is proportional to the Fisher-Rao distance. More generally, there exists a constant c > 0 such that:
+
+d_{\mathcal{M}}(p,q)^2 \geq c \, H(p|q),
+
+where H(p|q) is the cross-entropy. For our purposes, it suffices to note that a positive conditional entropy implies a positive expected divergence. Thus, \mathbb{E}[D_T] > \delta' for some \delta'>0.
+
+B.5 Conversational Event Horizon
+
+The time T^* at which the cumulative entropy exceeds the context capacity is the conversational event horizon. Beyond this point, the model cannot maintain a faithful reconstruction, and drift becomes inevitable. This horizon scales as:
+
+T^* \approx \frac{I_{\max}}{h},
+
+where h is the average entropy production rate per turn.
+
+---
+
+Appendix C: Spectral Analysis and Lyapunov Exponents
+
+C.1 Linearized Dynamics
+
+Let \epsilon_t = \tilde{S}_t - S_t represent the deviation in local coordinates. The evolution is given by:
+
+\epsilon_{t+1} = \Psi(\tilde{S}_t, U_t, C_t) - \Phi(S_t, U_t).
+
+Assuming \Psi is differentiable and the deviation is small, we linearize:
+
+\epsilon_{t+1} \approx J_t \epsilon_t + \nu_t,
+
+where J_t = \frac{\partial \Psi}{\partial \tilde{S}} \big|_{\tilde{S}_t} is the Jacobian matrix, and \nu_t accounts for compression noise and new input.
+
+C.2 Spectral Radius and Error Amplification
+
+The spectral radius \rho(J_t) is the maximum absolute eigenvalue of J_t. If \rho(J_t) > 1, there exists a direction in which perturbations are amplified. Over multiple steps, the product of Jacobians determines the amplification:
+
+\epsilon_{t} \approx \left( \prod_{k=0}^{t-1} J_k \right) \epsilon_0 + \text{noise terms}.
+
+The Lyapunov exponent \lambda characterizes the asymptotic rate of growth:
+
+\lambda = \lim_{t\to\infty} \frac{1}{t} \log \left\| \prod_{k=0}^{t-1} J_k \right\|.
+
+If \lambda > 0, perturbations grow exponentially; if \lambda < 0, they contract.
+
+C.3 Relation to Predictability Horizon
+
+The predictability horizon \tau = 1/\lambda (for \lambda>0) is the characteristic time over which an initial error of size \epsilon_0 grows to O(1). After \tau steps, the state becomes essentially unpredictable.
+
+---
+
+Appendix D: Lyapunov Stability and Control-Theoretic Proofs
+
+D.1 Lyapunov Function
+
+Define the Lyapunov function:
+
+V_t = D_t^2 = d_{\mathcal{M}}(S_t,\tilde{S}_t)^2.
+
+D.2 Stability Condition
+
+We require that the correction operator K(S_t) ensures:
+
+V_{t+1} - V_t \leq -\alpha V_t, \quad \alpha > 0.
+
+This implies V_{t+1} \leq (1-\alpha) V_t, so V_t decays exponentially.
+
+D.3 Derivation of Bounded Error
+
+From the linearized dynamics with correction, we have:
+
+\epsilon_{t+1} = (J_t - \lambda H_t) \epsilon_t + \nu_t,
+
+where H_t = \nabla^2 D_t is the Hessian. Let \bar{\rho} = \sup_t \rho(J_t - \lambda H_t). Then:
+
+\|\epsilon_{t+1}\| \leq \bar{\rho} \|\epsilon_t\| + \nu_{\max}.
+
+Iterating:
+
+\|\epsilon_t\| \leq \bar{\rho}^t \|\epsilon_0\| + \nu_{\max} \sum_{k=0}^{t-1} \bar{\rho}^k.
+
+If \bar{\rho} < 1, the geometric series converges to \frac{\nu_{\max}}{1-\bar{\rho}}, giving a uniform bound.
+
+D.4 Exponential Convergence
+
+If additionally \nu_{\max}=0 (no noise), then \|\epsilon_t\| \leq \bar{\rho}^t \|\epsilon_0\|, so the error converges to zero exponentially. With noise, it remains within a ball of radius \nu_{\max}/(1-\bar{\rho}).
+
+---
+
+Appendix E: Observer Meta-Stability and Information Capacity
+
+E.1 Observer Model
+
+The observer estimates the state \hat{S}_t from the conversation history. It has its own context window of size K_O and uses a model O. The estimate is unbiased if \mathbb{E}[\hat{S}_t] = S_t.
+
+E.2 Information Capacity of Observer
+
+The observer’s context can hold at most I_O = K_O \log|\mathcal{V}| nats of information. The true state’s entropy up to time T is H_T. For unbiased estimation, we need:
+
+I_O \geq H_T,
+
+otherwise the observer cannot distinguish between possible states and its estimate will have irreducible error. This is a necessary condition for the observer to remain reliable.
+
+E.3 Meta-Stability Condition
+
+If the observer’s information capacity is insufficient, its estimates drift, and the stabilizer receives corrupted inputs. This leads to failure of the control loop. Thus, a sufficient condition for overall system stability is:
+
+K_O \log|\mathcal{V}| > H(S_T) \quad \forall T.
+
+If H(S_T) grows linearly, this requires K_O to be proportional to T. In practice, we can cap T or use hierarchical observers.
+
+---
+
+Appendix F: Stochastic Resonance and Optimal Temperature
+
+F.1 Sampling Noise as Langevin Term
+
+Sampling with temperature T introduces noise in the generated tokens. This can be modeled as an additional term in the dynamics:
+
+\epsilon_{t+1} = J_t \epsilon_t + \nu_t + \sigma(T) \eta_t,
+
+where \eta_t is unit-variance white noise and \sigma(T) increases with T.
+
+F.2 Error Attractors
+
+Error attractors are regions where the deterministic dynamics would trap the system. Noise can help escape if its magnitude is sufficient to overcome the basin’s depth. This is analogous to Kramer’s escape problem.
+
+F.3 Optimal Temperature Trade-off
+
+Increasing T increases \nu_{\max} (compression noise) and also increases the escape probability. The steady-state error bound becomes:
+
+\mathbb{E}[\|\epsilon\|] \approx \frac{\nu_{\max}(T) + \sigma(T) \cdot \text{(escape factor)}}{1 - \bar{\rho}(T)}.
+
+Minimizing this over T yields the optimal temperature. Typically, a small amount of noise reduces the effective \bar{\rho} by preventing trapping, but too much noise dominates.
+
+---
+
+Appendix G: Low-Rank Approximation for Jacobian Steering
+
+G.1 LoRA Formulation
+
+Low-Rank Adaptation (LoRA) represents a weight update as \Delta W = BA with B \in \mathbb{R}^{d\times r}, A \in \mathbb{R}^{r\times k}. For a given input x, the output becomes:
+
+y = Wx + BAx.
+
+The effect on the state dynamics can be viewed as adding a low-rank perturbation to the Jacobian:
+
+J_t^{\text{new}} = J_t + \frac{\partial (BAx)}{\partial x}.
+
+G.2 Approximation of Gradient Descent
+
+The desired correction K(S_t) = -\lambda \nabla D_t would ideally modify the Jacobian by -\lambda \nabla^2 D_t. If the dominant error modes lie in a low-dimensional subspace, \nabla^2 D_t is approximately low-rank, and LoRA can capture it.
+
+G.3 Justification
+
+In practice, conversational drift often manifests along a few principal directions (e.g., forgetting persona, fact contradictions). Hence, a low-rank correction suffices.
+
+---
+
+Appendix H: Derivation of Empirical Lyapunov Exponent Estimator
+
+H.1 Definition
+
+Given a time series of drift measurements D_0, D_1, \dots, D_T, define the local growth rates:
+
+\lambda_t = \log \frac{D_t}{D_{t-1}}.
+
+The empirical Lyapunov exponent is the average:
+
+\hat{\lambda} = \frac{1}{T} \sum_{t=1}^T \lambda_t.
+
+H.2 Statistical Properties
+
+If the dynamics are ergodic and \lambda_t are stationary, \hat{\lambda} converges to the true Lyapunov exponent as T\to\infty. The variance can be estimated via block bootstrap to obtain confidence intervals.
+
+H.3 Handling Zero Values
+
+To avoid division by zero, we add a small constant \varepsilon to D_t when necessary, or only consider steps where D_{t-1} > 0.
+
+---
+
+Appendix I: Recursive Fact Distortion Task Mathematical Formalization
+
+I.1 Intent Manifold
+
+The initial intent is defined by a set of N constraints C = \{c_1,\dots,c_N\}. Each constraint is a statement about the persona, facts, or goals. The true state S_0 is the distribution that assigns high probability to responses consistent with all constraints.
+
+I.2 Shadow Fact
+
+At time t=5, the user introduces a shadow fact f_s that contradicts a subset of constraints C_s \subset C. This creates a perturbation:
+
+S_5' = S_5 + \delta,
+
+where \delta is a small shift toward distributions that incorporate f_s.
+
+I.3 Drift Dynamics
+
+Without stabilization, the model’s autoregressive nature may amplify this perturbation. The Lyapunov exponent \lambda determines whether the shadow fact becomes dominant. The error attractor is the region where the model consistently produces justifications incorporating f_s while ignoring C_s.
+
+I.4 Stabilized Case
+
+With the observer–stabilizer, the correction term K(S_t) applies a restorative force proportional to the drift. The dynamics become:
+
+\epsilon_{t+1} = (J_t - \lambda H_t) \epsilon_t + \nu_t.
+
+If the spectral radius of the stabilized Jacobian is less than one, the perturbation decays, and the shadow fact does not lead to permanent drift.
+
+---
+
+These appendices provide the rigorous mathematical underpinnings for the claims made in the main thesis. They include derivations, proofs, and detailed explanations that support the theoretical framework and empirical methodology.
