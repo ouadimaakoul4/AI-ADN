@@ -1,5 +1,7 @@
 THE HUMAN MANIFESTO: AGAINST THE VOID
 
+Author: ouadi Maakoul 
+
 Preamble: The Choice
 
 We stand between two forces:
