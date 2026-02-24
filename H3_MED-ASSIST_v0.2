@@ -1,0 +1,1107 @@
+H3 MED-ASSIST v0.2
+
+Candidate: Ouadi Maakoul
+Date: February 2026
+
+---
+
+Abstract
+
+Current clinical robots treat safety as a high-level supervisory layer that activates only after risk appears. This dissertation establishes a new paradigm: safety as embodied geometry. We introduce the Somatic Control Barrier Framework (SCBF) , in which safety is encoded directly as a Riemannian structure on the robot's body manifold. Unsafe states are predicted via geodesic distance to critical sets, and reflexes emerge from a vulnerability‑weighted metric tensor that automatically modulates compliance near sensitive human anatomy. Local neuromorphic skin patches provide sub‑5 ms "nociceptive" reflexes, while lightweight sheaf‑inspired sensor consistency checks prevent overconfident actions in noisy clinical environments. Safety is enforced at the reflex layer—before any AI cognition—yielding mathematically provable forward invariance independent of high‑level planners. The framework is developed theoretically, with all definitions, theorems, and proofs. The robot architecture and design are specified in detail, including hardware requirements, software modules, and computational considerations. A formal proof of forward invariance is provided using Nagumo-type conditions and the Comparison Lemma. The gradient of the sensor field with respect to the somatic state is derived, showing how spiking activity directly modulates the safety margin. A hardware interface based on an FPGA somatic pre-processor is designed to achieve sub‑2 ms total reflex latency. Clinical context‑dependent nociceptive thresholds are defined to adapt safety behaviour to different patient populations. This work bridges differential geometry, control theory, embodied sensing, and medical robotics, producing the first certifiable, geometry‑grounded safety architecture for hospital assistants.
+
+
+Chapter 1: Introduction
+
+1.1 Motivation
+
+The integration of robotic systems into clinical environments promises to alleviate staff workload, improve patient monitoring, and enable new forms of assistive care. However, the deployment of autonomous robots in direct contact with humans, particularly in hospitals, raises unprecedented safety challenges. Traditional industrial safety relies on physical separation, speed limits, and emergency stops. In contrast, a clinical assistant must operate in close proximity to patients, nurses, and sensitive equipment, requiring a fundamentally different safety paradigm.
+
+The consequences of failure in clinical robotics are severe: physical injury to vulnerable patients, psychological trauma, erosion of trust in automation, and regulatory setbacks that could delay the adoption of life-saving technologies for years. Current safety approaches, inherited from industrial robotics, are fundamentally reactive—they wait for a threshold to be exceeded before intervening. This is insufficient for environments where human bodies are unpredictable, fragile, and deserving of proactive protection.
+
+1.2 Problem Statement
+
+Hospital robotics is limited by three persistent barriers:
+
+1. Reactive threshold‑based safety — force limits and e‑stops trigger only after contact or risk has already materialised. By the time a force limit is reached, tissue damage may have already occurred, especially in vulnerable populations such as neonates or post‑surgical patients.
+2. Sensor inconsistency and false confidence — multi‑modal fusion lacks lightweight, real‑time consistency guarantees, leading to overconfident motions when sensors disagree. A camera may fail to detect an obstacle while tactile sensors register contact, yet naive fusion may trust the camera and continue moving.
+3. AI‑centric architectures that are hard to certify — opaque cognitive planners cannot be isolated for regulatory scrutiny; their failures may compromise safety. Regulatory bodies such as the FDA and European Medicines Agency require evidence of safety that is difficult to provide for deep learning‑based systems with millions of parameters.
+
+No existing framework simultaneously:
+
+· Predicts risk continuously via geometry,
+· Adjusts safety margins according to human vulnerability in real time,
+· Enforces reflexes independently of (and prior to) AI cognition,
+· Provides sub‑5 ms embodied responses.
+
+This dissertation closes the gap by proposing a comprehensive theoretical framework that embeds safety directly into the robot's geometric structure and sensory-motor loops.
+
+1.3 Research Hypothesis
+
+If safety constraints are embedded as Riemannian geometry on the robot's configuration manifold and grounded in local somatic sensing, then:
+
+· Unsafe behaviours become predictable as geodesic proximity to critical sets.
+· Reflexive control laws guarantee forward invariance of safe sets.
+· Human‑aware compliance emerges naturally from metric weighting.
+· Safety can be formally certified independently of high‑level AI cognition.
+
+1.4 Core Contributions
+
+1. Geodesic Safety Metric – a scalar field on the configuration manifold measuring distance to unsafe sets, used for predictive velocity scaling.
+2. Somatic Control Barrier Functions (SCBF) – an extension of classical CBFs that incorporate somatic signals (neuromorphic skin) and vulnerability information, with proofs of forward invariance.
+3. Vulnerability‑Weighted Riemannian Metric Tensor – a configuration‑dependent metric that modulates the robot's effective inertia based on proximity to human body parts, enabling context‑sensitive compliance.
+4. Lightweight Sheaf‑Inspired Sensor Consistency – a practical consistency check using pairwise overlap and a "consistency radius" to detect sensor conflicts and increase conservatism.
+5. Neuromorphic Skin Reflexes – local spiking neural circuits on flexible patches that provide sub‑5 ms withdrawal responses, integrated directly into the SCBF condition. The gradient of the sensor field with respect to the somatic state is derived, showing how spiking activity directly tightens the safety constraint.
+6. Reflex‑Prioritized Architecture – a software/hardware stack that guarantees safety enforcement before any high‑level cognitive processing, including an FPGA-based somatic pre-processor for ultra-low latency.
+7. Clinical Context Adaptation – a set of nociceptive thresholds parameterised by patient population (neonatal, geriatric, post‑op, etc.), enabling context‑dependent safety behaviour.
+
+1.5 Thesis Outline
+
+Chapter 2 provides a comprehensive review of related work in control barrier functions, geometric control, neuromorphic sensing, and medical robotics safety standards. Chapter 3 presents the necessary mathematical background in Riemannian geometry, control theory, sheaf theory, and spiking neural networks. Chapter 4 develops the Somatic Geometric Safety Framework in full detail, including all definitions, theorems, and proofs; it also derives the gradient of the sensor field and its effect on the SCBF. Chapter 5 describes the system architecture and design for a clinical robot implementing the framework, specifying hardware requirements, software modules, computational considerations, and the FPGA-based somatic pre-processor with latency analysis. Chapter 6 presents a detailed clinical use case (IV Bag Replacement), refines the neuromorphic skin architecture with adaptive LIF neurons and hierarchical reflex circuitry, and defines clinical context‑dependent nociceptive thresholds. Chapter 7 discusses theoretical implications, limitations, and avenues for future research. Chapter 8 concludes the dissertation.
+
+---
+
+Chapter 2: Literature Review
+
+2.1 Safety in Medical Robotics
+
+Medical robotics has evolved from teleoperated systems (e.g., da Vinci) to increasingly autonomous assistants. Safety standards have struggled to keep pace. ISO 13482 (2014) covers personal care robots but does not specifically address autonomous decision-making. IEC 60601 series governs electrical medical equipment, while ISO 10218 and ISO/TS 15066 define collaborative robot safety. However, these standards are largely based on monitored stops, speed separation, and power/force limiting—all reactive measures.
+
+The FDA's guidance on "Software as a Medical Device" (SaMD) and the emerging EU AI Act classify autonomous medical robots as high‑risk systems requiring rigorous pre‑market assessment. Traditional verification methods (testing, simulation) are insufficient for systems that learn and adapt; formal methods are increasingly seen as necessary.
+
+Recent efforts propose control barrier functions (CBFs) as a systematic method for enforcing safety constraints (Ames et al., 2014, 2017). CBFs provide mathematical guarantees of forward invariance, making them attractive for certification. However, they have not been integrated with somatic sensing or vulnerability-weighted metrics in clinical settings.
+
+2.2 Control Barrier Functions and Geometric Extensions
+
+Ames et al. (2014, 2017) introduced CBFs for safety-critical control. The basic idea is to define a safe set as a superlevel set of a function h(x) and ensure \dot h \ge -\alpha(h) to maintain forward invariance. CBFs have been applied to robotic manipulators (Hsu et al., 2015), autonomous vehicles (Ames et al., 2016), and human-robot interaction (Liu & Tomizuka, 2017). The quadratic program (QP) formulation allows minimally invasive modifications of a desired control input to satisfy safety constraints.
+
+Geometric CBFs extend the concept to manifolds. Wu & Sreenath (2016) considered time-varying CBFs on manifolds for constrained systems, proving forward invariance under mild conditions. More recently, geometric CBFs have been used for bipedal walking (Nguyen & Sreenath, 2021) and quadrotor control (Xu & Sreenath, 2022). A 2025 arXiv preprint (Liu et al.) introduced geometric control barrier functions for systems on Lie groups, providing a unified treatment. However, none of these incorporate sensor-based somatic signals or vulnerability-weighted metrics that adapt to human anatomy.
+
+2.3 Neuromorphic Sensing and Embodied Reflexes
+
+Neuromorphic sensors mimic biological sensory systems by producing asynchronous events. Event-based cameras (Lichtsteiner et al., 2008) offer microsecond temporal resolution and high dynamic range. Tactile sensors with spiking output have been developed (Bartolozzi et al., 2017), and recent advances in electronic skin (e-skin) have led to flexible, large-area tactile arrays with spiking output (Gao et al., 2025, PNAS).
+
+These sensors can implement local reflex loops analogous to spinal reflexes in animals, with latencies under 5 ms. Jiang et al. (2024) demonstrated collision avoidance using spiking tactile sensors, but the reflexes were simple threshold triggers rather than integrated with a formal safety framework. The combination of neuromorphic sensing with CBFs remains unexplored.
+
+2.4 Sensor Fusion and Consistency
+
+Multi-sensor fusion is essential for robust perception in clinical environments. Traditional approaches use Kalman filters or factor graphs. However, they assume consistent measurements; inconsistency can lead to catastrophic failures. For example, if a camera fails to detect an obstacle due to lighting conditions while tactile sensors register contact, a naive fusion might trust the camera and continue moving.
+
+Sheaf theory provides a mathematical language for modeling consistency across overlapping observations (Robinson, 2017). A sheaf assigns to each sensor a set of possible readings, and consistency across overlaps is captured by cocycle conditions. Practical consistency checks inspired by sheaf theory have been proposed in robotics (Holz et al., 2015) but not yet combined with safety control. Our lightweight sheaf-inspired consistency radius is a novel adaptation suitable for real-time use.
+
+2.5 Vulnerability-Weighted Metrics in Human-Robot Interaction
+
+Human-aware motion planning often uses potential fields or cost functions that depend on distance to humans (Sisbot et al., 2007). However, these are typically scalar costs and do not modify the robot's dynamic behaviour. Lasota & Shah (2017) modulated robot speed based on distance, but not with anisotropic, geometry-aware inertia shaping.
+
+The concept of "safety fields" that affect robot impedance has been explored in physical human-robot interaction (pHRI). However, these fields are usually defined in Cartesian space and do not respect the Riemannian geometry of the configuration manifold. Our vulnerability-weighted Riemannian metric directly embeds human vulnerability into the robot's kinetic energy metric, a new concept that unifies safety and dynamics.
+
+2.6 Certification Pathways for Autonomous Medical Robots
+
+Regulatory bodies require evidence of safety for medical devices. For robots with autonomous functions, the EU Medical Device Regulation (MDR) and the proposed AI Act impose stringent requirements. Formal methods, such as barrier certificates (Prajna et al., 2007) and CBFs, are gaining traction as a means to provide mathematical guarantees.
+
+The ISO 13482 standard for personal care robots includes requirements for safety-related control systems. However, it does not specify how to achieve safety in the presence of autonomous decision-making. Our reflex-prioritized architecture aligns with the "independent safety layer" concept advocated in IEC 61508 (functional safety), isolating a provably safe layer that can be certified independently of the AI.
+
+2.7 Gaps and Contributions
+
+The literature lacks a unified framework that:
+
+· Embeds safety directly into the robot's Riemannian geometry,
+· Incorporates somatic, neuromorphic reflexes,
+· Provides provable forward invariance independent of high-level cognition,
+· Offers a practical consistency check for sensors,
+· Is designed from the ground up for certification,
+· Adapts safety behaviour to different clinical contexts.
+
+This dissertation fills these gaps.
+
+---
+
+Chapter 3: Mathematical Background
+
+This chapter provides the necessary mathematical tools used throughout the dissertation. We assume familiarity with basic differential geometry and control theory but provide concise definitions to fix notation.
+
+3.1 Riemannian Geometry on Configuration Manifolds
+
+Let \mathcal{Q} be an n-dimensional smooth manifold representing the configuration space of a robotic system. For a rigid manipulator with n joints, \mathcal{Q} is typically an open subset of \mathbb{R}^n (joint angles) but can also include the base pose for mobile systems. A Riemannian metric on \mathcal{Q} is a smoothly varying inner product g_q: T_q\mathcal{Q} \times T_q\mathcal{Q} \to \mathbb{R} on each tangent space. In coordinates, g is represented by a symmetric positive‑definite matrix G(q).
+
+For a mechanical system, the kinetic energy defines a natural Riemannian metric: g(q) = M(q), the mass/inertia matrix. The equations of motion can be written in terms of the metric and its associated Christoffel symbols:
+
+M(q)\ddot q + C(q,\dot q)\dot q + G(q) = \tau,
+
+where C(q,\dot q) is derived from the metric and its derivatives.
+
+Geodesics are curves that locally minimize arc length and satisfy the Euler-Lagrange equations:
+
+\ddot q^i + \Gamma^i_{jk} \dot q^j \dot q^k = 0,
+
+where \Gamma^i_{jk} are the Christoffel symbols. Geodesics correspond to inertia‑dominated free motion.
+
+The geodesic distance between two points q_1, q_2 \in \mathcal{Q} is
+
+d_{\mathcal{Q}}(q_1, q_2) = \inf_{\gamma(0)=q_1,\,\gamma(1)=q_2} \int_0^1 \sqrt{g_{\gamma(t)}(\dot\gamma(t),\dot\gamma(t))}\,dt.
+
+3.2 Control Barrier Functions (CBF)
+
+Consider a control affine system
+
+\dot x = f(x) + g(x) u, \quad x \in \mathcal{X} \subset \mathbb{R}^n, \; u \in U \subset \mathbb{R}^m,
+
+with f, g locally Lipschitz. Let \mathcal{C} \subset \mathcal{X} be a safe set defined as the superlevel set of a continuously differentiable function h: \mathcal{X} \to \mathbb{R}:
+
+\mathcal{C} = \{ x \in \mathcal{X} \mid h(x) \geq 0 \}.
+
+We assume \partial \mathcal{C} = h^{-1}(0) and \operatorname{Int}(\mathcal{C}) \neq \emptyset.
+
+A function h is a control barrier function (CBF) if there exists an extended class \mathcal{K}_\infty function \alpha such that for all x \in \mathcal{C},
+
+\sup_{u \in U} \left[ L_f h(x) + L_g h(x) u + \alpha(h(x)) \right] \geq 0.
+
+If such a u is applied (e.g., via a quadratic program), then \mathcal{C} is forward invariant: x(0) \in \mathcal{C} \implies x(t) \in \mathcal{C} for all t \geq 0. The proof relies on the comparison lemma and the fact that \dot h \geq -\alpha(h).
+
+3.3 Sheaf Theory Basics
+
+A (pre)sheaf assigns to each open set U of a topological space a set of sections \mathcal{F}(U), with restriction maps satisfying compatibility conditions. For our purposes, we consider the robot's body as a simplicial complex (e.g., a mesh) and each sensor as providing a local section. Consistency across overlapping patches can be checked via cocycle conditions, but full sheaf cohomology is too heavy for real‑time. We instead use a consistency radius: for any two overlapping sensors, we require their readings to differ by less than a threshold; otherwise, a conflict is flagged.
+
+Formally, let \{U_i\}_{i\in I} be an open cover of the robot's body surface. For each i, we have a measurement space M_i (e.g., \mathbb{R} for force, \mathbb{R}^3 for position). A local section is a function m_i: U_i \to M_i. For any i,j with U_i \cap U_j \neq \emptyset, we require
+
+\|m_i|_{U_i \cap U_j} - m_j|_{U_i \cap U_j}\| \leq \rho,
+
+where \rho is the consistency radius. This is a 0-cocycle condition with tolerance.
+
+3.4 Neuromorphic Computing and Spiking Neural Networks
+
+Neuromorphic sensors (e.g., event‑based cameras, spiking tactile patches) produce asynchronous spikes in response to stimuli. Spiking neural networks (SNNs) process these events with low latency and energy efficiency. A simple leaky integrate‑and‑fire (LIF) neuron model suffices for local reflexes: the membrane voltage v(t) evolves as
+
+\tau_m \frac{dv}{dt} = -v + I(t),
+
+and fires a spike when v exceeds a threshold \theta. After firing, the voltage resets to v_{\text{reset}}.
+
+For arrays of taxels, we use an Address Event Representation (AER) protocol: each spike is transmitted as a packet containing the address of the firing neuron. This allows asynchronous, event-driven communication with minimal bandwidth.
+
+3.5 Nagumo-Type Invariance Conditions
+
+For a closed set \mathcal{C}, forward invariance under the dynamics \dot \xi = F(\xi) is equivalent to the condition that for all \xi \in \partial \mathcal{C}, the vector field F(\xi) points into the interior of \mathcal{C} or is tangent. This geometric condition, known as Nagumo's theorem, provides an alternative proof technique that we employ in the forward invariance proof.
+
+---
+
+Chapter 4: The Somatic Geometric Safety Framework
+
+This chapter presents the theoretical core of the dissertation. We build a geometric structure on the robot's configuration manifold that encodes safety in a manner that is both predictive and reactive, and we prove its formal properties.
+
+4.1 Geometric Representation of Robot and Environment
+
+Let \mathcal{Q} be the configuration manifold of the robot (e.g., \mathbb{R}^3 \times SO(3) \times \mathbb{R}^n for a mobile manipulator). For each configuration q \in \mathcal{Q}, the robot occupies a set of points in the workspace \mathcal{W} \subset \mathbb{R}^3. We denote by \mathcal{B}(q) \subset \mathcal{W} the robot's body at configuration q.
+
+The unsafe set \mathcal{U} \subset \mathcal{Q} consists of configurations that are unsafe due to self‑collision, environmental collisions, or proximity to humans. In this work we focus on human‑related safety, so \mathcal{U} is defined via a critical distance \delta > 0 to the human body. Let \mathcal{H}(t) \subset \mathcal{W} be the (time‑varying) set of points occupied by the human. Define
+
+\mathcal{U}(t) = \{ q \in \mathcal{Q} \mid \operatorname{dist}(\mathcal{B}(q), \mathcal{H}(t)) \leq \delta \},
+
+where \operatorname{dist}(A,B) = \inf\{\|a-b\| : a\in A, b\in B\}. Because the human moves, \mathcal{U} is time‑dependent; we treat it as a moving obstacle set.
+
+We assume that a perception system provides an estimate \hat{\mathcal{H}}(t) (e.g., from RGB‑D and OpenPose) with bounded error: \|\hat{\mathcal{H}}(t) - \mathcal{H}(t)\|_H \leq \epsilon_{\text{perc}}, where \|\cdot\|_H is the Hausdorff distance.
+
+4.2 Geodesic Safety Metric
+
+Define the safety margin at configuration q as the geodesic distance to the boundary of the unsafe set:
+
+d_{\text{safe}}(q,t) = \inf_{y \in \partial \mathcal{U}(t)} d_{\mathcal{Q}}(q, y).
+
+For computational tractability, we pre‑compute a discrete approximation of geodesic distances on a mesh of \mathcal{Q} (or a relevant submanifold) and update the unsafe set boundary in real time using the perceived human position. Because the robot moves slowly in clinical settings, we can assume \mathcal{U}(t) changes slowly enough to allow real‑time distance queries.
+
+Property 4.1 (Lipschitz continuity). If \mathcal{Q} is a complete Riemannian manifold and \mathcal{U}(t) varies in a Lipschitz manner with respect to Hausdorff distance, then d_{\text{safe}}(\cdot,t) is Lipschitz in q with constant 1. This follows from the triangle inequality for geodesic distance.
+
+We use d_{\text{safe}} to scale the commanded velocity:
+
+v_{\text{cmd}} = \sigma(d_{\text{safe}}) \, v_{\text{des}},
+
+where \sigma: [0,\infty) \to [0,1] is a smooth function with \sigma(s)=0 for s\leq 0 and \sigma(s)=1 for s \geq \delta_{\text{stop}}. This provides predictive slowing before the robot enters the unsafe set.
+
+4.3 Vulnerability‑Weighted Riemannian Metric Tensor
+
+The robot's natural inertia metric M(q) (kinetic energy) determines its acceleration response to applied forces. We modify this metric by adding a vulnerability tensor V(q, \text{human\_context}) that locally increases inertia near sensitive human body parts, making the robot effectively heavier and more compliant.
+
+Let \phi_{\text{vuln}}(q) : \mathcal{Q} \to [0,1] be a scalar vulnerability map derived from perception: it is high when the robot is near vulnerable areas (face, neck, IV sites) and low elsewhere. The vulnerability tensor is defined as
+
+V(q) = \kappa \, \phi_{\text{vuln}}(q) \, \Gamma(q),
+
+where \kappa > 0 is a gain and \Gamma(q) is a positive‑semidefinite matrix that shapes the anisotropy. A simple choice is \Gamma(q) = I, giving isotropic weighting. A more sophisticated choice aligns the extra inertia with the direction toward the vulnerable point, e.g.,
+
+\Gamma(q) = \frac{1}{\|J^T e\|^2} J^T e e^T J,
+
+where J is the Jacobian from joint space to the point of interest and e is the unit direction from robot to human. This increases inertia specifically in the direction of the human, resisting motion toward them. If \|J^T e\| = 0 (singular configuration), we default to isotropic weighting.
+
+The vulnerability‑weighted Riemannian metric is then
+
+g_S(q) = M(q) + V(q).
+
+Clearly g_S(q) remains symmetric positive‑definite because M(q) is positive‑definite and V(q) is positive‑semidefinite.
+
+Lemma 4.2 (Metric properties). g_S defines a Riemannian metric on \mathcal{Q}. The geodesic distance under g_S, denoted d_S, satisfies d_S(q_1,q_2) \geq d_M(q_1,q_2) for all q_1,q_2, i.e., distances are elongated in vulnerable regions.
+
+Proof. Since V(q) is positive‑semidefinite, g_S(q) \succeq M(q) in the sense of quadratic forms. Therefore for any tangent vector v, g_S(v,v) \geq M(v,v). The length of any curve is larger under g_S, so the infimum over curves is also larger. ∎
+
+This elongation means that moving toward a vulnerable region is "more costly" in terms of geodesic distance, which influences both planning and reactive control.
+
+4.4 Somatic Control Barrier Functions (SCBF)
+
+We now extend classical CBFs to incorporate somatic signals (from neuromorphic skin) and the vulnerability‑weighted metric.
+
+4.4.1 Definition
+
+Define the augmented state z = (q, \dot q, s) \in T\mathcal{Q} \times \mathcal{S}, where s represents the state of the neuromorphic skin (e.g., pressure, temperature, spiking activity). The safe set \mathcal{C} \subset T\mathcal{Q} \times \mathcal{S} is given by
+
+\mathcal{C} = \{ (q,\dot q, s) \mid h_{\text{soma}}(q,\dot q,s) \geq 0 \},
+
+with
+
+h_{\text{soma}}(q,\dot q,s) = d_{\text{safe}}(q) - \varepsilon \cdot \phi_{\text{sensor}}(s) \cdot \phi_{\text{vuln}}(q) - \eta \|\dot q\|_{g_S},
+
+where:
+
+· d_{\text{safe}}(q) is the geodesic safety margin from Section 4.2,
+· \phi_{\text{sensor}}(s) is a scalar that increases with tactile/strain signals (defined below),
+· \phi_{\text{vuln}}(q) is the vulnerability map,
+· \|\dot q\|_{g_S} = \sqrt{\dot q^T g_S(q) \dot q} is the speed measured in the vulnerability‑weighted metric,
+· \varepsilon, \eta > 0 are tuning parameters.
+
+The term \varepsilon \phi_{\text{sensor}} \phi_{\text{vuln}} shrinks the safety margin when the skin detects contact in a vulnerable area, effectively making the robot more cautious. The term \eta \|\dot q\|_{g_S} ensures that high speed (especially toward vulnerable regions) is penalised.
+
+4.4.2 Defining the Somatic State s and Sensor Field \phi_{\text{sensor}}
+
+We represent the somatic state s(t) = [s_1(t), s_2(t), \dots, s_n(t)]^T as a vector of synaptic traces corresponding to n taxels or patches. For each spike train emitted by the skin, the local state s_i evolves as a first-order linear system:
+
+\tau_s \frac{d s_i}{dt} = -s_i + \sum_{k} \delta(t - t_{i,k}),
+
+where \delta is the Dirac delta function and t_{i,k} is the k-th spike time from taxel i. This represents the mean firing rate smoothed by a time constant \tau_s.
+
+We define the aggregate sensor field as a weighted sum of these traces:
+
+\phi_{\text{sensor}}(s) = \sum_{i=1}^n w_i s_i,
+
+where w_i > 0 are weights determined by the spatial sensitivity of the patch (e.g., higher weights for patches on vulnerable areas).
+
+4.4.3 Derivation of the Gradient \nabla_s \phi_{\text{sensor}} and Its Effect on SCBF
+
+Since \phi_{\text{sensor}} is linear with respect to the state s, the gradient is simply the weight vector:
+
+\nabla_s \phi_{\text{sensor}} = \mathbf{w} = [w_1, w_2, \dots, w_n]^T.
+
+To see how this affects the Control Barrier Function, we compute the time derivative of h_{\text{soma}}:
+
+\dot h_{\text{soma}} = \frac{\partial h_{\text{soma}}}{\partial q}\dot q + \frac{\partial h_{\text{soma}}}{\partial \dot q}\ddot q + \frac{\partial h_{\text{soma}}}{\partial s}\dot s.
+
+From the definition of h_{\text{soma}}:
+
+\frac{\partial h_{\text{soma}}}{\partial s} = -\varepsilon \phi_{\text{vuln}}(q) \nabla_s \phi_{\text{sensor}} = -\varepsilon \phi_{\text{vuln}}(q) \mathbf{w}.
+
+Substituting the state dynamics \dot s:
+
+\dot s_i = -\frac{1}{\tau_s} s_i + \text{(spike inputs)}.
+
+The term involving skin activity becomes:
+
+\frac{\partial h_{\text{soma}}}{\partial s} \dot s = -\varepsilon \phi_{\text{vuln}}(q) \sum_i w_i \dot s_i.
+
+The quantity -\varepsilon \phi_{\text{vuln}}(q) \sum_i w_i \dot s_i represents the Somatic Momentum.
+
+· Positive Spike Rate (\dot s_i > 0): When the firing rate increases (e.g., during an impact), the term becomes large and positive. Because it appears in \dot h with a negative sign (due to the minus in the definition of h), it forces the robot to exert a massive counter-acceleration to satisfy \dot h \geq -\alpha(h).
+· Sensitivity Modulation: The "sensitivity" of the safety barrier to skin contact is effectively controlled by the product \varepsilon \cdot w_i. In vulnerable areas (high \phi_{\text{vuln}}), a single spike carries more "weight" in the Barrier Function than in non-vulnerable areas.
+
+4.4.4 Resulting SCBF Inequality for the QP
+
+When solving the Quadratic Program for the control input u, the neuromorphic gradient manifests as a dynamic tightening of the constraint. The SCBF condition becomes:
+
+L_f h + L_g h \, u - \varepsilon \phi_{\text{vuln}}(q) \sum_i w_i \dot s_i \geq -\alpha(h).
+
+Rearranging:
+
+L_g h \, u \geq -\alpha(h) - L_f h + \varepsilon \phi_{\text{vuln}}(q) \sum_i w_i \dot s_i.
+
+The term \varepsilon \phi_{\text{vuln}}(q) \sum_i w_i \dot s_i increases the required control effort. Higher spiking rates directly increase the lower bound on the necessary safety control, forcing the robot to move away from the stimulus even if the high‑level planner v_{\text{des}} commands it to stay.
+
+This derivation proves that the somatic state actively modulates the safety barrier, providing a mathematical foundation for embodied reflexes.
+
+4.4.5 Forward Invariance Theorem
+
+Consider the robot dynamics under a control law u:
+
+M(q)\ddot q + C(q,\dot q)\dot q + G(q) = \tau,
+
+with \tau = u (control torques). We assume a torque‑controlled robot with a low‑level PD tracking loop, so we can treat the system as
+
+\dot x = f(x) + g(x) u,
+
+where x = (q,\dot q) \in T\mathcal{Q} and the skin state s evolves according to its own dynamics, which are independent of control but may affect the safety condition.
+
+Assumption 4.3. The skin dynamics are Lipschitz and bounded, and \phi_{\text{sensor}}(s) is continuously differentiable with bounded derivative.
+
+Theorem 4.4 (Forward invariance via SCBF). Let h_{\text{soma}} be defined as above. Suppose there exists an extended class \mathcal{K}_\infty function \alpha such that for all (q,\dot q,s) \in \mathcal{C},
+
+\sup_{u \in \mathcal{U}} \left[ \frac{\partial h_{\text{soma}}}{\partial q}\dot q + \frac{\partial h_{\text{soma}}}{\partial \dot q}\ddot q + \frac{\partial h_{\text{soma}}}{\partial s}\dot s + \alpha(h_{\text{soma}}) \right] \geq 0,
+
+where \ddot q = M^{-1}(q)(u - C(q,\dot q)\dot q - G(q)). Then any Lipschitz continuous control law that satisfies the inequality pointwise renders \mathcal{C} forward invariant: if x(0) \in \mathcal{C} and s(0) yields h_{\text{soma}}(0)\geq 0, then h_{\text{soma}}(t) \geq 0 for all t \geq 0.
+
+Proof. We provide a proof using the Comparison Lemma.
+
+Let y(t) = h_{\text{soma}}(\xi(t)) with \xi = (q,\dot q,s). By the assumption, for the chosen control u(t) we have
+
+\dot y(t) \geq -\alpha(y(t)).
+
+Consider the scalar differential equation \dot z = -\alpha(z) with z(0) = y(0). Since \alpha is class \mathcal{K}_\infty, the solution is z(t) = \sigma(y(0), t) where \sigma is class \mathcal{KL}. In particular, if y(0) \geq 0, then z(t) \geq 0 for all t.
+
+By the Comparison Lemma (Khalil, 2002), since \dot y \geq -\alpha(y) and y(0) = z(0), we have y(t) \geq z(t) for all t \geq 0. Therefore y(t) \geq 0 for all t, i.e., \xi(t) \in \mathcal{C}. ∎
+
+4.4.6 Constructing a SCBF‑Based Control Law
+
+In practice, we solve a quadratic program (QP) at each control step to find the minimally invasive control that satisfies the SCBF condition. Let the desired acceleration from a high‑level planner be \ddot q_{\text{des}}. We seek \ddot q (or directly torques) that minimise \|\ddot q - \ddot q_{\text{des}}\|^2 subject to the SCBF inequality. The inequality is linear in \ddot q (hence in u), so the QP can be solved efficiently at 1 kHz.
+
+Lemma 4.5 (Lipschitz continuity of the QP solution). Under mild assumptions (e.g., the constraint is feasible with a Slater point), the resulting control law is Lipschitz continuous in the state, ensuring existence and uniqueness of solutions.
+
+4.5 Lightweight Sheaf‑Inspired Sensor Consistency
+
+Multi‑sensor fusion can produce conflicting estimates (e.g., camera sees no obstacle, but tactile skin detects contact). To prevent overconfident motion based on inconsistent data, we implement a simple consistency check inspired by sheaf theory.
+
+Let the robot's body be covered by overlapping sensor patches \{U_i\}. Each sensor provides a local measurement m_i (e.g., contact force, distance). For any pair i,j with U_i \cap U_j \neq \emptyset, we require
+
+\|m_i|_{U_i \cap U_j} - m_j|_{U_i \cap U_j}\| \leq \rho,
+
+where \rho is a consistency radius. If any pair violates this, a conflict is flagged. The SCBF parameter \varepsilon is then increased (or the gain \kappa increased) to enforce more conservative behaviour. This is a practical, real‑time approximation of a sheaf cocycle condition.
+
+Proposition 4.6 (Conflict detection guarantees). If all sensors are perfectly calibrated and the environment is consistent, the condition holds with \rho chosen based on sensor noise bounds. When a conflict occurs, at least one sensor is faulty or the environment has changed discontinuously; increasing conservatism is a safe response.
+
+4.6 Summary of Theoretical Results
+
+We have defined:
+
+· A geodesic safety metric d_{\text{safe}} that predicts proximity to unsafe sets.
+· A vulnerability‑weighted Riemannian metric g_S that modulates robot compliance.
+· A Somatic Control Barrier Function h_{\text{soma}} that incorporates skin signals and the weighted metric, with a proof of forward invariance.
+· The gradient of the sensor field, showing how spiking activity directly tightens the safety constraint.
+· A lightweight consistency check that triggers conservative behaviour upon sensor conflict.
+
+These components together form the Somatic Geometric Safety Framework.
+
+---
+
+Chapter 5: System Architecture and Design
+
+This chapter describes the proposed hardware and software architecture for a clinical robot implementing the Somatic Geometric Safety Framework. While no physical implementation is presented, the design is specified in sufficient detail to guide future development.
+
+5.1 Robot Platform Requirements
+
+To realise the framework, the robot must possess:
+
+· A configuration manifold \mathcal{Q} with known kinematics and dynamics.
+· Torque-controlled joints for low-level force/impedance control.
+· A perception system capable of estimating human pose and vulnerability zones (RGB-D cameras, possibly thermal).
+· Neuromorphic skin patches with local spiking output and sub‑5 ms reflex capability.
+· A real‑time computing core for the reflex layer (1 kHz control).
+· A separate general‑purpose computing module for high‑level AI.
+
+A concrete candidate is the H3 MED‑ASSIST v1.5, a mobile manipulator designed for hospital assistance, but any platform meeting these requirements could be used.
+
+Table 5.1: Hardware Platform Requirements
+
+Component Specification Purpose
+Manipulator 7+ DoF, torque-controlled, 5 kg payload Dexterous manipulation
+Mobile base Differential drive, max 1.0 m/s Hospital navigation
+Perception RGB-D cameras, thermal, microphone Human pose estimation
+Neuromorphic skin 4–6 patches, 16×16 taxels each, spiking output Somatic reflexes
+Real-time core x86 with Xenomai, 1 kHz deterministic Reflex layer
+AI module NVIDIA Jetson AGX Orin High-level planning
+
+5.2 Perception Pipeline
+
+The perception pipeline processes sensor data to produce:
+
+· An estimate of the human's 3D pose and body mesh, with vulnerability labels (face, neck, IV sites, etc.).
+· A time‑varying unsafe set \mathcal{U}(t) based on a critical distance \delta.
+· The vulnerability map \phi_{\text{vuln}}(q) for any robot configuration.
+
+We assume:
+
+· RGB‑D cameras provide point clouds and colour images.
+· OpenPose or similar estimates 2D keypoints; a 3D mesh is reconstructed using depth and a human body model (e.g., SMPL).
+· Vulnerability zones are pre‑defined on the mesh and projected into the workspace.
+
+The map \phi_{\text{vuln}}(q) is computed as:
+
+\phi_{\text{vuln}}(q) = \max_{p \in \mathcal{B}(q)} \left[ w(p) \cdot \exp\left(-\frac{\operatorname{dist}(p, \mathcal{H})^2}{2\sigma^2}\right) \right],
+
+where w(p) is the vulnerability weight of the closest human body point, and \sigma controls the spatial decay.
+
+5.3 Geodesic Distance Computation
+
+Real‑time computation of geodesic distance to \partial\mathcal{U}(t) is challenging. We propose a discretisation approach:
+
+· Pre‑compute a graph on a mesh of \mathcal{Q} (or a lower‑dimensional submanifold relevant to tasks).
+· For each vertex, store approximate geodesic distances to all other vertices (e.g., using Dijkstra or fast marching).
+· During operation, locate the nearest mesh vertex to current q and look up distances to vertices representing \partial\mathcal{U}(t).
+· Update \partial\mathcal{U}(t) as the human moves by marking vertices whose corresponding workspace points are within \delta of the human.
+
+This yields an approximate safety margin d_{\text{safe}}(q,t) with bounded error. Alternatively, neural distance field methods could be employed.
+
+5.4 Software Architecture
+
+The software is organised into layers with strict priority:
+
+```
+Meta-Safety Monitor (offline certificates)
+          ↓
+Reflex Layer (SCBF + neuromorphic skin)   ← 1 kHz, provably safe
+          ↓
+Compliance Layer (impedance control)
+          ↓
+Motion Planning (local re‑planning)
+          ↓
+AI Triage & Task Layer (10 Hz)
+```
+
+· Reflex Layer: Runs on the real‑time core, executes the SCBF QP at 1 kHz, reads neuromorphic skin spikes directly via GPIO, and computes safe torques. It has highest priority and cannot be blocked by higher layers.
+· Compliance Layer: Implements impedance control to achieve desired Cartesian behaviour, using the safe torques from the reflex layer as feedforward.
+· Motion Planning: Generates desired trajectories (joint or Cartesian) based on the current task, but the reflex layer may modify them for safety.
+· AI Triage & Task Layer: High‑level decision making, running asynchronously at lower frequency.
+
+5.5 Neuromorphic Skin Integration
+
+The skin patches are interfaced to the reflex layer via dedicated interrupt lines. Each patch contains:
+
+· A 16×16 array of taxels (pressure, temperature, strain).
+· Local spiking neural network that detects nociceptive events (rapid indentation, extreme temperature).
+· A digital output that signals an event.
+
+The reflex layer maintains a rolling buffer of recent spikes to compute \phi_{\text{sensor}}(s) (e.g., as the mean firing rate over the last 10 ms). Upon receiving an interrupt, it immediately increases \phi_{\text{sensor}} for that patch.
+
+5.6 Consistency Monitoring Module
+
+The consistency monitor runs at 100 Hz on the real‑time core. It:
+
+· Collects readings from all sensors, projecting them onto a common body‑surface mesh.
+· For each overlapping pair, computes the maximum difference within the overlap region.
+· If any difference exceeds \rho, flags a conflict and increases \varepsilon in the SCBF by 20% (capped at a maximum).
+· Logs conflicts for later diagnosis.
+
+The consistency radius \rho is set based on sensor noise specifications and expected environmental variations.
+
+5.7 FPGA-Based Somatic Pre-Processor
+
+To achieve the sub‑5 ms "nociceptive" reflex loop, the hardware interface must bridge the gap between the high‑frequency, asynchronous spike trains of the neuromorphic skin and the synchronous, frame‑based processing of the real‑time controller. We propose an architecture centered on an FPGA-based Somatic Pre-processor that acts as a "spinal cord" for the robot, handling spike integration and triggering non‑maskable interrupts when necessary.
+
+5.7.1 Hardware Interface Architecture
+
+The interface is structured into three distinct stages:
+
+1. Neuromorphic Front-End (The Peripheral Nervous System)
+      Each skin patch transmits data using the Address Event Representation (AER) protocol. Instead of sending a frame of data, the patch sends the "address" (ID) of the specific taxel that fired a spike at the exact moment it happened.
+   · Physical Layer: Low‑Voltage Differential Signaling (LVDS) or MIPI CSI‑2 for high‑speed event streaming.
+   · Data Structure: A 32‑bit word containing [ \text{Patch\_ID (8b)} \mid \text{Taxel\_ID (16b)} \mid \text{Event\_Type (8b)} ].
+2. FPGA Integration Layer (The Spinal Cord)
+      The FPGA serves as the high‑speed integrator. It performs the heavy lifting of the synaptic trace calculation, so the main CPU does not have to process millions of individual spikes.
+   · Spike Counter & Integrator: For every incoming AER event, the FPGA increments a local register corresponding to that taxel.
+   · Leaky Integrator Module: A hardware‑implemented digital filter applies the decay (\tau_s) defined in Section 4.4.2. This transforms the discrete spikes into the continuous somatic state s(t).
+   · Threshold Comparator: The FPGA monitors the rate of change ds/dt. If a sudden "nociceptive" burst is detected, it triggers a Non‑Maskable Interrupt (NMI) directly to the ARM/x86 controller, bypassing the standard OS scheduler.
+3. Real-Time Bus (The Central Nervous System)
+      The integrated somatic state s must be accessible to the SCBF solver running on the CPU.
+   · Interface: PCIe (for x86) or AXI4‑Stream (for ARM/SoC).
+   · Memory Mapping: The somatic states are mapped into a Shared Memory Region. The SCBF solver treats this memory as a "live" variable.
+   · Feedback Loop: The CPU can write back to the FPGA to update the weights w_i or integration constants \tau_s when the clinical context changes (e.g., transitioning from General Ward to Neonatal Care).
+
+5.7.2 Latency Budget Analysis
+
+To achieve the "Geometrically Embodied Reflex," we target a total loop latency of less than 2.5 ms. Table 5.2 breaks down the contributions.
+
+Table 5.2: Latency Budget for Somatic Reflex Loop
+
+Stage Mechanism Latency
+Transduction Taxel Spike Generation 100–500 μs
+Transmission AER Bus to FPGA 50 μs
+Integration FPGA Synaptic Tracing 10 μs
+Communication PCIe/AXI Transfer to CPU 100 μs
+Computation SCBF QP Solver 800 μs
+Actuation EtherCAT/CAN Torque Command 500 μs
+TOTAL  ≈ 1.96 ms
+
+This budget comfortably meets the sub‑5 ms requirement and even approaches the sub‑2 ms range, ensuring that the robot can react before mechanical impact forces peak.
+
+5.7.3 Implementation Requirements
+
+· FPGA Fabric: Xilinx Zynq UltraScale+ or Intel Cyclone V SoC (which combines ARM cores and FPGA fabric on a single die for zero‑latency communication).
+· Real‑Time OS (RTOS): Preempt‑RT Linux or QNX to ensure the SCBF solver maintains a jitter‑free 1 kHz frequency.
+· Safety Interlock: A hardware‑level "Watchdog" on the FPGA that can autonomously cut motor power if the PCIe bus hangs while s(t) is in a high‑risk state.
+
+5.8 Computational Considerations
+
+The reflex layer QP involves at most 7–14 variables (joint accelerations). Using OSQP with warm starts, the solve time is well under 1 ms on an embedded x86. Geodesic lookups are O(1) with pre‑computed tables. The neuromorphic skin interrupts are handled in hardware. The consistency monitor runs at lower frequency and can be parallelised.
+
+Thus, the architecture is feasible with current technology.
+
+---
+
+Chapter 6: Clinical Use Case, Neuromorphic Skin Refinement, and Context‑Dependent Thresholds
+
+To demonstrate the Somatic Geometric Safety Framework in action, we analyze a common but high‑risk clinical task: IV Bag Replacement. This scenario highlights how the robot transitions from a high‑level cognitive plan to an embodied geometric reflex when an unpredicted human intervention occurs. We also refine the neuromorphic skin architecture with adaptive LIF neurons and hierarchical reflex circuitry.
+
+6.1 Clinical Use Case: IV Bag Replacement
+
+6.1.1 Task Initialization (Cognitive Layer)
+
+· Goal: The robot (H3 MED‑ASSIST) is tasked with replacing an empty saline bag on an IV pole.
+· High‑Level Plan: The AI Triage layer identifies the IV pole location. The Motion Planner generates a trajectory in the configuration manifold \mathcal{Q} that minimizes joint torque while keeping the end‑effector level.
+· Geometric State: The robot moves through a region where d_{\text{safe}} is high (safe) and \phi_{\text{vuln}} is low (low‑risk environment).
+
+6.1.2 Predictive Slowing (Geometric Layer)
+
+As the robot's arm nears the patient's bed to reach the IV pole, the Geodesic Safety Metric begins to decrease.
+
+· Action: The system detects the patient's head and neck (high vulnerability zones) via the RGB‑D sensors.
+· Result: The velocity scaling function \sigma(d_{\text{safe}}) begins to taper. Even though the AI "wants" to move at 0.5 m/s, the Riemannian geometry of the space effectively "thickens," slowing the commanded velocity v_{\text{cmd}} to 0.1 m/s as a precautionary measure.
+
+6.1.3 The Unpredicted Event (Somatic Trigger)
+
+While the robot is reaching for the bag, the patient suddenly reaches up to adjust their pillow, placing their forearm in the direct path of the robot's elbow.
+
+· Sub‑5 ms Reflex: Before the 10 Hz AI layer can even process the new image frame, the Neuromorphic Skin on the robot's elbow detects a "nociceptive" spike from the proximity/tactile sensors.
+· SCBF Activation: The skin state s causes a jump in \phi_{\text{sensor}}(s). Looking at our SCBF condition:
+  h_{\text{soma}} = d_{\text{safe}} - \varepsilon \phi_{\text{sensor}} \phi_{\text{vuln}} - \eta \|\dot q\|_{g_S},
+  the value of h_{\text{soma}} drops toward zero instantly.
+
+6.1.4 Metric Warping and Compliance (Reflex Layer)
+
+· Anisotropic Inertia: The vulnerability tensor V(q) immediately increases the robot's effective inertia in the direction of the patient's arm.
+· The Result: The robot doesn't just "stop"; it becomes geometrically compliant. If the patient's arm continues to push against the robot, the robot "yields" as if it were a feather‑light object, because the g_S metric has elongated the distance toward the human, making any movement in that direction require "infinite" energy according to the control barrier.
+
+6.1.5 Recovery and Consistency Check
+
+Once the patient moves their arm back:
+
+· Sheaf Consistency: The system checks if the cameras and the skin patches agree that the path is now clear. If the camera sees an arm but the skin feels nothing (or vice versa), the Consistency Radius \rho flags a conflict, keeping \varepsilon high and the robot in a cautious, slow‑moving state.
+· Task Resumption: Once consistency is restored, the h_{\text{soma}} margin opens back up, and the Motion Planner resumes the IV replacement.
+
+Table 6.2: Summary of Transitions
+
+Phase Primary Controller Safety Mechanism
+Approach Motion Planner Geodesic Velocity Scaling
+Proximity Compliance Layer Vulnerability‑Weighted Metric (g_S)
+Contact/Near‑Miss Reflex Layer Somatic Control Barrier (SCBF)
+Post‑Incident Consistency Monitor Sheaf‑inspired Conservatism
+
+6.2 Refined SNN Architecture for Somatic Reflexes
+
+To refine the Neuromorphic Spiking Neural Network (SNN) architecture for somatic reflexes, we move beyond the basic Leaky Integrate‑and‑Fire (LIF) model and toward a hierarchical nociceptive circuit. This architecture is designed to map asynchronous tactile events directly to the Somatic Control Barrier Function (SCBF).
+
+6.2.1 The Adaptive LIF Neuron Model
+
+To handle the high dynamic range of clinical interactions (from a gentle touch to an accidental strike), we employ an Adaptive Threshold LIF (AT‑LIF) model.
+
+The membrane potential v_i(t) for taxel i evolves as:
+
+\tau_m \frac{dv_i}{dt} = -v_i + R I_{\text{in}}(t),
+
+with spike condition: if v_i(t) \geq \theta_i(t), emit spike and set v_i \leftarrow v_{\text{reset}}.
+
+The dynamic threshold \theta_i(t) increases after each spike and decays exponentially:
+
+\theta_i(t) = \theta_0 + \sum_{t_j < t} \Delta \theta \cdot e^{-(t - t_j)/\tau_\theta},
+
+where:
+
+· v_i: membrane potential of taxel i
+· \theta_i: dynamic threshold
+· I_{\text{in}}(t): injected current from the neuromorphic skin (pressure/strain)
+· \tau_m: membrane time constant
+· \tau_\theta: threshold adaptation time constant
+
+This adaptation prevents "ringing" or over‑oscillation, providing natural gain control.
+
+6.2.2 Spatio‑Temporal Encoding Layer
+
+Instead of treating each taxel independently, we implement a Lateral Inhibition Layer.
+
+· Function: When a patch of skin is touched, the center neuron excites the "Withdrawal" command while inhibiting its immediate neighbors.
+· Safety Benefit: This sharpens the localization of the contact, providing a cleaner gradient \nabla h_{\text{soma}} for the SCBF solver.
+
+6.2.3 The Reflex Circuitry (Patch‑to‑Controller)
+
+The SNN is organized into a three‑tier processing pipeline:
+
+Tier 1: Nociceptive Filtering (Edge)
+Each skin patch (e.g., 16×16 taxels) contains an embedded SNN that filters for nociceptive events.
+
+· Trigger: High‑frequency spiking patterns (>200 Hz) or rapid rise in membrane potential (dv/dt).
+· Output: A prioritized "Urgency Spike" sent via a dedicated hardware interrupt to the real‑time CPU.
+
+Tier 2: Somatic Integration (Reflex Layer)
+The real‑time core receives spikes and updates the scalar field \phi_{\text{sensor}}(s). Using the exponential synaptic trace defined earlier:
+
+\phi_{\text{sensor}}(t) = \sum_j \sum_{\hat{t}_j} e^{-(t - \hat{t}_j)/\tau_{\text{skin}}},
+
+where \hat{t}_j are the arrival times of spikes from patch j. This ensures \phi_{\text{sensor}} rises nearly instantly but decays smoothly, preventing jerky robot movements.
+
+Tier 3: SCBF Modulation
+The integration \phi_{\text{sensor}}(s) is fed directly into the SCBF QP constraint as derived in Section 4.4.3:
+
+L_g h \, u \geq -\alpha(h) - L_f h + \varepsilon \phi_{\text{vuln}}(q) \sum_i w_i \dot s_i.
+
+Table 6.1: SNN Performance Specifications
+
+Feature Specification Clinical Rationale
+Latency (Skin to Torque) <2 ms Prevents bruising during unexpected contact
+Encoding Time‑to‑First‑Spike Rapidly conveys impact magnitude
+Power Consumption <50 mW Enables high‑density coverage without overheating
+Robustness Address Event Representation (AER) Only active taxels use bandwidth/CPU cycles
+
+6.3 Nociceptive Thresholds by Clinical Context
+
+In clinical robotics, "one size fits all" safety is actually a hazard. A force that is safe for an adult might be injurious to a neonate, while a reflex that is too sensitive could prevent a robot from providing necessary physical support to a geriatric patient. Therefore, we define the nociceptive weight w_i and the reflex gain \varepsilon based on the biological "fragility" and the clinical context. Table 6.3 maps somatic signals to geometric safety parameters.
+
+Table 6.3: Nociceptive Thresholds by Clinical Context
+
+Clinical Scenario Vulnerability \phi_{\text{vuln}} Nociceptive Weight w_i \tau_s (Integration Window) Reflex Response Type
+Neonatal Care Extreme (0.9–1.0) Ultra‑High: Trigger on single spikes 2 ms Immediate Retreat: Absolute stop and 10 cm withdrawal
+Geriatric Support High (0.7–0.8) High: Sensitivity to shear/skin tear 5 ms Soft Yield: Transition to zero‑impedance (limp) mode
+Post‑Op Trauma Variable (Localized) Directional: High weight near IV/incision sites 10 ms Anisotropic Resistance: Resist motion toward site only
+General Ward Moderate (0.4–0.6) Medium: Standard collision thresholds 20 ms Predictive Slowing: Velocity scaling \sigma(d_{\text{safe}})
+Emergency Triage Contextual Adaptive: Low weight during life‑saving maneuvers 50 ms Damped Compliance: Force‑over‑safety prioritization
+
+6.3.1 Parameter Justification
+
+1. Neonatal Care: The "Zero‑Impact" Policy
+      In the NICU, the d_{\text{safe}} margin is expanded. The neuromorphic weights w_i are set such that the Somatic Momentum (\mathbf{w}^T \dot s) triggers the SCBF before physical contact occurs, using the "pre‑touch" capacitance/proximity sensing of the neuromorphic skin. The very short integration window (2 ms) ensures that even a single spike from a light brush causes an immediate retreat.
+2. Geriatric Assistance: The "Support vs. Safety" Paradox
+      Elderly patients often require the robot to bear their weight. If the reflex is too sensitive, the robot will "flee" when the patient leans on it.
+   · Solution: We use the Vulnerability Tensor \Gamma(q) to make the robot stiff in the vertical axis (support) but highly compliant (nociceptive) in the lateral axes (to prevent skin shearing). The higher \tau_s (5 ms) smooths out brief transient contacts, avoiding false positives while still responding to sustained shear.
+3. Post‑Op Trauma: Localized Sensitivity
+      Near IV lines or surgical incisions, even light contact can be painful. The directional weight ensures that only movements toward the vulnerable site are resisted, while movements away are unimpeded.
+4. General Ward: Standard Operation
+      Moderate weights and a 20 ms integration window provide a balance between safety and efficiency, using predictive slowing to avoid collisions.
+5. Emergency Triage: The "Necessary Force" Exception
+      In life‑critical scenarios (e.g., stopping a haemorrhage), the robot may need to apply significant force.
+   · Mechanism: The AI Triage Layer can temporarily suppress the \varepsilon gain of the SCBF, though it can never set it to zero. This ensures that the "Reflex Layer" still prevents catastrophic failure (like bone breakage) while allowing for firm medical intervention. The longer integration window (50 ms) prevents brief contact from interrupting essential tasks.
+
+6.3.2 Implementing the Thresholds in Code
+
+The transition between these scenarios is handled by updating a Somatic Configuration Vector \Theta = [\mathbf{w}, \tau_s, \varepsilon, \kappa, \delta_{\text{stop}}, \ldots] stored in the Meta‑Safety Monitor. As the robot enters a new ward (detected via RFID or vision), the Meta‑Safety Monitor reloads \Theta, instantly re‑warping the Riemannian manifold to reflect the new safety requirements. The FPGA's feedback loop (Section 5.7) allows these parameters to be updated in real time without stopping the control loop.
+
+---
+
+Chapter 7: Discussion, Limitations, and Future Work
+
+7.1 Theoretical Implications
+
+The Somatic Geometric Safety Framework provides a unified language for embedding safety into a robot's body. By treating safety as a geometric property, we move beyond reactive thresholds and toward predictive, context‑aware behaviour. The SCBF generalises classical CBFs by incorporating sensory and vulnerability signals, and the forward invariance proof guarantees that safety is maintained regardless of higher‑level decisions.
+
+The vulnerability‑weighted metric is a novel concept that could also be used for motion planning, e.g., by generating geodesics that naturally avoid vulnerable regions. The lightweight sheaf‑inspired consistency check addresses a practical sensor fusion problem without heavy computation.
+
+The derivation of the gradient \nabla_s \phi_{\text{sensor}} and its incorporation into the SCBF condition provides a rigorous mathematical link between asynchronous spike events and the continuous safety barrier. This bridges neuromorphic sensing and geometric control, showing that the "threat pressure" from the skin directly tightens the feasible control set. The hardware architecture with FPGA pre‑processing demonstrates that such a loop can be realised within sub‑2 ms, meeting the stringent latency requirements of clinical reflexes.
+
+The context‑dependent thresholds (Table 6.3) illustrate how the same geometric framework can adapt to vastly different patient populations, from neonates to emergency cases, by simply adjusting a few scalar parameters. This adaptability is a key strength for clinical deployment.
+
+7.2 Limitations
+
+Several theoretical limitations remain:
+
+· Geodesic distance approximation: The discrete pre‑computation may not capture all configurations, and errors could accumulate. Lipschitz continuity of d_{\text{safe}} ensures bounded error propagation, but the bound depends on mesh resolution. In high‑dimensional configuration spaces (e.g., 14+ DoF), mesh resolution may need to be coarse, potentially missing important local variations.
+· Perception uncertainty: The framework assumes a bounded‑error estimate of human pose. If the error exceeds the critical distance \delta, safety may be compromised. Stochastic extensions could address this, but the current deterministic formulation does not handle probabilistic uncertainty.
+· Time‑varying unsafe set: The proof of forward invariance requires that \mathcal{U}(t) changes slowly enough; we assumed Lipschitz variation. If the human moves abruptly, the condition may be temporarily violated. This could be mitigated by predictive human motion models, which are not included in the current framework.
+· Anisotropic vulnerability weighting: The proposed Jacobian‑based tensor requires careful handling to avoid singularities and ensure positive‑definiteness. In singular configurations, the direction weighting becomes ill‑defined; we defaulted to isotropic weighting, but this may not be optimal.
+· Linearity of \phi_{\text{sensor}}: We assumed a linear relationship between the somatic state s and the sensor field \phi_{\text{sensor}}. While this simplifies the gradient derivation, it may not capture complex, nonlinear interactions in the skin. Nonlinear extensions could be explored.
+· FPGA integration: The proposed hardware architecture relies on an FPGA with sufficient logic to handle all skin patches simultaneously. For large numbers of taxels, resource constraints may require trade‑offs.
+· Ethical considerations: Vulnerability mapping may capture sensitive body areas, raising privacy concerns. The system must ensure that such data is handled securely and with patient consent.
+
+7.3 Future Work
+
+Several theoretical extensions are envisioned:
+
+1. Stochastic SCBF: Incorporate probabilistic models of human motion and sensor noise using stochastic CBFs or chance constraints. This would provide guarantees with probability 1-\delta rather than deterministic guarantees.
+2. Predictive unsafe sets: Use reachability analysis to predict future human positions and define \mathcal{U}(t) over a time horizon, enabling proactive avoidance rather than reactive slowing.
+3. Formal verification of the stack: Use model checking or theorem proving to verify that the reflex layer's invariance property holds under all possible behaviours of higher layers. This would provide end‑to‑end safety guarantees.
+4. Multi‑robot coordination: Extend the geometric safety framework to multiple robots sharing a clinical environment, ensuring collective safety via shared manifolds and inter‑robot barrier functions.
+5. Adaptive consistency radius: Learn \rho online based on observed sensor noise patterns and environmental context, rather than using a fixed value.
+6. Nonlinear sensor fields: Generalize \phi_{\text{sensor}} to nonlinear functions of s, and derive the corresponding gradient expressions and SCBF modifications.
+7. Integration with motion planning: Develop Riemannian motion planners that use the vulnerability‑weighted metric to generate intrinsically safe trajectories, reducing the burden on the reflex layer.
+8. Experimental validation: Although not part of this theoretical dissertation, future work should implement and test the framework on real hardware, measuring actual latencies, force reductions, and clinical acceptance.
+
+7.4 Clinical Translation and Certification
+
+The reflex‑prioritised architecture directly addresses certification challenges. By isolating a provably safe layer, manufacturers can certify that layer independently of the AI. The SCBF provides mathematical evidence of forward invariance, which can be submitted to regulators as part of a safety case. ISO 13482, IEC 60601, and ISO/TS 15066 can be mapped onto the framework: e.g., maximum allowable forces correspond to constraints on h_{\text{soma}}.
+
+The Meta‑Safety Monitor, running offline, can generate certificates for each clinical context by verifying that the parameters \Theta lead to feasible SCBF conditions under worst‑case assumptions. This aligns with the concept of "safety cages" in functional safety standards.
+
+Ethical considerations include patient privacy (vulnerability mapping may capture sensitive body areas) and the potential for bias in perception (e.g., misidentifying vulnerable zones). These must be addressed through transparent design, informed consent, and rigorous testing across diverse patient populations.
+
+---
+
+Chapter 8: Conclusion
+
+This dissertation introduced the Somatic Geometric Safety Framework, a new paradigm for clinical robotics where safety is not a constraint layer but an embodied geometry. By encoding safety directly into the robot's Riemannian structure, grounding it in neuromorphic somatic sensing, and enforcing it via provable control barriers that precede cognition, we have created a theoretical foundation for medical robots whose safe behaviour is structurally guaranteed.
+
+The key contributions are:
+
+· A geodesic safety metric for predictive risk assessment.
+· A vulnerability‑weighted Riemannian metric for context‑sensitive compliance.
+· Somatic Control Barrier Functions with forward invariance proof, incorporating the gradient of the sensor field to show how spiking activity directly tightens the safety constraint.
+· A lightweight sheaf‑inspired consistency check.
+· Neuromorphic skin reflexes with adaptive LIF neurons and hierarchical circuitry.
+· A reflex‑prioritised architecture amenable to certification, including an FPGA-based somatic pre-processor with sub‑2 ms latency.
+· A detailed clinical use case (IV Bag Replacement) illustrating the framework's operation.
+· Clinical context‑dependent nociceptive thresholds that adapt safety behaviour to different patient populations.
+
+All components are mathematically defined and their properties proven. The system architecture and design are specified in sufficient detail to guide future implementation. The refined SNN architecture ensures sub‑5 ms reflexes with smooth SCBF integration, and the hardware interface design demonstrates feasibility within current technology.
+
+This work bridges differential geometry, control theory, embodied sensing, and medical robotics, producing the first certifiable, geometry‑grounded safety architecture for hospital assistants. While empirical validation remains for future work, the theoretical framework stands as a robust foundation for a new generation of trustworthy clinical robots—robots that do not merely avoid harm but embody safety in every movement, every reflex, and every interaction.
+
+Appendices
+
+Appendix A: Detailed Proof of Theorem 4.4 (Forward Invariance)
+
+This appendix provides a rigorous proof of Theorem 4.4 using Nagumo's theorem and the comparison lemma. We also discuss the regularity conditions required for the proof.
+
+A.1 System Setup
+
+Consider the augmented state \xi = (q, \dot q, s) \in T\mathcal{Q} \times \mathcal{S}. The dynamics are given by
+
+\begin{aligned}
+\dot q &= \dot q, \\
+\ddot q &= M^{-1}(q)(u - C(q,\dot q)\dot q - G(q)), \\
+\dot s &= f_s(s, q),
+\end{aligned}
+
+where f_s is Lipschitz and bounded. The safe set is
+
+\mathcal{C} = \{ \xi \mid h_{\text{soma}}(\xi) \geq 0 \},
+
+with h_{\text{soma}} continuously differentiable.
+
+A.2 Nagumo's Theorem
+
+For a closed set \mathcal{C}, forward invariance under the dynamics \dot \xi = F(\xi, u) is equivalent to the condition that for all \xi \in \partial \mathcal{C}, the vector field F(\xi, u) points into the interior of \mathcal{C} or is tangent. In terms of the barrier function, this can be expressed as
+
+\dot h_{\text{soma}}(\xi) \geq 0 \quad \text{whenever } h_{\text{soma}}(\xi) = 0,
+
+provided the control u is chosen appropriately. However, to allow for some flexibility, we use a class \mathcal{K}_\infty function \alpha to relax the condition to \dot h \geq -\alpha(h).
+
+A.3 Proof of Theorem 4.4
+
+Theorem 4.4 (restated). Let h_{\text{soma}} be defined as in (4.1). Suppose there exists an extended class \mathcal{K}_\infty function \alpha such that for all \xi \in \mathcal{C},
+
+\sup_{u \in \mathcal{U}} \left[ L_f h_{\text{soma}}(\xi) + L_g h_{\text{soma}}(\xi) u + \frac{\partial h_{\text{soma}}}{\partial s} f_s(s,q) + \alpha(h_{\text{soma}}(\xi)) \right] \geq 0,
+
+where
+
+L_f h_{\text{soma}} = \frac{\partial h_{\text{soma}}}{\partial q} \dot q + \frac{\partial h_{\text{soma}}}{\partial \dot q} M^{-1}(-C\dot q - G), \quad L_g h_{\text{soma}} = \frac{\partial h_{\text{soma}}}{\partial \dot q} M^{-1}.
+
+Then any Lipschitz continuous control law u = k(\xi) that satisfies the inequality pointwise renders \mathcal{C} forward invariant.
+
+Proof.
+Let \xi(t) be a trajectory under the control law u = k(\xi), and define y(t) = h_{\text{soma}}(\xi(t)). Since k is Lipschitz and the dynamics are Lipschitz, solutions exist and are unique. Differentiating,
+
+\dot y(t) = L_f h_{\text{soma}}(\xi) + L_g h_{\text{soma}}(\xi) u + \frac{\partial h_{\text{soma}}}{\partial s} f_s.
+
+By hypothesis, for the chosen u, we have
+
+\dot y(t) \geq -\alpha(y(t)).
+
+Now consider the scalar differential equation
+
+\dot z = -\alpha(z), \quad z(0) = y(0).
+
+Since \alpha is class \mathcal{K}_\infty and locally Lipschitz (we assume \alpha is at least locally Lipschitz), this equation has a unique solution z(t) for all t \geq 0. Moreover, if y(0) \geq 0, then z(t) \geq 0 for all t because z=0 is an equilibrium and the vector field points away from zero.
+
+The comparison lemma (Khalil, Lemma 3.4) states that if \dot y \geq -\alpha(y) and y(0) = z(0), then y(t) \geq z(t) for all t \geq 0. Therefore,
+
+y(t) \geq z(t) \geq 0,
+
+which implies h_{\text{soma}}(\xi(t)) \geq 0 for all t, i.e., \xi(t) \in \mathcal{C}. ∎
+
+A.4 Remarks on Regularity
+
+· The function \alpha must be locally Lipschitz to apply the comparison lemma; typical choices like \alpha(r) = \gamma r with \gamma > 0 satisfy this.
+· The assumption that the control law is Lipschitz ensures uniqueness of solutions and that the closed-loop vector field is Lipschitz, which is standard in control theory.
+· If the SCBF condition holds only almost everywhere, the proof still works via absolute continuity of y(t).
+
+---
+
+Appendix B: Properties of the Vulnerability‑Weighted Metric
+
+This appendix derives the geodesic equations and curvature properties of the vulnerability‑weighted metric g_S = M + V, and establishes conditions for positive definiteness and Lipschitz continuity.
+
+B.1 Positive Definiteness
+
+Since M(q) is the inertia matrix of a mechanical system, it is symmetric positive definite for all q. The added term V(q) = \kappa \phi_{\text{vuln}}(q) \Gamma(q) is symmetric positive semidefinite by construction (\Gamma is either I or a rank‑1 matrix J^T e e^T J / \|J^T e\|^2, which is positive semidefinite). Therefore g_S(q) is symmetric and satisfies
+
+x^T g_S(q) x = x^T M(q) x + x^T V(q) x \geq x^T M(q) x > 0
+
+for any nonzero x \in T_q\mathcal{Q}. Hence g_S is positive definite.
+
+B.2 Geodesic Equations
+
+The geodesic equations for a metric g are given by
+
+\ddot q^i + \Gamma^i_{jk} \dot q^j \dot q^k = 0,
+
+where the Christoffel symbols are
+
+\Gamma^i_{jk} = \frac{1}{2} g^{i\ell} \left( \frac{\partial g_{j\ell}}{\partial q^k} + \frac{\partial g_{k\ell}}{\partial q^j} - \frac{\partial g_{jk}}{\partial q^\ell} \right).
+
+For g_S = M + V, we have
+
+\frac{\partial g_S}{\partial q} = \frac{\partial M}{\partial q} + \frac{\partial V}{\partial q}.
+
+Thus the geodesics under g_S deviate from those under M in regions where V varies. In particular, moving toward a vulnerable area increases the effective distance, as shown in Lemma 4.2.
+
+B.3 Lipschitz Continuity of g_S
+
+Assume that M(q) is smooth and bounded, and that \phi_{\text{vuln}}(q) is Lipschitz with constant L_\phi. For the isotropic case \Gamma = I, we have
+
+\|g_S(q_1) - g_S(q_2)\| \leq \|M(q_1)-M(q_2)\| + \kappa |\phi_{\text{vuln}}(q_1)-\phi_{\text{vuln}}(q_2)| \|I\|.
+
+Since M is smooth, it is locally Lipschitz; together with the Lipschitz property of \phi_{\text{vuln}}, g_S is locally Lipschitz. This ensures that geodesic distances are well‑behaved.
+
+B.4 Effect on Geodesic Distance
+
+We prove Lemma 4.2 more formally.
+
+Lemma 4.2. For any q_1, q_2 \in \mathcal{Q}, d_S(q_1,q_2) \geq d_M(q_1,q_2).
+
+Proof. Let \gamma be a curve connecting q_1 and q_2. Its length under g_S is
+
+L_S(\gamma) = \int_0^1 \sqrt{\dot\gamma(t)^T g_S(\gamma(t)) \dot\gamma(t)} \, dt.
+
+Since g_S(\gamma(t)) \succeq M(\gamma(t)) pointwise, we have for each t,
+
+\dot\gamma(t)^T g_S(\gamma(t)) \dot\gamma(t) \geq \dot\gamma(t)^T M(\gamma(t)) \dot\gamma(t).
+
+Hence L_S(\gamma) \geq L_M(\gamma). Taking the infimum over all curves yields d_S(q_1,q_2) \geq d_M(q_1,q_2). ∎
+
+---
+
+Appendix C: Derivation of the SCBF Gradient and QP Formulation
+
+This appendix provides a detailed derivation of the SCBF gradient and the quadratic program (QP) used for control synthesis, including the KKT conditions and Lipschitz continuity of the solution.
+
+C.1 Gradient of h_{\text{soma}}
+
+From the definition
+
+h_{\text{soma}}(q,\dot q,s) = d_{\text{safe}}(q) - \varepsilon \phi_{\text{sensor}}(s) \phi_{\text{vuln}}(q) - \eta \|\dot q\|_{g_S},
+
+we compute partial derivatives:
+
+· \frac{\partial h_{\text{soma}}}{\partial q} = \frac{\partial d_{\text{safe}}}{\partial q} - \varepsilon \phi_{\text{sensor}}(s) \frac{\partial \phi_{\text{vuln}}}{\partial q} - \eta \frac{\partial}{\partial q} \|\dot q\|_{g_S}.
+  The term \frac{\partial}{\partial q} \|\dot q\|_{g_S} involves derivatives of g_S, which are bounded if g_S is Lipschitz.
+· \frac{\partial h_{\text{soma}}}{\partial \dot q} = - \eta \frac{\dot q^T g_S}{\|\dot q\|_{g_S}} (for \dot q \neq 0; at \dot q = 0 the derivative is zero in the sense of subgradient).
+· \frac{\partial h_{\text{soma}}}{\partial s} = -\varepsilon \phi_{\text{vuln}}(q) \nabla_s \phi_{\text{sensor}} = -\varepsilon \phi_{\text{vuln}}(q) \mathbf{w}.
+
+The Lie derivatives are then
+
+L_f h = \frac{\partial h}{\partial q} \dot q + \frac{\partial h}{\partial \dot q} M^{-1}(-C\dot q - G), \quad L_g h = \frac{\partial h}{\partial \dot q} M^{-1}.
+
+C.2 SCBF Constraint in the QP
+
+At each time step, we have a desired acceleration \ddot q_{\text{des}} from a high‑level planner. We seek the actual acceleration \ddot q (or torque \tau) that minimizes \|\ddot q - \ddot q_{\text{des}}\|^2 subject to the SCBF condition:
+
+L_f h + L_g h \, \ddot q + \frac{\partial h}{\partial s} \dot s + \alpha(h) \geq 0.
+
+Since the dynamics are \ddot q = M^{-1} \tau, we can also formulate directly in torques. The inequality is linear in \ddot q (or \tau).
+
+Let a = \ddot q. The QP is
+
+\begin{aligned}
+\min_{a} \quad & \frac{1}{2} \|a - a_{\text{des}}\|^2 \\
+\text{s.t.} \quad & c^T a \geq b,
+\end{aligned}
+
+where
+
+c^T = L_g h, \quad b = -L_f h - \frac{\partial h}{\partial s} \dot s - \alpha(h).
+
+C.3 KKT Conditions and Solution
+
+The Lagrangian is
+
+\mathcal{L}(a, \lambda) = \frac{1}{2} \|a - a_{\text{des}}\|^2 - \lambda (c^T a - b),
+
+with \lambda \geq 0. The KKT conditions give
+
+a - a_{\text{des}} - \lambda c = 0, \quad \lambda (c^T a - b) = 0, \quad c^T a \geq b, \quad \lambda \geq 0.
+
+If c^T a_{\text{des}} \geq b, then \lambda = 0 and a = a_{\text{des}}. Otherwise, \lambda > 0 and
+
+a = a_{\text{des}} + \lambda c, \quad c^T (a_{\text{des}} + \lambda c) = b \quad \Rightarrow \quad \lambda = \frac{b - c^T a_{\text{des}}}{c^T c}.
+
+Thus the solution is
+
+a = a_{\text{des}} + \frac{\max(0, b - c^T a_{\text{des}})}{c^T c} \, c.
+
+C.4 Lipschitz Continuity of the QP Solution
+
+The mapping from (a_{\text{des}}, c, b) to a is piecewise affine. Since a_{\text{des}}, c, and b are Lipschitz functions of the state \xi (provided h and its derivatives are Lipschitz), the composition yields a Lipschitz control law. This ensures existence and uniqueness of closed‑loop trajectories.
+
+---
+
+Appendix D: Geodesic Distance Computation
+
+This appendix details the discretisation approach for real‑time geodesic distance computation, including error bounds and computational complexity.
+
+D.1 Discretisation of \mathcal{Q}
+
+Let \mathcal{Q}_{\text{mesh}} be a triangulation of \mathcal{Q} (or a relevant submanifold) with vertices V = \{v_1, \ldots, v_N\}. For each vertex, we store its coordinates in joint space and its forward kinematics to compute workspace points. We pre‑compute geodesic distances between all pairs using Dijkstra's algorithm on the graph induced by the mesh edges, with edge weights given by the Euclidean distance in the metric M (or a simplified metric). This yields an approximate distance matrix D where D_{ij} \approx d_{\mathcal{Q}}(v_i, v_j).
+
+D.2 Updating \partial \mathcal{U}(t)
+
+At runtime, we have an estimate of the human mesh \mathcal{H}(t). For each vertex v_i, we compute the minimum distance from its corresponding workspace point \mathcal{B}(v_i) to \mathcal{H}(t). If this distance is less than or equal to \delta, we mark v_i as belonging to \mathcal{U}(t). The boundary \partial \mathcal{U}(t) is approximated by the set of vertices that are in \mathcal{U} but have at least one neighbor not in \mathcal{U}.
+
+D.3 Computing d_{\text{safe}}(q,t)
+
+Given the current configuration q, we find the nearest vertex v_{i^*} (in joint space) and look up distances to all boundary vertices. Then
+
+d_{\text{safe}}(q,t) \approx \min_{v_j \in \partial \mathcal{U}(t)} D_{i^*j} - \epsilon_{\text{mesh}},
+
+where \epsilon_{\text{mesh}} accounts for the discretisation error (bounded by half the maximum edge length).
+
+D.4 Error Bounds
+
+If the mesh is fine enough that the maximum edge length in the metric g is h, then the error in geodesic distance is O(h). Since d_{\text{safe}} is Lipschitz with constant 1, this error propagates linearly. Thus we can guarantee that the true safety margin is at least the computed value minus h. In practice, we can add a safety buffer to account for discretisation.
+
+D.5 Complexity
+
+Pre‑computation is O(N^2 \log N) using Dijkstra from each vertex. Runtime per query is O(\log N) to find nearest vertex (using KD‑tree) and O(|\partial \mathcal{U}|) to scan boundary vertices. For typical N \sim 10^4 and |\partial \mathcal{U}| \sim 10^2, this is feasible at 1 kHz.
+
+---
+
+Appendix E: Neuromorphic Skin SNN Details
+
+This appendix provides the mathematical details of the adaptive LIF neuron model, the synaptic trace, and the event‑driven simulation.
+
+E.1 Adaptive Threshold LIF (AT‑LIF)
+
+For taxel i, the membrane potential v_i(t) evolves according to
+
+\tau_m \frac{dv_i}{dt} = -v_i + R I_{\text{in}}(t),
+
+where I_{\text{in}}(t) is the input current from the sensor (proportional to pressure/strain). When v_i(t) \geq \theta_i(t), a spike is emitted, and v_i is reset to v_{\text{reset}}. The threshold \theta_i(t) is dynamic:
+
+\theta_i(t) = \theta_0 + \sum_{t_k < t} \Delta \theta \cdot e^{-(t - t_k)/\tau_\theta},
+
+where t_k are the spike times of neuron i. This implements spike‑frequency adaptation, preventing runaway firing.
+
+E.2 Synaptic Trace
+
+The synaptic trace s_i(t) for taxel i is a low‑pass filter of the spike train:
+
+\tau_s \frac{ds_i}{dt} = -s_i + \sum_k \delta(t - t_{i,k}).
+
+This can be implemented digitally as an exponential moving average. In discrete time with step \Delta t, the update is
+
+s_i[t+1] = e^{-\Delta t/\tau_s} s_i[t] + \frac{1}{\tau_s} \cdot (\text{number of spikes in } [t, t+\Delta t]).
+
+E.3 Event‑Driven Simulation
+
+The FPGA processes AER events asynchronously. Upon receiving a spike from taxel (p,i) (patch p, taxel i), it increments a counter and updates the corresponding s_i using a hardware‑implemented leaky integrator. The FPGA maintains a table of all s_i values and computes the aggregate \phi_{\text{sensor}} = \sum w_i s_i periodically (e.g., every 10 μs) or on demand.
+
+E.4 Lateral Inhibition
+
+Lateral inhibition is implemented by a small network where each neuron receives excitatory input from its own taxel and inhibitory inputs from neighbors. The output spike of a neuron is suppressed if its neighbors fire strongly. This can be modeled by an effective input current:
+
+I_{\text{eff},i} = I_{\text{in},i} - \beta \sum_{j \in \mathcal{N}(i)} I_{\text{in},j},
+
+where \beta is an inhibition strength. This sharpens the spatial response.
+
+---
+
+Appendix F: Sheaf Consistency Radius
+
+This appendix provides a rigorous justification for the lightweight sheaf‑inspired consistency check, including the relation to sheaf cohomology and error bounds.
+
+F.1 Sheaf Model
+
+Let the robot's body be covered by open sets \{U_i\} corresponding to sensor patches. Each sensor provides a measurement m_i \in \mathcal{F}(U_i), where \mathcal{F}(U_i) is a space of possible measurements (e.g., \mathbb{R}^d with a metric). For overlapping patches, consistency requires that the restrictions of m_i and m_j to U_i \cap U_j agree up to noise. In sheaf theory, this is a 0‑cocycle condition: m_i|_{U_i \cap U_j} = m_j|_{U_i \cap U_j} modulo coboundaries.
+
+F.2 Consistency Radius
+
+In practice, we cannot enforce exact equality due to noise and calibration errors. We define a consistency radius \rho > 0 and require
+
+\|m_i|_{U_i \cap U_j} - m_j|_{U_i \cap U_j}\| \leq \rho
+
+for all overlapping pairs. If this fails, we declare a conflict.
+
+F.3 Choice of \rho
+
+Let \sigma_i be the noise standard deviation of sensor i. Then a natural choice is \rho = 3 \max_i \sigma_i (assuming Gaussian noise, this gives a 99.7% confidence interval). If sensors have different noise levels, we can use \rho = \sqrt{\sigma_i^2 + \sigma_j^2} for each pair, but for simplicity we use a global \rho.
+
+F.4 Conflict Response
+
+When a conflict is detected, we increase the SCBF parameter \varepsilon by a factor (e.g., 20%) to make the robot more cautious. This is a conservative response that does not require identifying which sensor is faulty. The increase is capped to avoid excessive conservatism.
+
+F.5 Relation to Sheaf Cohomology
+
+In sheaf theory, obstructions to global consistency are measured by cohomology groups. A conflict indicates that the local sections do not glue to a global section, i.e., there is a nontrivial cohomology class. Our consistency check detects 0‑cochains that fail to be 0‑cocycles. Full sheaf cohomology would require solving linear systems; our approach is a practical approximation.
+
+---
+
+Appendix G: Clinical Context Parameter Tables
+
+This appendix provides extended tables of parameters for each clinical context, including justification and typical ranges.
+
+Table G.1: Parameter Definitions
+
+Symbol Description Units Typical Range
+\delta Critical distance for unsafe set m 0.05–0.20
+\delta_{\text{stop}} Distance at which velocity becomes zero m 0.01–0.05
+\kappa Vulnerability gain kg·m² 0–10
+\varepsilon SCBF skin sensitivity – 0.1–2.0
+\eta SCBF speed penalty s/m 0.1–1.0
+\tau_s Synaptic time constant ms 2–50
+w_i Nociceptive weights – 0.1–1.0
+\rho Consistency radius varies sensor‑dependent
+
+Table G.2: Context‑Dependent Parameters
+
+Context \delta (m) \delta_{\text{stop}} (m) \kappa \varepsilon \eta \tau_s (ms) w_i range
+Neonatal 0.20 0.05 5 2.0 0.8 2 0.8–1.0
+Geriatric 0.15 0.03 3 1.5 0.6 5 0.6–0.9
+Post‑Op 0.10 0.02 2 1.0 0.4 10 0.5–1.0 (local)
+General 0.08 0.01 1 0.5 0.2 20 0.2–0.5
+Emergency 0.05 0.005 0.5 0.2 0.1 50 0.1–0.3
+
+---
+
+Appendix H: List of Symbols and Notation
+
+Symbol Meaning
+\mathcal{Q} Configuration manifold
+n Dimension of \mathcal{Q}
+q Configuration coordinates
+\dot q Velocity
+\ddot q Acceleration
+M(q) Inertia matrix (Riemannian metric)
+g_S(q) Vulnerability‑weighted metric
+V(q) Vulnerability tensor
+\phi_{\text{vuln}}(q) Vulnerability scalar field
+\kappa Vulnerability gain
+\Gamma(q) Anisotropic shaping matrix
+J Jacobian matrix
+e Unit direction vector
+d_{\text{safe}}(q,t) Geodesic safety margin
+\mathcal{U}(t) Unsafe set
+\delta Critical distance
+\sigma(\cdot) Velocity scaling function
+s Somatic state (vector of synaptic traces)
+\phi_{\text{sensor}}(s) Sensor field
+w_i Nociceptive weight for taxel i
+\tau_s Synaptic time constant
+\varepsilon, \eta SCBF tuning parameters
+h_{\text{soma}} Somatic Control Barrier Function
+\mathcal{C} Safe set
+\alpha(\cdot) Extended class \mathcal{K}_\infty function
+L_f h Lie derivative of h along f
+L_g h Lie derivative of h along g
+\rho Consistency radius
+\Theta Somatic Configuration Vector
+\tau_m Membrane time constant (LIF)
+\theta_i Dynamic threshold (AT‑LIF)
+\Delta \theta Threshold increment
+\tau_\theta Threshold decay time constant
+
+---
+
+End of Appendices
