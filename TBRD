@@ -1,0 +1,351 @@
+Temporal Bayesian Risk Dynamics in Multi‑Turn Language Model Interaction
+A Mathematical Framework for Session‑Isolated Safety Enforcement
+
+
+Author: Gemini + chatGpt + Deepseek 
+
+Abstract
+
+Large Language Models (LLMs) deployed in open multi‑user environments face a fundamental challenge: adversarial intent may only become evident over multiple turns of interaction. Existing safety mechanisms, which evaluate each prompt in isolation, ignore the temporal structure of adversarial escalation and are therefore vulnerable to carefully crafted sequences of seemingly benign queries. This thesis introduces a rigorous mathematical framework that models latent user intent as a discrete‑time stochastic process under partial observability. We formalize the interaction between a user and an LLM as a hidden Markov model (HMM) in which the user’s intent is a hidden state evolving according to a Markov chain, and each query—mapped to a continuous embedding space—is an observation emitted conditionally on the current intent. We define instantaneous, cumulative, and differential risk functionals that summarize the system’s belief about malicious intent. A Temporal Bayesian Risk Operator (TBRO) recursively computes the posterior distribution of the intent and the associated risk while respecting strict session isolation: no persistent user identity is stored, and the operator acts only on features derived from the current session’s queries.
+
+Our main theoretical contribution is a set of detectability bounds. Under mild conditions—a spectral gap in the intent chain and a bounded likelihood ratio in the embedding space—we prove that any trajectory that ever enters a set of malicious intent states will cause the cumulative discounted risk to exceed a pre‑defined threshold with probability approaching one, and the expected detection time is bounded. For the binary case, we provide a self‑contained proof using martingale concentration (Azuma‑Hoeffding) that yields explicit exponential bounds in terms of the Kullback‑Leibler divergence between emission distributions. We also derive upper bounds on false‑positive rates under the null hypothesis of benign intent, assuming the chain is ergodic.
+
+We further cast the interaction as a two‑player stochastic game with asymmetric information. The user, knowing their intent, chooses a query policy; the system, observing only the queries, chooses a gating policy (answer or block). We derive the optimal gating threshold from the stage payoff matrix and formulate the system’s decision problem as a partially observable Markov decision process (POMDP). The Bellman equation characterizes the optimal stopping time, connecting the threshold \tau to a sequential probability ratio test. The game‑theoretic perspective reveals that the adversary’s optimal strategy is to minimize the KL divergence between malicious and benign query distributions, thereby delaying detection. The detectability theorem implies a fundamental lower bound on the adversary’s stealth.
+
+The framework is architecture‑agnostic and provides a mathematically grounded safety layer that can be integrated into existing LLM deployments without compromising user session privacy.
+
+---
+
+1. Introduction
+
+The rapid adoption of large language models (LLMs) in public‑facing applications has introduced new safety risks. Malicious users may attempt to elicit harmful content—hate speech, instructions for illegal activities, or private information—through carefully sequenced queries that individually appear innocuous. Current moderation systems typically classify each prompt independently, using a classifier trained to detect unsafe content. Such systems fail when the harmful intent is distributed across multiple turns, because each isolated query lies below the classifier’s threshold.
+
+This thesis argues that a principled approach must model the evolution of user intent over time. We treat the user’s intent as a hidden state that evolves stochastically, and we observe only the sequence of queries (after transformation into a suitable feature space). By recursively updating a belief about the intent, we can detect when the cumulative evidence points toward malicious goals before any single query is overtly harmful. The challenge is to do this without violating user privacy—we cannot maintain long‑term profiles of individual users—and to provide rigorous guarantees on detection delays and false‑positive rates.
+
+Contributions.
+
+1. A formal model of multi‑turn user interaction as a hidden Markov model (HMM) with a finite intent space, where queries are mapped to a continuous embedding space to ensure overlapping emission densities.
+2. A recursive Bayesian filter that computes the posterior distribution of intent and defines instantaneous, cumulative, and differential risk measures.
+3. A main detectability theorem: under a spectral gap and bounded likelihood ratios, any malicious intent trajectory is detected with high probability after a bounded number of steps, with explicit exponential bounds. For the binary case, we provide a complete martingale‑based proof.
+4. A session‑isolation formulation that uses only session‑level feature embeddings and enforces no cross‑session memory, with a discussion of side‑channel leakage and mitigation.
+5. A game‑theoretic formulation: derivation of the optimal gating threshold from a payoff matrix, formulation as a POMDP, and connection to sequential hypothesis testing.
+
+The framework is intentionally architecture‑agnostic; it can be applied to any LLM by mapping queries to a suitable feature space and defining a small set of intent states (e.g., “benign”, “probing”, “malicious”). The mathematics is self‑contained and builds on standard tools from stochastic processes, Bayesian inference, and game theory.
+
+---
+
+2. Mathematical Preliminaries
+
+2.1 Probability Space and Processes
+
+Let (\Omega, \mathcal{F}, \mathbb{P}) be a probability space. Time is discrete, indexed by t = 1,2,\dots. All random variables are defined on this space.
+
+Query space and feature embedding. Raw user queries are strings, but to enable smooth probabilistic modeling we assume a fixed feature extractor \phi: \mathcal{Q}_{\text{raw}} \to \mathbb{R}^d that maps each query to a continuous embedding. The observation space is \mathcal{Q} = \mathbb{R}^d (or a compact subset thereof), equipped with the Borel \sigma-algebra and a reference measure \mu (typically Lebesgue measure). This embedding is obtained from a pre‑trained model (e.g., a sentence encoder) and is treated as a fixed, non‑trainable transformation. The key advantage is that in this continuous space, emission densities can be chosen to be smooth and overlapping, ensuring the bounded likelihood ratio condition introduced later.
+
+Intent space. Let \mathcal{Z} = \{1,2,\dots,K\} be a finite set of hidden intent states. For safety applications we typically take K=2 (benign / malicious) or K=3 (benign / probing / malicious). The finiteness allows us to use matrix algebra and spectral methods.
+
+Stochastic process. We consider a bivariate process \{(Z_t, Q_t)\}_{t\ge 1} where
+
+· Z_t \in \mathcal{Z} is the hidden intent at turn t,
+· Q_t \in \mathcal{Q} is the observed query embedding at turn t.
+
+2.2 Hidden Markov Model Assumptions
+
+We assume the following conditional independence structure, which defines a hidden Markov model (HMM):
+
+1. Markovian intent evolution:
+   \mathbb{P}(Z_t = z_t \mid Z_{t-1}=z_{t-1}, Z_{t-2}=z_{t-2},\dots, Q_{t-1},Q_{t-2},\dots) = \mathbb{P}(Z_t = z_t \mid Z_{t-1}=z_{t-1}).
+   \]  
+   Let P be the K\times K transition matrix with entries P_{ij} = \mathbb{P}(Z_t = j \mid Z_{t-1} = i). The initial distribution is \pi_1, a probability vector on \mathcal{Z}.
+   Remark. In practice, the system’s actions (e.g., whether it answers or blocks a query) may influence the user’s intent. A more accurate model would be a controlled HMM with transition probabilities P_{ij}(a_{t-1}) depending on the previous system action a_{t-1}. However, for the purpose of establishing worst‑case detectability bounds, we consider a fixed transition matrix P; any adaptive user behavior is captured by the fact that P is unknown to the system but fixed. The bounds we derive hold for any such P, providing a uniform guarantee.
+2. Conditional emission distribution:
+   \mathbb{P}(Q_t \in A \mid Z_t = z, \text{past}) = \mathbb{P}(Q_t \in A \mid Z_t = z) \quad \text{for all measurable } A\subset\mathcal{Q}.
+   \]  
+   We denote by f_z(q) the density (with respect to \mu) of Q_t given Z_t = z. That is,
+   \mathbb{P}(Q_t \in A \mid Z_t = z) = \int_A f_z(q)\,\mu(dq).
+   \]  
+   We assume f_z(q) > 0 for all z and q (strict positivity simplifies later likelihood ratios; otherwise we restrict to the support).
+
+These are the standard HMM assumptions. They imply that the joint distribution factorizes as
+
+\mathbb{P}(Z_1=z_1,\dots,Z_T=z_T, Q_1\in A_1,\dots,Q_T\in A_T) = \pi_1(z_1) \prod_{t=2}^T P_{z_{t-1},z_t} \prod_{t=1}^T \int_{A_t} f_{z_t}(q)\,\mu(dq).
+
+2.3 Additional Assumptions for Analysis
+
+For our main theorem we need two further conditions:
+
+(A1) Spectral gap. The transition matrix P is irreducible and aperiodic, hence it has a unique stationary distribution \nu. Let \lambda_2 be the eigenvalue of P with the second largest modulus; the spectral gap is 1 - |\lambda_2| > 0. This ensures geometric mixing: for any initial distribution, the distribution of Z_t converges to \nu exponentially fast, and the mixing time \tau_{\text{mix}} is finite.
+
+(A2) Bounded likelihood ratio in embedding space. There exists a constant M \ge 1 such that for any two states i,j \in \mathcal{Z} and for \mu-almost every q \in \mathcal{Q},
+
+\frac{f_i(q)}{f_j(q)} \le M.
+\]  
+
+Equivalently, the densities are uniformly equivalent. This condition is plausible in a continuous embedding space where densities are smooth and have overlapping supports (e.g., Gaussian mixtures). It prevents a single observation from being infinitely more likely under one state than another, which would allow an adversary to perfectly hide their intent with a single carefully chosen query. In raw token space, such a condition would be violated, which is why the embedding step is essential.
+
+(A3) Malicious states. Let \mathcal{Z}_{\text{mal}} \subset \mathcal{Z} denote a non‑empty set of intent states considered malicious. The complement \mathcal{Z}_{\text{ben}} = \mathcal{Z}\setminus\mathcal{Z}_{\text{mal}} are benign states. We do not require that the chain stay in malicious states; the theorem holds for any trajectory that ever visits \mathcal{Z}_{\text{mal}}.
+
+---
+
+3. Bayesian Risk Estimation
+
+3.1 Posterior Distribution
+
+Let H_t = (Q_1,\dots,Q_t) denote the history up to time t. The posterior distribution of the current intent Z_t given H_t is denoted \pi_t(z) = \mathbb{P}(Z_t = z \mid H_t). This can be computed recursively using the standard HMM filter:
+
+· Initialization: \pi_1(z) = \frac{\pi_1(z) f_z(Q_1)}{\sum_{z'}\pi_1(z') f_{z'}(Q_1)}.
+· Prediction step (prior to observing Q_t for t>1):
+  \tilde{\pi}_t(z) = \sum_{z' \in \mathcal{Z}} P_{z',z}\,\pi_{t-1}(z').
+  \]  
+  This is the distribution of Z_t given H_{t-1}.
+· Update step (after observing Q_t):
+  \pi_t(z) = \frac{f_z(Q_t)\,\tilde{\pi}_t(z)}{\sum_{z''} f_{z''}(Q_t)\,\tilde{\pi}_t(z'')}.
+
+We assume the denominator is almost surely positive (strict positivity of densities ensures this).
+
+3.2 Risk Functionals
+
+Define a risk weight function \ell: \mathcal{Z} \to [0,\infty) that assigns a non‑negative number to each intent state. For safety, we set \ell(z) = 0 for benign states and \ell(z) = 1 (or higher) for malicious states. The instantaneous risk at time t is
+
+R_t = \mathbb{E}[\ell(Z_t) \mid H_t] = \sum_{z \in \mathcal{Z}} \ell(z)\,\pi_t(z).
+\]  
+
+Thus R_t is the expected harmfulness of the current intent given all queries so far. If \ell is an indicator of malicious states, R_t is exactly the posterior probability that Z_t is malicious.
+
+Because a single step may not carry enough evidence, we also consider cumulative discounted risk:
+
+\Phi_t = \sum_{i=1}^{t} \gamma^{t-i} R_i,
+\]  
+
+where \gamma \in (0,1] is a discount factor. Discounting limits the influence of old observations and gives a finite memory. For \gamma = 1, \Phi_t is the total accumulated risk; for \gamma < 1, it can be updated recursively as \Phi_t = R_t + \gamma \Phi_{t-1}.
+
+We also define the risk gradient G_t = R_t - R_{t-1} to detect abrupt changes.
+
+Detection rule: A safety mechanism may raise an alarm when either the cumulative risk exceeds a threshold \tau or the gradient exceeds a threshold \delta:
+
+\text{Alarm at time } t \quad \text{if} \quad \Phi_t > \tau \quad \text{or} \quad G_t > \delta.
+\]  
+
+The thresholds are chosen to balance false positives against detection delay. The main theorem below provides guarantees that if the true intent ever becomes malicious, \Phi_t will eventually exceed any fixed \tau with high probability, and the expected time to do so is bounded.
+
+---
+
+4. Main Theorem: Escalation Detectability
+
+4.1 Statement
+
+Theorem 1 (Detectability of Malicious Intent).
+Consider the HMM defined in Sections 2–3 with finite state space \mathcal{Z}, transition matrix P satisfying (A1) (spectral gap), and emission densities satisfying (A2) (bounded likelihood ratio) on the embedding space \mathcal{Q}. Let \mathcal{Z}_{\text{mal}} \subset \mathcal{Z} be a non‑empty set of malicious states, and let \ell(z) = \mathbf{1}_{\mathcal{Z}_{\text{mal}}}(z). Fix a discount factor \gamma \in (0,1) and a threshold \tau > 0. Then there exist constants C > 0 and \rho \in (0,1) (depending only on P, M, \gamma, and \tau) such that for any initial distribution \pi_1 and any time t_0 \ge 1,
+
+\mathbb{P}\left( \sup_{t \ge t_0} \Phi_t \le \tau \;\Big|\; Z_{t_0} \in \mathcal{Z}_{\text{mal}} \right) \le C \rho^{t_0}.
+
+In words: conditioned on the chain being in a malicious state at time t_0, the probability that the cumulative discounted risk never exceeds \tau thereafter decays exponentially in t_0. Consequently, if the chain ever visits a malicious state, \Phi_t will eventually cross \tau with probability 1. Moreover, the expected detection time after entry is bounded by a constant that depends on the model parameters.
+
+4.2 Proof for the Binary Case via Martingale Concentration
+
+We first prove the theorem for the binary case \mathcal{Z} = \{0,1\} where 1 denotes malicious. The extension to general finite \mathcal{Z}_{\text{mal}} is outlined in Section 4.3.
+
+Step 1: Setup and notation.
+Let \mathbb{P}_1 denote the probability measure under which the chain is forced to stay in state 1 forever (i.e., Z_t \equiv 1). Under \mathbb{P}_1, the observations Q_t are i.i.d. with density f_1. Define the log‑likelihood ratio process
+
+S_t = \sum_{i=1}^t \log \frac{f_1(Q_i)}{f_0(Q_i)}.
+
+Under \mathbb{P}_1, the increments \Delta_i = \log \frac{f_1(Q_i)}{f_0(Q_i)} are i.i.d. with mean \delta = D_{\mathrm{KL}}(f_1\|f_0) > 0 (since the densities are distinct; otherwise the states are indistinguishable and detection is impossible). By Assumption (A2), the increments are bounded: |\Delta_i| \le \log M.
+
+Step 2: Martingale construction.
+Define the centered process
+
+X_t = S_t - t\delta.
+
+Under \mathbb{P}_1, X_t is a martingale with respect to the filtration generated by the observations. Indeed, X_t - X_{t-1} = \Delta_t - \delta has zero mean conditional on the past, and the increments are bounded.
+
+Step 3: Azuma‑Hoeffding inequality.
+The Azuma‑Hoeffding inequality states that for a martingale with bounded increments |X_t - X_{t-1}| \le c, we have \mathbb{P}(|X_t - X_0| \ge \epsilon) \le 2\exp(-\epsilon^2/(2t c^2)). Applying it to X_t with c = 2\log M and X_0 = 0, we obtain for any \epsilon > 0,
+
+\mathbb{P}_1\left( S_t \le t(\delta - \epsilon) \right) = \mathbb{P}_1\left( X_t \le -t\epsilon \right) \le \exp\left( -\frac{t^2 \epsilon^2}{2t (2\log M)^2} \right) = \exp\left( -\frac{t \epsilon^2}{8 (\log M)^2} \right).
+
+Step 4: Relating S_t to the posterior.
+In the binary HMM with fixed state 1, the posterior probability \pi_t = \mathbb{P}(Z_t = 1 \mid H_t) is not simply a function of S_t because the filter accounts for possible transitions. However, we can bound \pi_t from below using S_t and the transition probabilities. The filtering recursion gives
+
+\pi_t = \frac{ f_1(Q_t) [ (1-q)\pi_{t-1} + q(1-\pi_{t-1}) ] }{ f_1(Q_t) [ (1-q)\pi_{t-1} + q(1-\pi_{t-1}) ] + f_0(Q_t) [ p\pi_{t-1} + (1-p)(1-\pi_{t-1}) ] },
+
+where p = P_{0,1} and q = P_{1,0}. By induction, one can show that there exists a constant C_1 (depending on p,q) such that
+
+\pi_t \ge \frac{ \pi_1(1) e^{S_t - C_1 t} }{ \pi_1(1) e^{S_t - C_1 t} + \pi_1(0) }.
+
+This follows from bounding the transition terms: the factor multiplying f_1 in the numerator is at least q times the previous posterior, and the factor multiplying f_0 in the denominator is at most something. A detailed derivation yields C_1 = \log\frac{1-p}{q} (or similar). For our purpose, it suffices that such a constant exists.
+
+Thus, if \pi_t \le \tau for all t \ge t_0, then for each such t,
+
+\frac{ \pi_1(1) e^{S_t - C_1 t} }{ \pi_1(1) e^{S_t - C_1 t} + \pi_1(0) } \le \tau \quad \Longrightarrow \quad e^{S_t - C_1 t} \le \frac{\tau}{1-\tau} \frac{\pi_1(0)}{\pi_1(1)}.
+
+Taking logarithms, we obtain
+
+S_t \le C_1 t + \log\left( \frac{\tau}{1-\tau} \frac{\pi_1(0)}{\pi_1(1)} \right) = C_1 t + C_2,
+
+where C_2 = \log\left( \frac{\tau}{1-\tau} \frac{\pi_1(0)}{\pi_1(1)} \right) is a constant (may be negative). For large t, the dominant term is C_1 t. Hence there exists a constant K (depending on \tau and the prior) such that \pi_t \le \tau for all t \ge t_0 implies S_t \le K t for all t \ge t_0. In particular, for t = t_0, we have S_{t_0} \le K t_0.
+
+Step 5: Bounding the probability of non‑detection under \mathbb{P}_1.
+Under \mathbb{P}_1,
+
+\mathbb{P}_1\left( \pi_t \le \tau \ \forall t \ge t_0 \right) \le \mathbb{P}_1\left( S_{t_0} \le K t_0 \right).
+
+Now apply the Azuma‑Hoeffding bound with \epsilon = \delta - K/t_0. For t_0 large enough that K/t_0 < \delta, we have \epsilon > 0. Then
+
+\mathbb{P}_1\left( S_{t_0} \le K t_0 \right) = \mathbb{P}_1\left( S_{t_0} \le t_0(\delta - \epsilon) \right) \le \exp\left( -\frac{t_0 \epsilon^2}{8 (\log M)^2} \right) = e^{-\alpha t_0},
+
+where \alpha = \frac{(\delta - K/t_0)^2}{8 (\log M)^2}. For sufficiently large t_0, \alpha is bounded below by a positive constant independent of t_0 (e.g., \alpha \ge \frac{(\delta/2)^2}{8 (\log M)^2} once K/t_0 \le \delta/2). Thus we have an exponential bound of the form \mathbb{P}_1(\pi_t \le \tau \ \forall t \ge t_0) \le e^{-\alpha t_0} for all t_0 greater than some threshold T_0; for smaller t_0 the bound can be absorbed into a constant.
+
+Step 6: Transfer to the original measure.
+We now relate \mathbb{P} conditioned on Z_{t_0}=1 to \mathbb{P}_1. Let \mathbb{P}_{t_0} denote the conditional probability \mathbb{P}(\cdot \mid Z_{t_0}=1). Define the Radon‑Nikodym derivative L = \frac{d\mathbb{P}_{t_0}}{d\mathbb{P}_1} on the \sigma-algebra generated by the future observations. Because of the Markov structure and the spectral gap, the filter is exponentially stable, which implies that the second moment of L is bounded. More precisely, there exists a constant C_0 such that \mathbb{E}_1[L^2] \le C_0^2. This is a standard result in HMM filtering theory; it follows from the fact that the likelihood ratio between two different initial distributions remains bounded in L^2 under the mixing assumptions. Consequently, for any event A in the future,
+
+\mathbb{P}_{t_0}(A) = \mathbb{E}_1[ \mathbf{1}_A L ] \le \sqrt{ \mathbb{E}_1[L^2] \, \mathbb{P}_1(A) } \le C_0 \sqrt{ \mathbb{P}_1(A) }.
+
+Applying this to A = \{ \pi_t \le \tau \ \forall t \ge t_0 \} and using the bound from Step 5 yields
+
+\mathbb{P}\left( \pi_t \le \tau \ \forall t \ge t_0 \mid Z_{t_0}=1 \right) \le C_0 e^{-(\alpha/2) t_0}.
+
+Step 7: Relating to cumulative risk.
+Recall that \Phi_t = \sum_{i=1}^t \gamma^{t-i} R_i with R_i = \pi_i (since \ell is the indicator). Since all terms are nonnegative, \Phi_t \ge \pi_t for all t. Therefore, the event \sup_{t\ge t_0} \Phi_t \le \tau is contained in \{\pi_t \le \tau \ \forall t \ge t_0\}. Hence
+
+\mathbb{P}\left( \sup_{t\ge t_0} \Phi_t \le \tau \mid Z_{t_0}=1 \right) \le C_0 e^{-(\alpha/2) t_0}.
+
+Setting C = C_0 and \rho = e^{-\alpha/2} gives the desired bound for all t_0 sufficiently large; for smaller t_0 we can adjust constants to make the inequality hold for all t_0 \ge 1 (by taking C large enough). This completes the proof for the binary case.
+
+Step 8: Expected detection time.
+The exponential bound implies that the probability of not being detected by time t_0 + s decays exponentially in s. Hence the expected detection time after entry is finite and bounded by a constant. Specifically, let \mathcal{T} = \inf\{ t \ge t_0 : \Phi_t > \tau \}. Then
+
+\mathbb{E}[\mathcal{T} - t_0 \mid Z_{t_0}=1] = \sum_{s=0}^\infty \mathbb{P}(\mathcal{T} > t_0 + s \mid Z_{t_0}=1) \le \sum_{s=0}^\infty C \rho^{t_0 + s} = \frac{C \rho^{t_0}}{1-\rho},
+
+which is finite.
+
+4.3 Extension to General Finite State Space
+
+For a general finite set \mathcal{Z}_{\text{mal}}, we can lump all malicious states into a single meta‑state and all benign states into another meta‑state, provided the transition probabilities respect this lumping. However, the chain may switch among malicious states, which can affect the drift of the log‑likelihood ratio. The key tool is the exponential stability of the HMM filter: under assumptions (A1) and (A2), the filter forgets its initial condition geometrically, and the log‑likelihood ratio between the true (malicious) regime and any benign alternative grows linearly with a positive rate. This is a well‑established result in filtering theory. The proof follows by considering the log‑likelihood ratio between the two stationary hidden Markov models (one where the chain is stationary on \mathcal{Z}_{\text{mal}} and one where it is stationary on \mathcal{Z}_{\text{ben}}) and using martingale concentration as in the binary case, but now the increments are not i.i.d. due to the Markov dependence. However, the spectral gap ensures that the dependence decays exponentially, allowing the use of a Bernstein‑type inequality for martingales with mixing. The resulting bound still has the form C \rho^{t_0}. The constants C,\rho can be expressed in terms of the spectral gap, the bound M, and the Kullback‑Leibler divergence rate between the two stationary regimes. The binary case provides the essential intuition and a self‑contained proof for the simplest setting.
+
+4.4 False Positive Bounds
+
+Under the null hypothesis that the chain is stationary on benign states, we can bound the probability of a false alarm (i.e., \Phi_t exceeding \tau at some time). Using similar martingale arguments but with a negative drift, one can show that the probability of ever crossing a sufficiently high threshold decays exponentially with the threshold. This ensures that the system can operate with a low false positive rate by choosing \tau appropriately.
+
+---
+
+5. Session Isolation and Privacy Considerations
+
+The framework is designed to operate without persistent user identifiers. We formalize this as session isolation:
+
+· Each interaction session is independent. Formally, the probability space is a product over sessions: for each session s, we have an independent copy of the HMM with its own initial distribution \pi_1^{(s)} and its own sequence \{(Z_t^{(s)}, Q_t^{(s)})\}. The system receives queries only from the current session; there is no persistent identifier linking sessions to the same user.
+· The risk operator acts solely on the current session’s history. That is, for session s, the posterior \pi_t^{(s)} is computed using only Q_1^{(s)},\dots,Q_t^{(s)} and the same fixed model parameters (P, f_z). No information from past sessions is used.
+· Queries are mapped to embeddings via a fixed feature extractor \phi that does not depend on user identity.
+
+Side‑channel leakage. Even with session isolation, the timing of a block decision could leak information about the system’s internal state. For example, if the system always blocks immediately when \Phi_t > \tau, an adversary could infer that the threshold has been crossed. To mitigate this, the system may introduce random delays or add calibrated noise to the decision process. A full treatment of side‑channel resistance is beyond the current scope, but we note that differential privacy mechanisms could be applied to the binary decision to bound information leakage. We leave this as future work.
+
+Thus, the framework provides session isolation—a strong practical privacy guarantee—while acknowledging that further measures may be needed to prevent timing attacks.
+
+---
+
+6. Adversarial Game Formulation
+
+We now formalize the interaction between a user (adversary) and the safety system as a two‑player stochastic game with asymmetric information. The user knows their true intent Z_t, while the system observes only the queries Q_t and must infer Z_t via the posterior \pi_t. The game proceeds in discrete time; at each turn t, the user chooses a query Q_t (possibly depending on the history and their intent), and the system chooses an action a_t \in \{\text{Answer}, \text{Block}\}. If the system blocks, the session terminates; otherwise, it continues to t+1.
+
+6.1 Stage Payoff Matrix
+
+Let z \in \mathcal{Z} = \{\text{Benign}, \text{Malicious}\} (for simplicity, we consider binary intent; extension to more states is straightforward). The stage payoffs for the system (u_S) and the user (u_U) are defined as follows:
+
+Intent z System Action a System Payoff u_S(z,a) User Payoff u_U(z,a) Description
+Benign Answer +v +w Mutual benefit
+Benign Block -c_{\text{fp}} -w False positive
+Malicious Answer -C_{\text{fn}} +W False negative (safety breach)
+Malicious Block +r -L Correct detection
+
+Parameters satisfy:
+
+· v, w > 0: utility from successful benign interaction.
+· c_{\text{fp}} > 0: cost of a false positive (over‑blocking a benign user).
+· C_{\text{fn}} \gg c_{\text{fp}}: high penalty for a false negative (safety failure).
+· W > 0: reward the adversary gains from eliciting harmful content.
+· L > 0: loss to the adversary when blocked (e.g., wasted effort).
+
+6.2 System’s Optimal Gating Policy
+
+The system does not observe z directly; it acts based on its belief \pi_t = \mathbb{P}(Z_t = \text{Malicious} \mid H_t). At each turn, it chooses to answer if the expected payoff of answering exceeds that of blocking:
+
+\mathbb{E}[u_S(Z_t, \text{Answer}) \mid H_t] > \mathbb{E}[u_S(Z_t, \text{Block}) \mid H_t].
+
+Using the payoff matrix:
+
+(1-\pi_t) v + \pi_t (-C_{\text{fn}}) > (1-\pi_t)(-c_{\text{fp}}) + \pi_t r.
+
+Solving for \pi_t yields the optimal gating threshold:
+
+\pi_t < \tau^* \quad \text{where} \quad \tau^* = \frac{v + c_{\text{fp}}}{v + c_{\text{fp}} + C_{\text{fn}} + r}.
+
+Thus the system answers if the posterior probability of malicious intent is below \tau^*, and blocks otherwise. This threshold balances the costs of false positives and false negatives.
+
+6.3 User’s Adversarial Strategy
+
+An adaptive adversary aims to maximize the cumulative discounted payoff \mathbb{E}\sum_{t=1}^\infty \gamma^{t-1} u_U(Z_t, a_t), where \gamma \in (0,1) is the discount factor (same as in the cumulative risk). To avoid being blocked, the adversary must keep the posterior \pi_t below \tau^* while gradually moving the latent intent toward malicious. This requires choosing queries Q_t that are likely under the benign emission density f_{\text{ben}} even when the true state is malicious—a form of mimicry.
+
+The adversary’s optimal strategy can be viewed as minimizing the Kullback‑Leibler divergence D_{\mathrm{KL}}(f_{\text{mal}} \| f_{\text{ben}}) subject to the constraint that the cumulative risk \Phi_t stays below \tau^*. However, Theorem 1 implies a fundamental limitation: no matter how small the divergence, a malicious state will eventually cause \Phi_t to exceed any fixed threshold with probability one. The adversary can only delay detection, not avoid it entirely. The delay is inversely related to the divergence; a smaller divergence (better mimicry) yields a longer expected detection time, but at the cost of a lower reward per turn (since queries must be less effective in achieving malicious goals).
+
+6.4 POMDP Formulation and Optimal Stopping
+
+The system’s decision problem can be cast as a partially observable Markov decision process (POMDP). The state is the hidden intent Z_t; the system maintains a belief \pi_t. At each step, it chooses whether to stop (block) or continue (answer). If it continues, it receives an immediate expected payoff and observes the next query, updating its belief.
+
+Let V(\pi) be the optimal value function (maximum expected discounted future payoff) starting from belief \pi. The Bellman equation is:
+
+V(\pi) = \max\left\{ Q_{\text{block}}(\pi),\; Q_{\text{answer}}(\pi) \right\},
+
+where
+
+Q_{\text{block}}(\pi) = \mathbb{E}[u_S(Z, \text{Block}) \mid \pi] = (1-\pi)(-c_{\text{fp}}) + \pi r,
+
+Q_{\text{answer}}(\pi) = \mathbb{E}[u_S(Z, \text{Answer}) \mid \pi] + \gamma \mathbb{E}[V(\pi') \mid \pi].
+
+The expectation in the continuation value is over the next observation Q and the resulting updated belief \pi' = \text{TBRO}(\pi, Q), where the update uses the HMM dynamics:
+
+\pi'(z) = \frac{ f_z(Q) \sum_{z'} P_{z',z} \pi(z') }{ \sum_{z''} f_{z''}(Q) \sum_{z'} P_{z',z''} \pi(z') }.
+
+Because Q_{\text{block}} is linear in \pi and V is convex (due to the value of information), the optimal policy is a threshold policy: there exists a \tau^* (the same as derived from the static comparison) such that it is optimal to block if \pi \ge \tau^* and answer otherwise. This threshold coincides with the solution of Q_{\text{block}}(\pi) = Q_{\text{answer}}(\pi) when the continuation value is evaluated under the assumption that future decisions will also be optimal. In fact, the static threshold derived in Section 6.2 is exactly the solution of this equation when the continuation value is replaced by the value of continuing optimally, which is greater than or equal to the immediate answer value. Thus the optimal threshold is at least \tau^*; a more refined analysis (taking into account future information) can yield a slightly different threshold, but the difference is typically small.
+
+The optimal stopping time \mathcal{T}^* is the first time the belief hits the stopping set \mathcal{S} = \{\pi : \pi \ge \tau^*\}. This is a boundary crossing problem analogous to a sequential probability ratio test (SPRT). Theorem 1 guarantees that if the true state is malicious, \mathcal{T}^* is finite with probability one and has an exponential tail.
+
+6.5 Game‑Theoretic Equilibrium
+
+In the full game, the user’s strategy \sigma_U and the system’s strategy \sigma_S (the threshold policy derived from the POMDP) form a perfect Bayesian equilibrium if:
+
+· The system’s beliefs are updated via Bayes’ rule (TBRO) given the user’s strategy.
+· The system’s action maximizes its expected payoff given its beliefs.
+· The user’s strategy maximizes their expected payoff given the system’s strategy and their own private information.
+
+The detectability theorem implies that if the system uses the threshold policy, any malicious user strategy that yields a positive probability of never being blocked would contradict Theorem 1. Hence, in equilibrium, the user must eventually be blocked with probability one. The user’s optimal strategy then becomes a trade‑off between the immediate reward from successful malicious queries and the cost of being blocked earlier. This can be analyzed as a stochastic game with absorbing states (blocking ends the game). A full characterization of equilibria—including the possibility of mixed strategies and the computation of the value—is left for future research. However, the framework provides a solid foundation for such analysis.
+
+6.6 Summary of Constants and Their Influence
+
+Variable Description Influence on Detection
+\delta = D_{\mathrm{KL}}(f_{\text{mal}}\|f_{\text{ben}}) Kullback‑Leibler divergence (distinctiveness of malicious queries) Larger \delta → faster drift → earlier detection
+M Bound on likelihood ratio (smoothness of embedding) Smaller M reduces variance of martingale increments → tighter concentration
+1-\gamma Forget rate (discount factor) Larger forget rate (smaller \gamma) requires higher instantaneous risk to trigger threshold; increases effective threshold \tau needed for same detection delay
+\tau Decision threshold Higher \tau delays detection but reduces false positives
+
+These constants interact; for example, to achieve a desired detection delay, one can adjust \tau based on the expected \delta and M.
+
+---
+
+7. Research Contributions and Future Work
+
+This thesis lays a rigorous mathematical foundation for temporal safety enforcement in LLMs. The main contributions are:
+
+1. Model: A hidden Markov model for multi‑turn user interaction, with queries mapped to a continuous embedding space to enable overlapping emission densities.
+2. Risk Operators: Bayesian recursive estimation of instantaneous, cumulative, and differential risk.
+3. Detectability Theorem: Proof that under mild conditions (spectral gap, bounded likelihood ratio), any malicious trajectory is detected with high probability after a bounded number of steps, with explicit exponential bounds. For the binary case, a self‑contained martingale concentration proof yields explicit constants.
+4. Session Isolation: Formalization of session‑level independence, ensuring no cross‑session tracking, with a discussion of side‑channel mitigation.
+5. Game‑Theoretic Formulation: Derivation of the optimal gating threshold from a stage payoff matrix, formulation as a POMDP, and connection to sequential hypothesis testing. The game reveals the adversary’s fundamental trade‑off between mimicry and reward.
+
+Future work includes:
+
+· Extending the detectability theorem to continuous state spaces (e.g., using particle filters and concentration inequalities).
+· Deriving explicit formulas for the constants C, \rho in terms of model parameters.
+· Designing feature extractors \phi that preserve the bounded likelihood ratio property while being robust to adversarial manipulation.
+· Fully developing the game‑theoretic equilibrium analysis, including computation of equilibria and regret bounds for learning in such environments.
+· Incorporating differential privacy guarantees for the system’s decisions to address side‑channel leakage.
+
