@@ -1,0 +1,793 @@
+PC-SRGI Autonomous Drone
+
+Technical Blueprint v2.0 
+
+Document ID: DRONE-PC-SRGI-SPEC-004
+Version: 2.0
+Status: System Architecture & Mathematical Specification
+Authors: Ouadi Maakoul et al.
+Based on: A Unified Mathematical Framework for Physics-Constrained Self-Reconfiguring Generative Intelligence (v0.6) by ouadi Maakoul 
+
+---
+
+🎯 System Vision
+
+The PC-SRGI Autonomous Drone is a research platform designed to demonstrate a new paradigm in embodied intelligence: physics-constrained learning. Unlike conventional drone controllers that treat dynamics as a black box or pure data-driven models that ignore physical laws, PC-SRGI embeds conservation principles, symplectic geometry, and energy awareness directly into the learning pipeline.
+
+Core Contribution: A hybrid architecture where known physics (Newton–Euler) is hardcoded and symplectically integrated, while neural networks learn only the residual dissipative and unmodeled effects. This ensures long-term stability, data efficiency, and interpretability.
+
+Target Applications: Agile navigation in turbulence, long-endurance surveying, and a reproducible platform for embodied AI research.
+
+---
+
+1. Foundational Design Principles
+
+1. Physics-First
+   · Known conservative dynamics (inertia, gravity) are analytically expressed and numerically integrated with geometric precision.
+   · Neural components learn only what cannot be modeled from first principles: drag, ground effect, motor dynamics, turbulence.
+2. Energy-Aware Computation
+   · The computational graph adapts to available energy (battery state, thermal headroom).
+   · FLOPs are explicitly penalized during training and runtime.
+3. Structural Plasticity (Offline for v2.0)
+   · The network topology (capsule activation) can be reconfigured based on mission phase and energy budget.
+   · In v2.0, plasticity is used during training and as a research tool; online adaptation is deferred to future versions.
+4. Interpretability via Symbolic Extraction
+   · After flight, capsule activations are analyzed offline to extract human‑readable physical laws.
+   · These laws can be used to refine the hardcoded model or to generate new scientific hypotheses.
+5. Safety by Construction
+   · Formal guarantees: Lipschitz bounds (spatial and temporal), energy drift monitoring, hardware watchdog, and manual override.
+   · All neural outputs are clamped and validated by a low‑level safety layer.
+
+---
+
+2. Hardware Architecture
+
+The hardware is partitioned into three layers: high‑level compute, low‑level real‑time control, and sensors/actuators. All components are selected to balance performance, thermal robustness, and determinism.
+
+2.1 Compute Stack
+
+Component Specification Rationale
+High‑Level AI NVIDIA Jetson Orin Nano 8GB Sufficient for transformer inference; power‑efficient with proper cooling
+Low‑Level Flight Controller STM32H7 (400 MHz) Hard real‑time; handles sensor fusion, safety, and motor mixing
+Cooling Solution Copper heatpipe + 40 mm silent fan (IP54); thermal interface to enclosure Maintain junction temperature <80°C under sustained 8W load
+Power Monitoring INA219 (I²C) on Jetson power rail Real‑time power consumption for energy‑aware gating
+
+2.2 Communication Buses
+
+· Real‑Time Control: CAN bus @ 1 Mbps (shielded twisted pair)
+  · Deterministic, low jitter, hardware error handling.
+  · Messages: control commands (Jetson → STM32) at 100–500 Hz, telemetry (STM32 → Jetson) at 200 Hz.
+· Telemetry & Debug: UART @ 115200 baud for MAVLink (optional)
+· Sensor Interfaces: I²C, SPI as per device requirements
+
+2.3 Sensors
+
+Sensor Model Interface Purpose
+IMU ICM-42688‑P SPI @ 8 kHz Attitude, angular rate
+GPS ZED‑F9P (RTK) UART Position, velocity
+Barometer MS5611 I²C Altitude
+Optical Flow PMW3901 SPI Velocity at low altitude
+Current/Voltage INA226 I²C Battery monitoring
+Optional: Solid‑state LiDAR VL53L5 I²C Obstacle detection (future)
+
+2.4 Actuators
+
+· Motors: 4× brushless 2306‑2807 kV (appropriate for 7" props)
+· ESCs: 32‑bit, 48 kHz PWM, BLHeli_32 firmware (CAN input optional, but will use PWM for simplicity)
+· Propellers: 7" carbon‑reinforced, fixed pitch
+
+2.5 Airframe
+
+· Frame: Fixed Quad‑X 7" carbon fiber (e.g., Realacc R7)
+· Vibration Isolation: Silicone dampers for IMU and Jetson mount
+· Enclosure: Custom 3D‑printed with airflow channels for Jetson cooling
+
+---
+
+3. Software Architecture
+
+The software stack is designed for modularity, real‑time performance, and ease of research iteration.
+
+3.1 High‑Level Software (Jetson)
+
+```
+┌─────────────────────────────────────┐
+│  PC-SRGI Inference Engine (Rust)     │
+│  • ONNX Runtime for neural forces    │
+│  • CAN driver (SocketCAN)             │
+│  • Thermal/power monitor thread       │
+│  • Logging (capsule states, forces)   │
+└────────────┬────────────────────────┘
+             │ (shared memory / IPC)
+┌────────────▼────────────────────────┐
+│  Training & Analysis (Python)        │
+│  • PyTorch model definition           │
+│  • Training pipeline (Isaac Sim)      │
+│  • Symbolic extraction (PySR)         │
+│  • Offline data analysis              │
+└─────────────────────────────────────┘
+```
+
+Key Components:
+
+· ONNX Runtime Inference: The trained PyTorch model is exported to ONNX (opset 14) and loaded into the Rust inference engine using the ort crate. This eliminates Python overhead and ensures deterministic latency.
+· CAN Communication: The Rust process sends control messages at the desired frequency (500 Hz nominal) and receives telemetry.
+· Thermal/Power Monitor: An INA219 sensor is read periodically; if junction temperature exceeds 80°C, the inference frequency is reduced (e.g., to 200 Hz) and capsule gating is forced to Eco mode.
+· Logging: All capsule activations, force outputs, and system states are recorded to a microSD card for offline analysis.
+
+3.2 Low‑Level Software (STM32H7)
+
+```
+┌─────────────────────────────────────┐
+│  FreeRTOS Real-Time Kernel           │
+├─────────────────────────────────────┤
+│  Tasks:                               │
+│  • Sensor fusion (8 kHz)              │
+│  • CAN RX/TX (1 kHz)                   │
+│  • Watchdog monitor (1 kHz)            │
+│  • Control mixer (PWM generation)      │
+│  • Safety monitor (command validation) │
+│  • MAVLink telemetry (optional)        │
+└─────────────────────────────────────┘
+```
+
+Critical Tasks:
+
+· Sensor Fusion: Combines IMU, GPS, barometer via an EKF at 500 Hz.
+· CAN RX/TX: Processes incoming control commands and sends telemetry.
+· Watchdog Monitor: Expects a heartbeat message from the Jetson at >1 kHz. If missing for 5 ms, switches to PID fallback.
+· Command Validation: Verifies that thrust and torque commands are within physical limits and rate‑limited. If violated, triggers fallback.
+· Manual Override: An RC receiver (SBUS) is read; if the pilot commands override or if the STM32 detects a critical fault, direct passthrough is enabled.
+
+3.3 Safety Layers
+
+Layer Mechanism Response Time
+1. Physical Clamping PWM saturation in mixer <10 µs
+2. Command Validation Rate limits, magnitude checks <100 µs
+3. Software Watchdog Heartbeat timeout → PID fallback <1 ms
+4. Hardware Watchdog Independent timer resets STM32 if task hangs <10 ms
+5. Manual RC Override Direct PWM from receiver <5 ms
+
+---
+
+4. Mathematical Formulation
+
+4.1 System State and Dynamics
+
+The vehicle state is defined on the Lie group $SE(3)$:
+
+s = (x, v, R, \omega) \in \mathbb{R}^3 \times \mathbb{R}^3 \times SO(3) \times \mathbb{R}^3
+
+where $x$ is position, $v$ velocity, $R$ rotation matrix, $\omega$ body angular velocity.
+
+The dynamics are split into conservative (hardcoded, symplectic) and dissipative + control (neural residual):
+
+\dot{s} = f_{\text{cons}}(s) + f_{\text{diss}}(s, u) + f_{\text{ctrl}}(u)
+
+4.1.1 Conservative Dynamics ($f_{\text{cons}}$)
+
+· Translational: $m \dot{v} = R F_{\text{thrust}} - m g e_z$
+· Rotational: $I \dot{\omega} = \tau - \omega \times I \omega$
+· Kinematics: $\dot{x} = v$, $\dot{R} = R \hat{\omega}$
+
+These are derived from first principles and are exactly known (mass $m$, inertia $I$, gravity $g$). They are integrated using a symplectic method.
+
+4.1.2 Dissipative Residual ($f_{\text{diss}}$)
+
+Learned by a neural network. It captures:
+
+· Aerodynamic drag (translational and rotational)
+· Ground effect
+· Motor lag and nonlinearities
+· Turbulence and unsteady effects
+
+Inputs: state $s$, control $u$ (thrust, torque commands). Output: force/moment residual $\Delta F, \Delta \tau$.
+
+4.1.3 Control Model ($f_{\text{ctrl}}$)
+
+The mapping from commanded thrust/torque to actual forces is assumed to be instantaneous and linear for the baseline model; any deviation is absorbed into $f_{\text{diss}}$. However, for high fidelity, a simple first‑order motor model can be included analytically.
+
+4.2 Symplectic Integration with Dissipative Terms
+
+The integrator is a dissipative Velocity Verlet that preserves symplecticity for the conservative part while incorporating neural forces at half steps.
+
+Given state $(q, p)$ where $q = (x, R)$ and $p = (v, \omega)$, and a total force $F_{\text{total}} = F_{\text{cons}}(q) + F_{\text{neural}}(q, p, u) + F_{\text{ctrl}}(u)$:
+
+```
+p_half = p + 0.5 * Δt * F_total(q, p, u)
+q_new  = q + Δt * p_half
+p_new  = p_half + 0.5 * Δt * F_total(q_new, p_half, u)
+```
+
+Note: The neural force is evaluated twice per step, ensuring second‑order accuracy for the dissipative part and exact symplecticity for the conservative part. This scheme is implemented in Rust and is differentiable for training via PyTorch’s autograd.
+
+4.3 Neural Architecture: Physics‑Primitive Capsules
+
+The neural residual is computed by a capsule head attached to a transformer encoder that processes a history of states and controls.
+
+4.3.1 Transformer Encoder
+
+· Input: $[s_{t-H}, u_{t-H}, \dots, s_t, u_t]$ of length $H$ (e.g., $H=10$).
+· Output: hidden state $h \in \mathbb{R}^{d_{\text{model}}}$.
+
+4.3.2 Capsule Layer
+
+Each capsule $i$ corresponds to a fixed nonlinear primitive $\phi_i$:
+
+Primitive Formula Interpretation
+Identity $\phi(x) = x$ Linear drag
+Quadratic $\phi(x) = x^2$ Quadratic drag
+Sinusoidal $\phi(x) = \sin(\omega x + \varphi)$ Periodic disturbances
+Gaussian $\phi(x) = \exp(-x^2/\sigma^2)$ Localized effects
+Rational $\phi(x) = \frac{x}{1+\|x\|}$ Saturation
+
+The force contribution from capsule $i$ is:
+
+F_i = z_i \cdot \big( \mathbf{w}_i^\top \phi_i(\mathbf{h}) \big)
+
+where $\mathbf{w}_i$ is a learnable vector, and $z_i = \sigma(\gamma_i / \tau)$ is a gated activation (with temperature $\tau$). The gate $\gamma_i$ is trained to be either near 0 or 1, enabling sparsity.
+
+Total residual force:
+
+F_{\text{residual}} = \sum_{i=1}^N F_i
+
+4.3.3 Energy Cost
+
+During training, a penalty encourages sparse activation:
+
+E_{\text{comp}} = \sum_i (c_{\text{base}} + c_{\text{active}} \cdot z_i)
+
+This is used in the loss function to trade off accuracy against computational cost.
+
+4.4 Loss Function
+
+The total loss for training combines prediction error, physics constraints, and regularization:
+
+\mathcal{L} = \mathcal{L}_{\text{pred}} + \lambda_1 \mathcal{L}_{\text{physics}} + \lambda_2 E_{\text{comp}} + \lambda_3 \mathcal{L}_{\text{spatial}} + \lambda_4 \mathcal{L}_{\text{temporal}}
+
+4.4.1 Multi‑Step Prediction Loss
+
+\mathcal{L}_{\text{pred}} = \frac{1}{K} \sum_{k=1}^K \| s_{t+k}^{\text{pred}} - s_{t+k}^{\text{real}} \|^2
+
+where the rollout uses the learned model (including the neural residual) over $K$ steps (e.g., $K=20$).
+
+4.4.2 Physics Residual Loss
+
+Enforces that the model does not violate known physics (e.g., conservation laws) by penalizing the residual of the known ODE:
+
+\mathcal{L}_{\text{physics}} = \| \dot{s}_{\text{pred}} - f_{\text{cons}}(s_{\text{pred}}) \|^2
+
+4.4.3 Spatial Lipschitz Regularization
+
+Ensures the neural network’s output does not change too rapidly with state:
+
+\mathcal{L}_{\text{spatial}} = \max\left(0, \| \nabla_s f_{\text{neural}} \| - L_{\text{max}} \right)^2
+
+This is enforced via spectral normalization or gradient penalty.
+
+4.4.4 Temporal Lipschitz Regularization
+
+Prevents high‑frequency oscillations in the network output, which could destabilize control:
+
+\mathcal{L}_{\text{temporal}} = \max\left(0, \frac{\| f_{\text{neural}}(t) - f_{\text{neural}}(t-\Delta t) \|}{\Delta t} - L_{\text{time}} \right)^2
+
+During training, this is computed across consecutive time steps in the rollout.
+
+4.5 Symbolic Extraction (Offline)
+
+After flight, logged data (state, control, capsule activations $z_i$, and forces) are processed in Python:
+
+1. Basis Construction: For each active capsule ($z_i > 0.5$), construct a matrix $\Phi$ with columns $\phi_i(s_j)$.
+2. Sparse Regression: Use PySR to find a sparse linear combination $\sum_i c_i \phi_i$ that fits the observed residual force.
+3. Validation: Evaluate the discovered expression on held‑out data. If $R^2 > 0.9$ and the expression is physically plausible, it is recorded.
+4. Refinement: The discovered law can be incorporated into $f_{\text{cons}}$ for future flights.
+
+---
+
+5. Implementation Stack
+
+5.1 Training Pipeline (Simulation)
+
+· Simulator: Isaac Sim (or Gazebo with custom plugin) that implements the true physics (including high‑fidelity aerodynamics).
+· Domain Randomization: Mass, inertia, motor time constants, wind gusts, sensor noise.
+· Training Loop: Python/PyTorch, using the differentiable symplectic integrator (implemented in Rust with PyO3 bindings, or in PyTorch directly for training).
+· Loss Computation: As described in §4.4.
+· Export: After training, the model is converted to ONNX.
+
+5.2 Real‑Time Inference (Rust + ONNX)
+
+· ONNX Runtime: The ort crate loads the model and runs inference on the Jetson’s GPU (CUDA) or CPU.
+· Pre‑allocation: All input/output tensors are pre‑allocated to avoid dynamic memory.
+· Latency Profiling: The inference time is measured; if it exceeds 1.8 ms (for a 500 Hz loop), the frequency is reduced or the model is simplified (via capsule gating).
+
+5.3 Communication (CAN)
+
+· Jetson Side: SocketCAN interface (can-utils) or direct use of socketcan crate.
+· STM32 Side: HAL‑based CAN driver with hardware FIFO and interrupt handling. Messages are packed in the binary format described in §2.2.
+
+5.4 Low‑Level Control (STM32)
+
+· FreeRTOS: Tasks with appropriate priorities.
+· Sensor Fusion: EKF implementation (e.g., from ArduPilot or custom) running at 500 Hz.
+· Control Mixer: Converts desired thrust and torque to motor commands (PWM) using a standard quad‑X mixing matrix.
+· Safety Monitor: Independent task checking command reasonableness.
+
+---
+
+6. Validation Metrics
+
+6.1 Primary Metrics
+
+Metric Target Measurement Method
+Position Error (hover) < 15 cm RMSE Motion capture or RTK GPS
+Attitude Error < 2° RMS IMU logs
+Prediction Horizon 0.5s RMSE < 5 cm Compare model rollout vs. actual
+Control Latency < 2 ms (Jetson→motors) Timestamped CAN messages
+Thermal Robustness No throttling during 10 min flight Jetson thermal logs
+Safety Fallback Switch to PID < 10 ms after fault Injected fault test
+
+6.2 Secondary Metrics
+
+Metric Purpose
+Capsule Activation Sparsity Measure of computational efficiency
+Residual Force Magnitude Quantifies unmodeled dynamics
+Symbolic Recovery Rate How often PySR finds interpretable laws
+Energy per Inference FLOPs vs. battery consumption
+
+
+7. Risk Mitigation
+
+Risk Probability Impact Mitigation
+Jetson thermal throttling High Critical Passive + active cooling, 8W TDP limit, frequency scaling, thermal monitor
+CAN bus communication failure Medium High Hardware FIFO, error interrupts, fallback to UART, checksums
+Neural network instability Medium Medium Spatial/temporal Lipschitz constraints, command validation, PID fallback
+Watchdog false triggers Low High Hysteresis in timeout, logging for analysis
+Symbolic extraction overfitting High Low Rigorous test set validation, physical plausibility checks
+Regulatory compliance High High Design with ASTM F38 standards, geo‑fencing, remote ID ready
+
+---
+
+8. Conclusion
+
+The PC‑SRGI Autonomous Drone v2.0 blueprint provides a complete, mathematically rigorous, and practically implementable architecture for physics‑constrained learning on a UAV. By separating conservative and dissipative dynamics, embedding symplectic integration, and enforcing safety at multiple layers, the platform bridges the gap between theoretical machine learning and real‑world robotic control. All components are specified down to the communication protocol and software modules, enabling a clear path from simulation to flight.
+
+The focus on offline symbolic extraction ensures that the system remains interpretable and that scientific discoveries can be distilled from learned behaviors. While online structural plasticity is deferred, the architecture is designed to accommodate it in future versions.
+
+This blueprint serves as the foundation for a reproducible research platform that can accelerate the adoption of physics‑aware AI in autonomous systems.
+
+PC-SRGI Autonomous Drone
+
+Technical Appendices v2.0
+
+Document ID: DRONE-PC-SRGI-APPX-001
+Version: 2.0
+Status: Supplementary Technical Documentation
+Authors: Ouadi Maakoul et al.
+Based on: PC-SRGI Autonomous Drone Technical Blueprint v2.0
+
+---
+
+Appendix A: Mathematical Foundations
+
+A.1 Quadrotor Dynamics on SE(3)
+
+The configuration space of a quadrotor is the Lie group SE(3) = \mathbb{R}^3 \times SO(3). Let:
+
+· x \in \mathbb{R}^3: position in inertial frame
+· R \in SO(3): rotation matrix from body to inertial frame
+· v \in \mathbb{R}^3: velocity in inertial frame
+· \omega \in \mathbb{R}^3: angular velocity in body frame
+
+The kinematics are:
+
+\dot{x} = v,\quad \dot{R} = R \hat{\omega}
+
+where \hat{\omega} is the skew-symmetric matrix of \omega.
+
+The dynamics (Newton–Euler) are:
+
+m \dot{v} = R F_{\text{thrust}} + F_{\text{ext}} - m g e_z
+
+I \dot{\omega} = \tau - \omega \times I \omega + \tau_{\text{ext}}
+
+where:
+
+· m: mass
+· I \in \mathbb{R}^{3\times3}: inertia matrix in body frame
+· F_{\text{thrust}} = [0,0,T]^\top: thrust force in body frame (from rotors)
+· \tau = [\tau_x, \tau_y, \tau_z]^\top: control torques in body frame
+· F_{\text{ext}}, \tau_{\text{ext}}: external forces and torques (aerodynamics, ground effect, etc.)
+
+For a standard quadrotor, the mapping from rotor speeds \Omega_i to thrust and torque is:
+
+T = k_T \sum_{i=1}^4 \Omega_i^2,\quad 
+\tau_x = k_T d (\Omega_2^2 - \Omega_4^2),\quad 
+\tau_y = k_T d (\Omega_3^2 - \Omega_1^2),\quad 
+\tau_z = k_Q (\Omega_1^2 - \Omega_2^2 + \Omega_3^2 - \Omega_4^2)
+
+where d is the arm length, k_T and k_Q are rotor constants.
+
+In the PC-SRGI framework, the known conservative part f_{\text{cons}} includes the inertial terms and gravity, while the unknown external forces are learned as f_{\text{diss}}.
+
+A.2 Symplectic Integration: Derivation and Properties
+
+A symplectic integrator preserves the symplectic two-form \omega = dq \wedge dp exactly, leading to excellent long‑term energy stability for conservative systems. For a Hamiltonian system H(q,p) = T(p) + V(q), the continuous flow is symplectic. The Velocity Verlet algorithm is a second‑order symplectic integrator:
+
+Given (q_n, p_n) and time step h:
+
+p_{n+1/2} = p_n - \frac{h}{2} \nabla_q V(q_n)
+
+q_{n+1} = q_n + h \, M^{-1} p_{n+1/2}
+
+p_{n+1} = p_{n+1/2} - \frac{h}{2} \nabla_q V(q_{n+1})
+
+For a quadrotor, the conservative part corresponds to the Hamiltonian of a rigid body in a gravitational field. However, because the system includes non‑conservative forces (drag, control), we modify the scheme as described in §A.3.
+
+A.3 Dissipative Velocity Verlet for Learned Residuals
+
+We split the total force into conservative (F_{\text{cons}} from potential), neural residual (F_{\text{neural}}), and control (F_{\text{ctrl}}). The algorithm is:
+
+```
+Input: state (q, p), time step h, force functions
+1. Compute total force at current state:
+   F_total = F_cons(q) + F_neural(q, p, u) + F_ctrl(u)
+2. Half-step momentum:
+   p_half = p + (h/2) * F_total
+3. Full-step position:
+   q_new = q + h * p_half
+4. Recompute total force at new state:
+   F_total_new = F_cons(q_new) + F_neural(q_new, p_half, u) + F_ctrl(u)
+5. Full-step momentum:
+   p_new = p_half + (h/2) * F_total_new
+```
+
+Properties:
+
+· If F_{\text{neural}} = 0 and F_{\text{ctrl}} = 0, this reduces to standard Velocity Verlet and is symplectic.
+· For nonzero dissipative forces, the scheme is no longer exactly symplectic, but the conservative part is still integrated with a symplectic method, minimizing energy drift from that component.
+· The neural force is evaluated at both the beginning and middle of the step, preserving second‑order accuracy.
+
+A.4 Stability and Conservation Analysis
+
+We monitor energy drift of the conservative part:
+
+E_{\text{cons}}(t) = \frac{1}{2} p^\top M^{-1} p + V(q)
+
+In the absence of dissipative forces, \dot{E}_{\text{cons}} = 0. With dissipation, we expect a decrease. If the learned model causes spurious energy growth, it indicates instability.
+
+We also enforce Lipschitz bounds to ensure the neural network does not introduce high‑gain feedback (§C.1).
+
+---
+
+Appendix B: Neural Network Architecture
+
+B.1 Transformer Encoder
+
+The encoder processes a history of states and controls. Let the history length be H = 10 steps. Each time step input is a vector:
+
+\mathbf{x}_t = [s_t^\top, u_t^\top]^\top \in \mathbb{R}^{d_{\text{in}}}
+
+where d_{\text{in}} = 13 (position 3, velocity 3, quaternion 4, angular velocity 3) + 4 (thrust + 3 torques) = 17.
+
+These are embedded via a linear layer to dimension d_{\text{model}} = 128. Positional encoding (learned) is added. The transformer consists of L = 4 layers, each with multi‑head self‑attention (8 heads) and feed‑forward networks (hidden size 512, GELU activation). Layer normalization and residual connections are used.
+
+Output: a single hidden vector \mathbf{h} \in \mathbb{R}^{d_{\text{model}}} summarizing the context.
+
+B.2 Capsule Layer: Primitives and Gating
+
+Each capsule corresponds to a primitive \phi_i: \mathbb{R}^{d_{\text{model}}} \to \mathbb{R}^{d_{\text{model}}} (applied elementwise after a learned projection). The primitives are:
+
+Index Primitive Formula
+1 Identity \phi(x) = x
+2 Quadratic \phi(x) = x^2 (elementwise)
+3 Sinusoidal \phi(x) = \sin(\omega x + \varphi) with learnable \omega, \varphi
+4 Gaussian \phi(x) = \exp(-x^2/\sigma^2) with learnable \sigma
+5 Rational \phi(x) = \frac{x}{1+\|x\|}
+6 Sigmoid \phi(x) = \sigma(x)
+7 Absolute \(\phi(x) = 
+
+For each capsule i, we have a learnable coefficient vector \mathbf{w}_i \in \mathbb{R}^{d_{\text{model}}} and a gate logit \gamma_i. The gate activation is:
+
+z_i = \sigma\left( \frac{\gamma_i}{\tau} \right)
+
+with temperature \tau annealed from 1.0 to 0.1 during training.
+
+The contribution of capsule i to the force vector (of dimension 3 for force, 3 for torque) is:
+
+\mathbf{F}_i = z_i \cdot (\mathbf{w}_i^\top \phi_i(\mathbf{h})) \cdot \mathbf{e}_k
+
+where \mathbf{e}_k is a learned basis vector mapping the scalar to the appropriate output dimension. In practice, we have two separate capsule heads: one for force (3 outputs) and one for torque (3 outputs).
+
+B.3 Training Details
+
+Loss Function (repeated for completeness):
+
+\mathcal{L} = \mathcal{L}_{\text{pred}} + \lambda_1 \mathcal{L}_{\text{physics}} + \lambda_2 E_{\text{comp}} + \lambda_3 \mathcal{L}_{\text{spatial}} + \lambda_4 \mathcal{L}_{\text{temporal}}
+
+· \mathcal{L}_{\text{pred}}: MSE of multi‑step rollout (K=20 steps, each step 0.01 s simulated).
+· \mathcal{L}_{\text{physics}}: MSE of \dot{s}_{\text{pred}} - f_{\text{cons}}(s_{\text{pred}}) (computed via finite differences).
+· E_{\text{comp}} = \sum_i (c_{\text{base}} + c_{\text{active}} z_i), with c_{\text{base}} = 0.01, c_{\text{active}} = 0.1.
+· \mathcal{L}_{\text{spatial}}: Gradient penalty, estimated via finite differences with respect to state.
+· \mathcal{L}_{\text{temporal}}: As defined in §4.4.4, with L_{\text{time}} = 100 N/s (force) and 10 N·m/s (torque).
+
+Optimization: AdamW, learning rate 1e-4, batch size 64, trained for 200k steps. Gradient clipping at 1.0.
+
+Data Generation: Simulated flights in Isaac Sim with domain randomization. Each episode is 30 s real time, logged at 100 Hz. 80% training, 20% validation.
+
+B.4 Lipschitz Regularization Implementation
+
+Spatial Lipschitz: We enforce \| \nabla_s f_{\text{neural}} \|_2 \leq L_{\text{max}} by adding a penalty when the estimated norm exceeds L_{\text{max}}. We estimate the norm via power iteration (one step) during training.
+
+Temporal Lipschitz: We compute the difference between consecutive network outputs in the rollout and penalize if \|f_{\text{neural}}(t) - f_{\text{neural}}(t-\Delta t)\| / \Delta t > L_{\text{time}}. This is a soft constraint.
+
+---
+
+Appendix C: Safety and Verification
+
+C.1 Formal Guarantees
+
+· Spatial Lipschitz bound: Ensures that small changes in state do not cause large changes in control, preventing chattering. We set L_{\text{max}} = 500 N/m (force) and 50 N·m/rad (torque), derived from maximum physical acceleration change.
+· Temporal Lipschitz bound: Prevents oscillations at frequencies above the control bandwidth (approx 20 Hz). L_{\text{time}} = 100 N/s ensures the force cannot change faster than the motors can respond.
+· Energy drift monitoring: The STM32 computes E_{\text{cons}} at 100 Hz. If \Delta E > 0.1 J over 1 s (in hover, no control), it indicates a model error and triggers fallback.
+
+C.2 Watchdog Timer Implementation
+
+The STM32 uses a hardware timer (TIM2) configured to generate an interrupt at 1 kHz. In the main loop, a "heartbeat counter" is incremented each time a valid CAN message from the Jetson is received. The watchdog task checks if the counter has increased within the last 5 ms. If not, it sets a global flag that forces the control mixer to use PID setpoints instead of neural commands. The PID gains are pre‑tuned and stored in flash.
+
+Additionally, an independent hardware watchdog (IWDG) resets the STM32 if the software hangs; this is a last resort.
+
+C.3 Command Validation
+
+Each received control command is checked against:
+
+· Thrust in [0, max_thrust] (max_thrust = 4× motor max)
+· Torque components in [-max_torque, max_torque] (max_torque = 2 N·m)
+· Rate of change: \|u_t - u_{t-1}\| / \Delta t < max rate (thrust rate 50 N/s, torque rate 10 N·m/s)
+
+If any check fails for three consecutive cycles, the system switches to PID fallback.
+
+C.4 Manual Override and Failsafe Modes
+
+An RC receiver (SBUS) is connected to the STM32. In normal operation, the pilot can still command a mode switch (e.g., position hold, return‑to‑launch) via RC channels. If the pilot moves the throttle stick to zero for 2 seconds, the system disarms motors. If the pilot engages a dedicated "manual override" switch, the STM32 bypasses all software control and maps RC sticks directly to motor outputs (acro mode). This is implemented in hardware on a separate interrupt.
+
+---
+
+Appendix D: Communication Protocols
+
+D.1 CAN Bus Message Formats
+
+All messages use 8-byte data fields, with little‑endian encoding.
+
+Control Message (ID = 0x100, periodic from Jetson):
+
+Byte Field Type Description
+0-3 timestamp_us uint32 Microseconds since system start
+4 thrust float (converted to uint8 scaling 0-255) Normalized thrust [0,1]
+5-6 torque_x int16 Torque in body x (scaled: int16 = N·m × 1000)
+7 torque_y (low bits)  (Torque y and z packed)
+...   
+
+A more efficient packing: use 16 bits for each torque (range ±2 N·m → resolution 0.06 mN·m). So total: 4 bytes timestamp, 1 byte thrust, 6 bytes torque (3×16 bits) = 11 bytes, exceeding 8. So we must reduce precision or send multiple messages. We opt for:
+
+Message 0x100 (high priority): timestamp (4) + thrust (1) + torque_x (2) = 7 bytes.
+Message 0x101 (next priority): timestamp (4) + torque_y (2) + torque_z (2) = 8 bytes.
+
+The STM32 reassembles based on timestamp.
+
+Telemetry Message (ID = 0x200, 200 Hz from STM32):
+
+Byte Field Type Description
+0-3 timestamp_us uint32 
+4-7 position_x float meters
+8-11 position_y float 
+...   
+
+Given 8-byte limit, we send multiple messages with different IDs for different data groups (e.g., 0x200: position, 0x201: velocity, etc.).
+
+Heartbeat Message (ID = 0x300, 1 kHz from Jetson):
+
+Byte Field Type Description
+0-3 timestamp_us uint32 
+4 status uint8 Bit 0: PC-SRGI active, Bit 1: thermal throttle, Bit 2: low battery
+5-7 reserved  
+
+D.2 UART MAVLink Extensions
+
+For debugging and high‑bandwidth data logging, a secondary UART link (115200 baud) carries MAVLink messages. We define custom MAVLink messages:
+
+· PC_SRGI_CAPSULE_STATE (ID = 420): sends current gate activations z_i (bitmask).
+· PC_SRGI_RESIDUAL_FORCE (ID = 421): sends F_{\text{residual}} and \tau_{\text{residual}}.
+· PC_SRGI_SYMBOLIC_CANDIDATE (ID = 422): ground station can send discovered expressions for validation.
+
+D.3 Synchronization and Timing
+
+The STM32 generates a 1 kHz hardware timer interrupt and sends a sync message (ID = 0x000) every 100 ms containing its current timestamp. The Jetson uses this to correct for clock drift. Control messages are timestamped with the STM32’s time (via conversion) to ensure proper ordering.
+
+---
+
+Appendix E: Sensor Fusion and State Estimation
+
+E.1 Extended Kalman Filter Formulation on SE(3)
+
+We use an error‑state EKF (also known as multiplicative EKF) where the nominal state is integrated from IMU measurements, and the error state is estimated.
+
+State vector: \hat{x} = [p, v, q, b_a, b_g]^\top, where q is quaternion, b_a, b_g are accelerometer and gyro biases.
+
+Process model: IMU measurements \tilde{a}, \tilde{\omega} are used to propagate:
+
+\dot{p} = v,\quad \dot{v} = R(q)(\tilde{a} - b_a) + g,\quad \dot{q} = \frac{1}{2} \Omega(\tilde{\omega} - b_g) q,\quad \dot{b}_a = 0,\quad \dot{b}_g = 0
+
+with additive noise.
+
+Measurement updates: GPS (position, velocity), barometer (altitude), optical flow (velocity), magnetometer (heading). Each provides a linearized measurement model.
+
+The filter runs at 500 Hz, with corrections applied at the arrival rate of each sensor.
+
+E.2 Handling Delays and Outliers
+
+All sensor measurements are timestamped upon arrival at the STM32 (using the high‑resolution timer). The EKF uses these timestamps to apply delayed measurements correctly via state buffering. Outlier rejection uses Mahalanobis distance threshold.
+
+---
+
+Appendix F: Simulation Environment
+
+F.1 Isaac Sim Setup
+
+We use NVIDIA Isaac Sim with the following components:
+
+· Quadrotor model: URDF with accurate mass, inertia, and rotor dynamics.
+· Physics engine: PhysX 5 with custom aerodynamic plugin (adding drag, ground effect, turbulence).
+· Sensors: Simulated IMU, GPS, barometer with noise models.
+· Control interface: ROS 2 topics for motor commands, state feedback.
+
+A custom Python script interfaces with PyTorch: at each simulation step, it calls the PC‑SRGI model (inference) and applies the resulting thrust and torques to the rotors. The same model is used for training via differentiable simulation (using the symplectic integrator in PyTorch).
+
+F.2 Domain Randomization Parameters
+
+During training, the following parameters are randomized uniformly:
+
+Parameter Range
+Mass ±20%
+Inertia ±30%
+Motor time constant 0.02–0.1 s
+Drag coefficients ±50%
+Wind velocity 0–5 m/s (random direction)
+Ground effect strength 0–2× nominal
+Sensor noise (IMU, GPS) 2× nominal
+Battery voltage drop simulated
+
+F.3 Data Generation and Logging
+
+For each episode, we log:
+
+· Ground truth state at 100 Hz
+· IMU measurements at 400 Hz
+· GPS at 10 Hz
+· Control commands
+· Capsule activations and neural forces
+· External forces (for validation)
+
+Logs are stored in HDF5 format for offline analysis.
+
+---
+
+Appendix G: Symbolic Extraction Pipeline
+
+G.1 Data Preprocessing
+
+After a flight, we load the log and segment into windows where the vehicle is in a steady state (e.g., hover, constant velocity). For each window, we compute the observed residual force:
+
+F_{\text{res,obs}} = m \dot{v}_{\text{obs}} - F_{\text{cons}}(s_{\text{obs}})
+
+where \dot{v}_{\text{obs}} is estimated via central differences.
+
+We also record the corresponding capsule activations z_i and hidden states \mathbf{h} (from the transformer). We only keep windows where at least one capsule is active (z_i > 0.5).
+
+G.2 PySR Configuration
+
+We use PySR with the following settings:
+
+· Binary operators: +, -, *, /, pow
+· Unary operators: sin, cos, exp, log, sqrt, abs
+· Complexity: max complexity 20
+· Population size: 50
+· Generations: 100
+· Loss: L1 loss (robust to outliers)
+
+We run PySR separately for each force component (x, y, z) and torque component.
+
+G.3 Validation and Selection Criteria
+
+A discovered expression is accepted if:
+
+· R^2 on held‑out test data > 0.9.
+· The expression is numerically stable within the range of the training data.
+· The expression is physically plausible (e.g., drag force opposes velocity, no division by zero).
+· The expression has lower AIC than a constant model.
+
+If accepted, the expression is stored in a database with metadata (flight conditions, capsule activations). It can then be used to refine the known physics model or as a candidate for future model‑based control.
+
+---
+
+Appendix H: Thermal and Power Management
+
+H.1 Thermal Model of Jetson Orin Nano
+
+The Orin Nano has a thermal design power (TDP) of 7–15 W depending on clock configuration. The junction temperature T_j is modeled as:
+
+T_j = T_{\text{amb}} + R_{\theta} \cdot P
+
+where R_{\theta} is the thermal resistance of the cooling solution (°C/W). For a passive heatsink, R_{\theta} \approx 5 °C/W; with active fan, R_{\theta} \approx 2 °C/W. To keep T_j < 80 °C at T_{\text{amb}} = 40 °C, we need R_{\theta} \cdot P < 40 → P < 20 W with fan, which is safe. But we aim for sustained 8 W to be conservative.
+
+We monitor temperature via the onboard thermal zone interface. If T_j > 75 °C, we reduce inference frequency (e.g., from 500 Hz to 250 Hz) and force capsule gates to Eco mode (only the two most essential capsules). If T_j > 85 °C, we throttle further to 100 Hz.
+
+H.2 Cooling Solution Design
+
+· Heatsink: Copper base with aluminum fins, size 50×50×20 mm.
+· Fan: 40 mm, 5 V, 0.2 A, IP54 rated, controlled via PWM from Jetson GPIO.
+· Thermal interface: High‑conductivity thermal paste (7 W/m·K).
+· Enclosure: Vents aligned with airflow, intake on bottom, exhaust on side.
+
+H.3 Dynamic Frequency Scaling and Capsule Gating
+
+At runtime, the Jetson monitors temperature and power. It computes a "thermal headroom" factor \alpha \in [0,1]. The inference frequency f_{\text{inf}} is scaled as f_{\text{inf}} = f_{\text{max}} \cdot \alpha. Additionally, the capsule gates are adjusted: we sort capsules by their gate value z_i (from the last inference) and keep only the top N_{\text{active}} where N_{\text{active}} = \lceil \alpha \cdot N_{\text{total}} \rceil. This ensures that computational load scales with thermal budget.
+
+---
+
+Appendix I: Component Specifications and Bill of Materials
+
+I.1 Detailed Hardware Specifications
+
+Component Part Number Key Specs Quantity
+Frame Realacc R7 7" Carbon fiber, 250 mm wheelbase 1
+Motors T‑Motor F60 Pro III 1750KV Max thrust 1200 g each 4
+ESCs Holybro Tekko32 F4 45A 32‑bit, BLHeli_32, 4‑in‑1 1
+Propellers Gemfan 7042 7×4.2" carbon‑reinforced 4 pairs
+Flight Controller Holybro Pixhawk 6C STM32H7, IMU ICM‑42688‑P 1
+Companion Computer NVIDIA Jetson Orin Nano 8GB 8 GB RAM, 20 TOPS 1
+GPS ZED‑F9P RTK capable, multi‑band 1
+Barometer MS5611 On Pixhawk 1
+Optical Flow PMW3901 SPI interface 1
+Power Module Holybro PM07 5V/12V outputs, current sensing 1
+CAN Transceiver SN65HVD230 3.3V, 1 Mbps 2
+RC Receiver FrSky R‑XSR SBUS output 1
+Battery Tattu 6S 4000mAh 100C LiPo 1
+Heatsink/Fan Custom Copper base, 40 mm fan 1 set
+
+I.2 Interconnection Diagram
+
+```
++----------------+     +----------------+     +----------------+
+|   RC Receiver  |---->|   STM32H7 FC   |<--->|   ESCs (PWM)   |
+|   (SBUS)       |     | (Pixhawk 6C)   |     +----------------+
++----------------+     +----------------+
+        |                     ^
+        | CAN (1 Mbps)         | UART (MAVLink)
+        v                     |
++----------------+     +----------------+
+| Jetson Orin    |<--->|   GPS, Baro,   |
+| Nano           |     |   Optical Flow |
++----------------+     +----------------+
+        |
+        v
++----------------+
+| Power Module   |
+| (INA219, INA226)|
++----------------+
+```
+
+I.3 Power Budget Analysis
+
+Component Voltage Current (max) Power (max)
+Motors (4) 22.2 V 80 A 1776 W
+ESCs 5 V 0.5 A 2.5 W
+STM32 FC 5 V 0.2 A 1 W
+Jetson 5–19 V 3 A @ 5 V 15 W (peak)
+GPS 5 V 0.1 A 0.5 W
+Sensors 5 V 0.2 A 1 W
+Fan 5 V 0.2 A 1 W
+Total   ~1800 W (flight) / ~21 W (avionics)
+
+The battery (6S 4000 mAh) can supply about 888 Wh (22.2 V × 4 Ah × 10? Actually 22.2 V × 4 Ah = 88.8 Wh). At full throttle, flight time is ~3 minutes; at cruise (200 W), ~25 minutes.
+
+---
