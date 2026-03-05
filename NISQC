@@ -1,0 +1,971 @@
+AI-Guided Symbolic Optimization of Noisy Intermediate-Scale Quantum Circuits
+
+Author: Ouadi Maakoul
+
+
+Abstract
+
+The advent of Noisy Intermediate-Scale Quantum (NISQ) processors offers the potential for quantum advantage, but their utility is severely limited by hardware noise and short coherence times. Circuit depth is directly correlated with error accumulation; thus, minimizing depth is paramount. Current quantum compilers rely on hand-crafted rewrite rules and heuristic search, leaving substantial room for improvement. This dissertation proposes a novel neuro-symbolic framework that leverages large language models (LLMs) to discover new symbolic rewrite rules, automatically verifies their correctness using algebraic and graphical methods, and employs reinforcement learning (RL) to search for optimal transformation sequences under a hardware-aware cost model. By integrating ZX-calculus as a native representation, Baker–Campbell–Hausdorff (BCH) expansions for approximate compression, and detailed device calibration data, the framework aims to outperform state-of-the-art compilers in both depth reduction and actual execution fidelity on real NISQ hardware. The research is structured in three phases, with clear milestones and evaluation benchmarks, and will culminate in an open-source tool for the quantum computing community.
+
+---
+
+1. Introduction
+
+1.1. The NISQ Era and Its Challenges
+
+Quantum computing has reached a pivotal moment. Processors developed by industry leaders such as IBM, Google, IonQ, and Rigetti now operate with dozens to hundreds of qubits, entering what John Preskill famously termed the Noisy Intermediate-Scale Quantum (NISQ) regime [11]. These devices are capable of performing computations that are difficult to simulate classically, offering a tantalizing glimpse of near-term quantum advantage. However, they remain fundamentally limited by hardware imperfections: qubit decoherence, gate infidelities, crosstalk, and connectivity constraints.
+
+For a quantum circuit implemented as a sequence of unitary gates  U = U_n U_{n-1} \dots U_2 U_1 , the fidelity of execution decays approximately exponentially with circuit depth d:
+
+F \approx e^{-\lambda d},
+
+where \lambda is an effective noise rate characteristic of the device. This relationship is not merely theoretical—it is a practical barrier. Every additional gate, every moment a qubit idles, increases the probability that noise will corrupt the computation. Consequently, minimizing circuit depth is directly equivalent to maximizing execution fidelity.
+
+1.2. The Compiler Imperative
+
+The task of translating a high-level quantum algorithm into a form that can be executed efficiently on a specific hardware platform falls to the quantum compiler. A compiler performs several critical functions:
+
+· Decomposition: Breaking down arbitrary unitary operations into a native gate set (e.g., \{R_x, R_z, \text{CNOT}\}).
+· Optimization: Reducing gate count and depth through rewrite rules such as cancellation, fusion, and commutation.
+· Routing: Inserting SWAP gates to satisfy connectivity constraints when two-qubit gates act on non-adjacent qubits.
+· Scheduling: Arranging gates to minimize idle time and mitigate crosstalk.
+
+Despite decades of research and sophisticated tools like Qiskit [8,15], TKET [9], and PyZX [3], the optimization problem remains fundamentally hard. The space of equivalent circuit representations is combinatorially large, and hand-crafted rewrite rules, while effective, are necessarily incomplete. Moreover, most existing optimizers treat noise as an afterthought—applying routing and optimization passes separately, with limited ability to adapt to the specific error characteristics of a given device at a given moment.
+
+1.3. The Opportunity: AI-Guided Symbolic Reasoning
+
+Recent advances in artificial intelligence, particularly in large language models (LLMs) and reinforcement learning (RL), open new avenues for tackling such complex optimization problems. LLMs have demonstrated remarkable ability to manipulate mathematical expressions and generate novel solutions within constrained domains. Reinforcement learning has proven effective in navigating vast search spaces, from game playing to chip design.
+
+This dissertation proposes to harness these capabilities in a neuro-symbolic framework for quantum circuit optimization. The core idea is simple yet powerful:
+
+· Use an LLM to propose novel symbolic rewrite rules, expanding beyond the known literature.
+· Automatically verify the correctness of these rules using algebraic and graphical methods (ZX-calculus, symbolic matrix equality).
+· Employ an RL agent to search for optimal sequences of these rules, guided by a hardware-aware cost function that directly models device noise and connectivity.
+
+This approach addresses the fundamental limitations of current compilers: it can discover new optimizations, adapt to specific hardware, and explore a richer space of transformations than any fixed rule set.
+
+1.4. Problem Statement
+
+We formalize the optimization problem as follows. Given:
+
+· A target unitary U (or a circuit implementing it),
+· A target quantum device characterized by:
+  · A native gate set \mathcal{G},
+  · A coupling map C specifying which qubit pairs can execute two-qubit gates,
+  · Calibration data providing error rates for each gate on each qubit/connection, as well as coherence times (T_1, T_2),
+
+we seek a circuit U' such that:
+
+1. Functional Equivalence: U' implements a unitary that is \epsilon-close to U in diamond norm:
+   \|U - U'\|_{\diamond} \leq \epsilon,
+   where \epsilon may be zero (exact equivalence) or a small positive tolerance (allowing approximate compression).
+2. Hardware Compatibility: U' uses only gates from \mathcal{G} and respects the coupling map C (any two-qubit gate acts only on connected qubit pairs).
+3. Optimality: The expected error probability when executing U' on the target device is minimized:
+   \min_{U'} \mathbb{E}[\text{error}(U')].
+
+This is a constrained optimization problem in an astronomically large space. Its solution demands a combination of symbolic reasoning, heuristic search, and detailed physical modeling.
+
+1.5. Research Hypothesis
+
+We hypothesize that an AI-guided symbolic optimizer can outperform static rule-based compilers by virtue of three key capabilities:
+
+1. Discovery: The LLM-based rule proposer can uncover novel, non-trivial rewrite rules that human designers have overlooked, expanding the optimizer's toolkit.
+2. Adaptation: By incorporating device calibration data directly into the cost function, the RL agent can learn to favor transformations that yield the greatest fidelity improvement on the specific target hardware, accounting for spatial variation in error rates and connectivity constraints.
+3. Exploration: The combination of a rich set of verified rules and a learned search policy enables the optimizer to explore a larger and more promising region of the transformation space than greedy or heuristic methods.
+
+1.6. Contributions Overview
+
+This dissertation will make the following original contributions:
+
+· A neuro-symbolic framework for rewrite rule discovery using LLMs guided by Counter-Example Guided Inductive Synthesis (CEGIS), targeting stubborn circuit fragments where existing optimizers fail.
+· Integration of ZX-calculus as the core representation, enabling efficient equivalence verification and making many optimizations natural graph transformations.
+· A hardware-aware RL/MCTS search engine with action templates that scales to large circuits and directly optimizes for device-specific noise, SWAP overhead, and depth.
+· Lossy compression via BCH expansions with a global error budget, allowing controlled trade-offs between accuracy and depth reduction.
+· Dynamic re-optimization to adapt circuits to real-time calibration changes, ensuring optimality at execution time.
+· Extensive empirical evaluation on benchmarks including VQE, QAOA, and QASMBench, with comparisons to state-of-the-art compilers on both noisy simulators and real IBM Quantum hardware.
+· Open-source release of the discovered rule database, trained policy weights, and full benchmark results.
+
+1.7. Thesis Outline
+
+The remainder of this proposal is structured as follows:
+
+· Section 2 establishes the mathematical foundations, including quantum circuits, ZX-calculus, Lie algebra, BCH formula, and noise modeling.
+· Section 3 reviews related work, positioning our approach against existing symbolic, AI-based, and verified compilers.
+· Section 4 presents the proposed architecture in detail, covering rule discovery, verification, search strategy, and hardware adaptation.
+· Section 5 describes the evaluation plan, including benchmarks, baselines, metrics, and expected outcomes.
+· Section 6 provides a realistic timeline and milestones for the three-year project.
+· Section 7 summarizes the expected contributions.
+· Section 8 concludes the proposal.
+
+---
+
+Chapter 2: Mathematical Foundations
+
+This chapter establishes the mathematical framework underlying quantum circuit optimization. We review the representation of quantum circuits, the algebraic structures that enable symbolic rewriting, the graphical language of ZX-calculus, the Baker–Campbell–Hausdorff formula for approximating gate products, and models of hardware noise.
+
+2.1 Quantum Circuits and Unitary Evolution
+
+A quantum circuit on n qubits is a sequence of unitary operations applied to an initial state, typically |0\rangle^{\otimes n}. Mathematically, it is described by a product of unitary matrices:
+
+U(\vec{\theta}) = \prod_{k=1}^{L} G_k(\theta_k),
+
+where each G_k belongs to a gate set \mathcal{G} and may depend on a continuous parameter \theta_k. Common gates include:
+
+· Pauli gates:
+  X = \begin{pmatrix}0&1\\1&0\end{pmatrix},\quad 
+  Y = \begin{pmatrix}0&-i\\i&0\end{pmatrix},\quad 
+  Z = \begin{pmatrix}1&0\\0&-1\end{pmatrix}.
+· Hadamard gate:
+  H = \frac{1}{\sqrt{2}}\begin{pmatrix}1&1\\1&-1\end{pmatrix}.
+· Phase gate and T gate:
+  S = \begin{pmatrix}1&0\\0&i\end{pmatrix},\quad 
+  T = \begin{pmatrix}1&0\\0&e^{i\pi/4}\end{pmatrix}.
+· Rotation gates:
+  R_x(\theta) = e^{-i\frac{\theta}{2}X},\quad 
+  R_y(\theta) = e^{-i\frac{\theta}{2}Y},\quad 
+  R_z(\theta) = e^{-i\frac{\theta}{2}Z}.
+· Two-qubit gates: most prominently the CNOT gate:
+  \text{CNOT} = \begin{pmatrix}1&0&0&0\\0&1&0&0\\0&0&0&1\\0&0&1&0\end{pmatrix},
+  and the CZ gate:
+  \text{CZ} = \begin{pmatrix}1&0&0&0\\0&1&0&0\\0&0&1&0\\0&0&0&-1\end{pmatrix}.
+
+The total number of gates L and the number of two-qubit gates (CNOT count) are primary complexity metrics because two-qubit gates typically have error rates an order of magnitude higher than single-qubit gates on NISQ hardware.
+
+2.2 Symbolic Rewrite Rules
+
+Circuit optimization relies on local transformations that preserve the overall unitary. These transformations can be expressed as rewrite rules P \rightarrow Q where U(P) = U(Q). The following classes are fundamental.
+
+2.2.1 Gate Cancellation
+
+If a gate is followed by its inverse, they cancel:
+
+G G^\dagger = I.
+
+Examples:
+
+X X = I,\quad H H = I,\quad R_z(\theta) R_z(-\theta) = I.
+
+2.2.2 Rotation Fusion
+
+Rotations about the same axis combine additively:
+
+R_z(\alpha) R_z(\beta) = R_z(\alpha + \beta).
+
+The same holds for R_x and R_y.
+
+2.2.3 Commutation Relations
+
+Two gates commute if their matrices commute. For single-qubit gates, commutation often depends on the axes. For example:
+
+[Z, R_z(\theta)] = 0,\quad [X, R_x(\theta)] = 0,
+
+but X and Z anti-commute: XZ = -ZX. Commutation allows reordering of gates, which can enable further cancellations or fusions.
+
+2.2.4 KAK Decomposition
+
+Any two-qubit unitary U \in SU(4) can be decomposed into at most 3 CNOTs [12]. This is a powerful structural rewrite: if the AI detects a subcircuit that implements a two-qubit unitary, it can replace it with an optimized KAK form.
+
+2.3 ZX-Calculus
+
+ZX-calculus is a graphical language for quantum processes [16,19]. It represents quantum circuits as graphs with two types of nodes: green (Z-type) and red (X-type). Each node, or spider, can have any number of wires. The basic spiders are:
+
+· Z-spider: represents a linear map \langle 0...0| + e^{i\alpha}\langle 1...1| (up to normalization).
+· X-spider: similarly for the X basis.
+
+The power of ZX-calculus lies in its complete set of rewrite rules for Clifford+T circuits. Key rules include:
+
+· Spider fusion: two connected spiders of the same color can be merged.
+· Bialgebra rule: relates Z and X spiders.
+· Hopf rule: used in simplifying certain patterns.
+
+Importantly, equality in ZX-calculus can be checked in polynomial time for certain fragments, and tools like PyZX [3] automate these checks. By converting a circuit to a ZX diagram, we obtain a representation where many optimizations become graph simplifications, and equivalence can be verified without full matrix multiplication.
+
+2.4 Lie Algebra and Baker–Campbell–Hausdorff (BCH)
+
+For non-commuting gates, the product of two exponentials can be expressed as a single exponential via the BCH formula. For matrices A and B,
+
+e^{A} e^{B} = \exp\left( A + B + \frac{1}{2}[A,B] + \frac{1}{12}[A,[A,B]] + \frac{1}{12}[B,[B,A]] + \cdots \right),
+
+where [A,B] = AB - BA is the commutator. The series converges if \|A\| and \|B\| are sufficiently small [13].
+
+Truncating the series after a finite number of terms yields an approximation error that can be bounded. For instance, if we keep terms up to order k, we obtain C_k such that
+
+\| e^{A}e^{B} - e^{C_k} \| \leq \varepsilon_k,
+
+with explicit bounds in terms of commutator norms. This enables lossy compression: merging two gates into one with a controlled error.
+
+2.4.1 Global Error Budget
+
+In a circuit with multiple approximate merges, the cumulative error must be managed. We introduce a global error budget \mathcal{E}_{\text{total}} (e.g., 1% infidelity). For each approximate rewrite r with error \epsilon_r, we require:
+
+\sum_{r} \epsilon_r \leq \mathcal{E}_{\text{total}}.
+
+This ensures that the mathematical approximation error remains below the unavoidable physical decoherence, making the trade-off scientifically sound.
+
+2.5 Noise Modeling
+
+Realistic noise models are essential for hardware-aware optimization. NISQ devices exhibit:
+
+· Gate-dependent errors: each gate type has an error probability obtained from calibration.
+· Spatial variation: error rates vary across qubits and connections.
+· Crosstalk: operations on neighboring qubits may increase error.
+· Relaxation and dephasing: characterized by T_1 and T_2 times.
+
+2.5.1 Depolarizing Noise Model
+
+A simple but widely used model is depolarizing noise, where a gate is followed by a depolarizing channel with probability p:
+
+\mathcal{E}(\rho) = (1-p)\rho + \frac{p}{3}(X\rho X + Y\rho Y + Z\rho Z).
+
+For a circuit with depth d and uniform per-gate error p, the total fidelity is approximately (1-p)^d \approx e^{-pd}.
+
+2.5.2 Device-Specific Error Model
+
+To incorporate calibration data, we adopt a product model assuming independent errors:
+
+F \approx \prod_{\text{gates } g} (1 - p_g),
+
+where p_g is the error rate for gate g on the specific qubit(s) it acts on. For two-qubit gates, p_g depends on the pair. This model, while approximate, captures spatial variation and can be refined with more accurate noise channels (e.g., thermal relaxation, readout errors) as needed.
+
+---
+
+Chapter 3: Related Work
+
+Quantum circuit optimization has been studied extensively, with approaches ranging from hand-crafted rule-based systems to AI-driven methods. This chapter reviews the state of the art and positions our contribution.
+
+3.1 Symbolic and Verified Compilers
+
+3.1.1 PyZX
+
+PyZX [3] is a Python library for automated reasoning with ZX-calculus. It implements a large set of rewrite rules and can significantly reduce T-count and CNOT count in Clifford+T circuits. PyZX is purely symbolic and does not incorporate hardware noise or AI guidance.
+
+3.1.2 VOQC
+
+VOQC [4,20] is a verified optimizer for quantum circuits implemented in the Coq proof assistant. It provides hand-crafted, correctness-proven rewrite rules. While it offers strong guarantees, its rule set is fixed and human-designed.
+
+3.1.3 Giallar
+
+Giallar [5] is a push-button verification tool for Qiskit transformation passes. It verifies that a given pass preserves unitary equivalence, but does not discover new passes.
+
+3.2 AI-Driven Compilers
+
+3.2.1 OrQstrator
+
+OrQstrator [1] uses deep reinforcement learning to orchestrate multiple existing circuit rewriters and resynthesis tools. It selects sequences of passes to minimize a cost metric, but it does not discover new rewrite rules; it merely combines existing ones.
+
+3.2.2 Agent-Q
+
+Agent-Q [2] fine-tunes large language models to generate quantum circuits for specific applications (e.g., QAOA ansätze). It focuses on circuit generation rather than optimization, and does not verify equivalence.
+
+3.2.3 Other ML Approaches
+
+Reinforcement learning has been applied to quantum circuit optimization directly [6,7], but these typically operate on a fixed gate set and learn to reorder or replace gates without symbolic rule discovery.
+
+3.3 Comparative Analysis
+
+Approach Symbolic Guarantee AI/ML Component Noise-Aware? Verified?
+PyZX ZX rewriting No (manual rules) No No
+VOQC Verified in Coq No (hand-crafted) No Yes
+Giallar Verified passes No (uses Qiskit) No Push-button
+OrQstrator Orchestration DRL over rewriters No No
+Agent-Q No (generation) Fine-tuned LLM No No
+This work ZX + symbolic verification LLM discovers rules Yes (device + topology) Yes (automated)
+
+3.4 The Gap in the Literature
+
+None of the existing systems combine the following key elements:
+
+· Automatic discovery of novel symbolic rewrite rules beyond those known to human experts.
+· Formal verification of discovered rules to guarantee correctness.
+· Hardware-aware search that directly optimizes for device-specific noise and connectivity.
+· Integration with a powerful graphical representation (ZX-calculus) that makes many optimizations natural.
+
+This dissertation fills that gap by proposing a neuro-symbolic framework where an LLM proposes candidate rules, a verifier checks them, and an RL agent learns to apply them optimally under a realistic hardware cost model.
+
+---
+
+This concludes Chapters 2 and 3. The next chapters will detail the proposed architecture, evaluation plan, timeline, and expected contributions.
+
+Chapter 4: Proposed Approach
+
+This chapter presents the design of the proposed neuro-symbolic framework for AI-guided quantum circuit optimization. We describe the overall architecture and the key components: rule discovery via large language models (LLMs) with Counter-Example Guided Inductive Synthesis (CEGIS), automatic equivalence verification, circuit representation in ZX-calculus, a search engine based on reinforcement learning and Monte Carlo Tree Search (MCTS), handling of parameterized circuits via the Baker–Campbell–Hausdorff (BCH) approximation, and adaptation to specific hardware through calibration data and dynamic re-optimization.
+
+4.1 Overall Architecture
+
+The system is designed as an iterative pipeline that transforms an input quantum circuit into an optimized, hardware-aware equivalent. Figure 4.1 illustrates the high-level flow and data dependencies among the components.
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Input Circuit │───▶│  ZX Diagram     │───▶│  Search Engine  │
+│   (QASM/Qiskit) │    │  Representation │    │  (RL + MCTS)    │
+└─────────────────┘    └─────────────────┘    └────────┬────────┘
+                                                        │
+                                                        ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Verified Rule  │◀───│  Rule Verifier  │◀───│  Rule Proposer  │
+│    Database     │    │  (SymPy/ZX)     │    │  (LLM + CEGIS)  │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                        │
+                                                        ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Hardware       │───▶│  Cost Function  │───▶│  Optimized      │
+│  Calibration    │    │  (Noise-aware)  │    │  Circuit        │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+The process begins with the conversion of the input circuit to a ZX diagram. Simultaneously, the rule discovery module generates candidate rewrite rules, which are verified and stored. The search engine then applies these rules to the diagram, guided by a cost function that incorporates hardware calibration data. The final optimized circuit is produced after the search terminates.
+
+4.2 Rule Discovery via LLM with CEGIS
+
+4.2.1 Rationale
+
+Manual compilation of rewrite rules is labor-intensive and incomplete. To expand the set of known optimizations, we employ a large language model (LLM) to propose novel equivalences. However, naive prompting often yields trivial or incorrect rules. We therefore integrate the LLM into a Counter-Example Guided Inductive Synthesis (CEGIS) loop, which directs the model to solve specific hard instances and verifies its proposals.
+
+4.2.2 The CEGIS Loop
+
+The CEGIS loop operates as follows:
+
+1. Identify stubborn fragments: Baseline optimizers (e.g., Qiskit, PyZX) are run on a diverse corpus of quantum circuits. Subcircuits (typically 2–5 qubits) where these optimizers achieve little or no reduction in gate count or depth are flagged as "stubborn fragments." These represent opportunities for new rewrite rules.
+2. Synthesis query: For each stubborn fragment F with unitary U_F and current cost c (e.g., CNOT count), a query is formulated for the LLM:
+   · Provide a description of the fragment (in QASM or as a ZX diagram).
+   · Specify a target cost k < c (e.g., c-1 or floor(c/2)).
+   · Request an equivalent circuit using at most k CNOTs.
+   · Include few-shot examples of known rewrite rules to guide the model.
+   · Optionally supply relevant mathematical context (e.g., commutation relations, KAK decomposition, BCH expansions) via retrieval-augmented generation (RAG).
+3. Verification: The proposed circuit F' is translated into a rewrite rule F \rightarrow F'. Its correctness is checked using the methods of Section 4.3. If verified, the rule is added to the rule database.
+4. Iteration: The updated rule set is used to re-optimize the original circuits. New stubborn fragments may emerge, and the loop repeats. This iterative process ensures that the discovered rules are both novel and practically useful.
+
+4.2.3 Prompt Design and Retrieval
+
+The LLM is augmented with a retrieval-augmented generation (RAG) database containing:
+
+· Known identities from textbooks (Nielsen & Chuang),
+· All rewrite rules from PyZX,
+· BCH expansions up to fourth order,
+· KAK decomposition results,
+· Previously discovered rules (to avoid redundancy).
+
+Prompts are structured to include:
+
+· A clear statement of the task,
+· Few-shot examples of successful rule transformations,
+· The stubborn fragment description,
+· The target cost reduction,
+· A request for machine-readable output (e.g., QASM, SymPy LaTeX).
+
+4.3 Automatic Rule Verification
+
+Every candidate rule P \rightarrow Q must be proven unitary-equivalent before it can be used. We adopt a multi-tiered verification strategy.
+
+4.3.1 Exact Symbolic Verification (Small Scale)
+
+For rules involving at most three qubits and no continuous parameters, we convert P and Q to unitary matrices using symbolic computation (SymPy, QuTiP). Equivalence holds if
+
+U(P)^\dagger U(Q) = I \quad \text{or} \quad \|U(P) - U(Q)\| = 0.
+
+This method is exact but scales exponentially; it is therefore limited to small subcircuits.
+
+4.3.2 ZX-Calculus Verification
+
+For larger rules, we translate both circuits to ZX diagrams using PyZX. The ZX rewrite system is complete for Clifford+T circuits; equivalence can be decided by attempting to reduce both diagrams to a normal form or by using PyZX's built-in equality check (which applies rewrite rules heuristically). If the diagrams are found to be equal, the rule is accepted.
+
+4.3.3 Parameterized Rule Verification
+
+Rules involving continuous parameters (e.g., rotation fusion) are verified symbolically using trigonometric identities and computer algebra. For instance, the identity
+
+R_z(\alpha) R_z(\beta) = R_z(\alpha+\beta)
+
+is confirmed by expanding the matrix exponentials and simplifying. More complex parameterized rules are checked by symbolic manipulation in SymPy.
+
+4.3.4 Handling Verification Failures
+
+Rules that fail verification are discarded. Optionally, feedback (e.g., "the proposed circuit differs by a global phase") may be logged for analysis, but the CEGIS loop continues without relying on the LLM to correct itself online.
+
+4.4 Circuit Representation: ZX-Calculus
+
+4.4.1 Choice of Representation
+
+ZX-calculus offers several advantages for optimization:
+
+· Graphical structure: Circuits become graphs, making local transformations explicit.
+· Built-in rewrite rules: Many optimizations (spider fusion, bialgebra, etc.) are already expressed as ZX rules.
+· Verification integration: PyZX provides tools for equivalence checking and diagram simplification.
+
+4.4.2 Conversion to and from ZX
+
+Input circuits (QASM, Qiskit QuantumCircuit) are converted to ZX diagrams using PyZX's conversion functions. After optimization, the diagram is converted back to a gate sequence for execution on hardware. The conversion is reversible and preserves unitary equivalence.
+
+4.5 Search Strategy: Reinforcement Learning with MCTS
+
+4.5.1 State and Action Space
+
+· State s_t: The current ZX diagram G_t.
+· Action a_t: Application of a verified rewrite rule T_i to a matched subgraph.
+
+The action space is large due to the combinatorial number of possible rule applications. To make learning tractable, we introduce action templates. A template identifies a semantic region of interest (e.g., phase gadgets, Clifford blocks, small gate sequences) and groups all applicable rules within that region. This abstraction reduces branching and provides a natural structure for the policy.
+
+4.5.2 Policy Network
+
+A graph neural network (GNN) encodes the ZX diagram and outputs a probability distribution over templates. The GNN architecture is based on GraphSAGE with attention, which aggregates features from neighboring nodes. The network is pre-trained via self-play on a synthetic dataset of small circuits generated by random application of seed rules. Self-play involves letting the current policy optimize circuits and using the resulting trajectories as training data.
+
+4.5.3 Reward Function
+
+The reward for applying a rule is the reduction in a hardware-aware cost function:
+
+R_t = \text{Cost}(G_t) - \text{Cost}(G_{t+1}),
+
+where
+
+\text{Cost}(G) = \alpha \cdot \text{depth}(G) + \beta \cdot \text{CNOT\_count}(G) + \gamma \cdot \text{SWAP\_overhead}(G) + \delta \cdot (1 - \text{estimated\_fidelity}(G)).
+
+· depth(G): circuit depth after conversion to gates.
+· CNOT\_count(G): number of CNOT gates.
+· SWAP\_overhead(G): estimated number of SWAP gates needed to route the circuit on the target coupling map, computed via a fast router (e.g., Sabre).
+· estimated\_fidelity(G): derived from device calibration data as described in Section 4.7.
+
+The coefficients \alpha,\beta,\gamma,\delta are hyperparameters that can be tuned to prioritize different objectives.
+
+4.5.4 Monte Carlo Tree Search (MCTS)
+
+We use MCTS to explore the space of transformation sequences. At each state, the policy network provides a prior distribution over actions. MCTS performs a number of simulations, each consisting of:
+
+· Selection: Traverse the tree using the PUCT (Predictor + Upper Confidence bound for Trees) formula to balance exploration and exploitation.
+· Expansion: Add a new node by applying an action.
+· Rollout: Simulate a random or heuristic continuation to estimate the value.
+· Backup: Update node statistics with the rollout value.
+
+After simulations, the action with the highest visit count is selected for execution. This process is repeated until a stopping criterion (e.g., no further cost reduction) is met.
+
+4.5.5 Scalability Considerations
+
+To manage circuits with many qubits, we incorporate:
+
+· Local windows: Rule matching is restricted to subgraphs of limited size (e.g., ≤6 qubits).
+· Curriculum learning: The policy is trained first on small circuits and progressively exposed to larger ones.
+· Hybrid search: After a fixed number of MCTS steps, a fast greedy PyZX simplification is applied globally to reduce the diagram, then MCTS resumes.
+
+4.6 Handling Parameterized Circuits and BCH Approximations
+
+4.6.1 Parameterized Rule Matching
+
+Rules that involve parameterized gates are matched by type, independent of parameter values. The resulting circuit retains symbolic parameters, which can be propagated or simplified using algebraic identities.
+
+4.6.2 BCH-Based Approximate Rewrites
+
+For sequences of non-commuting gates, we may replace them with a single gate using a truncated BCH expansion. Given two gates e^{A} and e^{B}, we compute the BCH series to order k:
+
+C_k = A + B + \frac{1}{2}[A,B] + \frac{1}{12}[A,[A,B]] + \frac{1}{12}[B,[B,A]] + \cdots
+
+and approximate the product by e^{C_k}. The approximation error \epsilon is bounded using known estimates [13]. If \epsilon is below a user-defined threshold (e.g., 10^{-3}), the rewrite is allowed, and the error is tracked. A global error budget (Section 2.4.1) ensures that cumulative approximation errors do not exceed acceptable limits.
+
+4.6.3 Integration into Search
+
+BCH approximations are treated as rewrite rules with an associated error. During search, the agent may choose an approximate rule if the cost reduction outweighs the penalty from exceeding the error budget. The penalty is incorporated into the cost function as an additional term proportional to \epsilon / \mathcal{E}_{\text{total}}.
+
+4.7 Hardware Adaptation and Dynamic Re-Optimization
+
+4.7.1 Calibration Data Integration
+
+The system reads device calibration files (e.g., from IBM Quantum) containing:
+
+· Gate error probabilities for each qubit and each connection.
+· T1 and T2 relaxation times.
+· Coupling map (adjacency of allowed two-qubit gates).
+
+These data are used to compute estimated_fidelity(G). A simple product model is used initially:
+
+F_{\text{est}} = \prod_{\text{gates } g} (1 - p_g),
+
+where p_g is the error rate for the specific gate on the specific qubit(s). Idle time errors are estimated based on circuit duration and T1/T2 times. More sophisticated noise models can be substituted later.
+
+4.7.2 Dynamic Re-Optimization
+
+Calibration data change over time. To maintain optimality at execution time, we propose a two-stage approach:
+
+1. Template generation: The search engine produces a parameterized circuit template, marking "flexible zones" (e.g., qubit assignments, SWAP placements) that can be adjusted without altering the unitary.
+2. Final micro-optimization: Immediately before execution, the system fetches the latest calibration data and runs a fast, lightweight optimization pass that reassigns qubits and re-routes SWAPs to minimize error on the current device. This pass may use heuristics or a small MCTS search constrained to the flexible zones.
+
+This decouples the expensive rule-discovery and search from the final hardware-specific tuning, making the approach practical.
+
+4.8 Summary
+
+The proposed framework integrates LLM-based rule discovery with formal verification, ZX-calculus representation, RL-guided search, and hardware-aware cost modeling. Each component is designed to address a specific challenge in quantum circuit optimization, and together they form a comprehensive system for producing high-fidelity circuits for NISQ devices.
+
+---
+
+Chapter 5: Evaluation Plan
+
+This chapter outlines the methodology for evaluating the proposed framework. We describe the benchmarks, baselines, metrics, experimental setup, and ablation studies that will be used to assess its performance.
+
+5.1 Benchmarks
+
+A diverse set of quantum circuits will be used to evaluate the optimizer. These circuits span different application domains, sizes, and structural characteristics.
+
+5.1.1 QASMBench
+
+We select circuits from the QASMBench suite [18] with 5–20 qubits, including:
+
+· Arithmetic circuits: 5-qubit ripple-carry adder, 8-qubit multiplier.
+· Quantum Fourier Transform (QFT): QFT on 5, 10, and 15 qubits.
+· Grover's algorithm: Oracle-based search for 5 and 10 qubits.
+
+5.1.2 Variational Quantum Eigensolver (VQE) Ansätze
+
+VQE circuits for small molecules, generated using standard UCCSD ansätze:
+
+· H₂: 4 qubits.
+· LiH: 6 qubits.
+· BeH₂: 8 qubits.
+
+5.1.3 Quantum Approximate Optimization Algorithm (QAOA)
+
+QAOA circuits for MaxCut on random 3-regular graphs:
+
+· 10-node graphs: 10 qubits, with 10–20 QAOA layers.
+· 20-node graphs: 20 qubits, with 10 layers.
+
+5.1.4 Randomized Benchmarking Circuits
+
+To test generalization, we generate random circuits:
+
+· Clifford circuits: 5–15 qubits, composed of H, S, CNOT.
+· Parameterized circuits: Random sequences of R_x, R_y, R_z and CNOTs.
+
+5.2 Baselines
+
+The proposed optimizer will be compared against the following state-of-the-art compilers:
+
+· Qiskit (optimization_level=3) – the standard IBM compiler.
+· TKET (full optimization) – Quantinuum's compiler with advanced passes.
+· PyZX (full simplify) – pure ZX-based optimizer.
+· VOQC – applicable to Clifford+T circuits.
+· OrQstrator – if publicly available; otherwise a simplified implementation using DRL to orchestrate existing passes will be used.
+· Agent-Q – for VQE/QAOA tasks, we will compare against circuits generated by Agent-Q (if available) or use reported results from the literature.
+
+5.3 Metrics
+
+5.3.1 Primary Metrics
+
+· Depth reduction: Percentage reduction in circuit depth relative to the baseline.
+· CNOT count reduction: Percentage reduction in number of CNOT gates.
+· Estimated fidelity: Using a realistic noise simulator (Qiskit Aer with IBM calibration data), we compute the expected success probability (fidelity) of the circuit.
+· Actual fidelity: For a subset of circuits, we will execute on IBM Quantum hardware and measure fidelity via randomized benchmarking or direct state tomography.
+
+5.3.2 Secondary Metrics
+
+· Rule discovery rate: Number of novel, verified rewrite rules generated per CEGIS iteration.
+· Compilation time: Wall-clock time taken by the optimizer (excluding hardware execution).
+· Fidelity Gap (G_F): Defined as
+  G_F = \frac{F_{\text{AI}} - F_{\text{baseline}}}{1 - F_{\text{baseline}}},
+  where F_{\text{AI}} is the fidelity achieved by our optimizer and F_{\text{baseline}} by the best baseline. This metric measures the fraction of remaining possible improvement captured.
+
+5.4 Experimental Setup
+
+5.4.1 Noise Simulation
+
+Noise simulations will be performed using Qiskit Aer with noise models derived from actual IBM calibration data. For a chosen device (e.g., ibm_brisbane), we will fetch calibration files and construct a NoiseModel that includes:
+
+· Gate error probabilities for each qubit and connection.
+· Thermal relaxation (T1, T2) for idle qubits.
+· Readout errors.
+
+Each circuit will be simulated with 10,000 shots to obtain the output distribution. Fidelity will be computed as the Hellinger fidelity between the ideal and noisy distributions (or process fidelity via randomized benchmarking where applicable).
+
+5.4.2 Hardware Execution
+
+We will apply for IBM Quantum credits to execute circuits on real devices. Selected circuits from the benchmark set (small to medium size) will be submitted to machines such as ibm_brisbane or ibm_kyiv. Success probability will be measured according to the application (e.g., energy error for VQE, approximation ratio for QAOA, process fidelity for benchmarking circuits).
+
+5.4.3 Statistical Significance
+
+All experiments will be repeated multiple times with different random seeds (for circuit generation or noise simulation). Results will be reported as mean ± standard deviation.
+
+5.5 Ablation Studies
+
+To isolate the contribution of each component, we will perform the following ablation studies:
+
+1. Rule source: Compare performance using only seed rules (from PyZX/VOQC) versus using the full set including LLM-discovered rules. This measures the value of novel rule discovery.
+2. Reward components: Evaluate the optimizer with different cost functions:
+   · Depth only,
+   · Depth + CNOT count,
+   · Full hardware-aware cost (including fidelity and SWAP overhead).
+     This quantifies the impact of noise-awareness.
+3. Search algorithm: Compare MCTS (with policy network) against greedy rule application (always apply the rule with highest immediate cost reduction) and random rule selection. This assesses the benefit of learned search.
+4. Global error budget: Run with and without the global error budget for BCH-based approximate rewrites to determine whether error control is necessary for achieving high fidelity.
+
+5.6 Summary
+
+The evaluation plan is designed to rigorously test the proposed framework against existing methods across a range of circuits and metrics. By including ablation studies, we will be able to attribute performance gains to specific components of the system. All results will be reported transparently, and the code and data will be made publicly available to facilitate reproducibility.
+
+Chapter 6: Contributions
+
+This dissertation will make several original contributions to the field of quantum circuit optimization, spanning neuro-symbolic AI, formal verification, and hardware-aware compilation. The contributions are organized into six main areas.
+
+6.1 Neuro-Symbolic Rewrite Rule Discovery
+
+The first major contribution is a novel method for discovering symbolic rewrite rules using large language models (LLMs) guided by Counter-Example Guided Inductive Synthesis (CEGIS). Unlike prior work that relies on hand-crafted rule sets or simple pattern matching, this approach:
+
+· Targets stubborn fragments: By focusing on subcircuits where existing optimizers fail, the LLM is challenged to produce genuinely useful transformations.
+· Iteratively expands the rule database: The CEGIS loop ensures that discovered rules are verified and added to a growing library, which can be reused across many circuits.
+· Combines creativity with correctness: The LLM proposes candidate rules, but formal verification guarantees equivalence, eliminating the risk of hallucination.
+
+This contribution advances the state of the art by demonstrating that LLMs can be effectively harnessed to augment the symbolic knowledge base of quantum compilation, potentially uncovering optimizations that human experts have missed.
+
+6.2 Formal Verification Framework for Rewrite Rules
+
+To ensure the correctness of discovered rules, we develop a multi-tiered verification framework that integrates:
+
+· Exact symbolic verification for small, non-parameterized rules using matrix algebra in SymPy/QuTiP.
+· ZX-calculus based verification for larger or Clifford+T circuits, leveraging PyZX's equivalence checking capabilities.
+· Symbolic verification for parameterized rules using computer algebra to handle continuous parameters.
+
+This framework is a contribution in itself, as it provides a practical pipeline for automatically validating arbitrary rewrite rules, which can be used independently of the discovery mechanism.
+
+6.3 ZX-Calculus as a Unifying Representation for AI-Driven Optimization
+
+The dissertation will demonstrate the advantages of using ZX-calculus as the core representation for AI-guided circuit optimization. Key aspects include:
+
+· Graphical structure: The circuit becomes a graph, making local transformations natural and enabling the use of graph neural networks for state representation.
+· Native rewrite support: Many standard optimizations are already encoded as ZX rules, providing a rich starting point for the rule database.
+· Seamless verification: ZX-calculus offers efficient equivalence checking, which is essential for validating discovered rules and for ensuring that the search engine preserves correctness.
+
+By adopting ZX-calculus, the proposed framework unifies representation, optimization, and verification, offering a clean and powerful foundation for future research.
+
+6.4 Hardware-Aware Search with Reinforcement Learning and MCTS
+
+A core algorithmic contribution is the design of a search engine that combines reinforcement learning and Monte Carlo Tree Search to explore the space of circuit transformations. The search is guided by a hardware-aware cost function that incorporates:
+
+· Circuit depth and CNOT count (primary optimization targets).
+· SWAP overhead estimated from the target device's coupling map.
+· Estimated fidelity derived from device calibration data (gate errors, T1/T2 times).
+
+The use of action templates based on semantic subcircuit clusters reduces the action space and makes learning feasible. The integration of a GNN policy with MCTS enables the agent to learn effective optimization strategies from self-play, without requiring human demonstrations.
+
+6.5 Approximate Compression via BCH with Global Error Budget
+
+The dissertation will introduce a method for lossy circuit compression using truncated Baker–Campbell–Hausdorff (BCH) expansions. This includes:
+
+· Automatic detection of gate sequences amenable to approximate merging.
+· Error bounds for truncated BCH series, ensuring that approximation errors are quantified.
+· A global error budget that accumulates approximation errors and prevents them from exceeding a user-defined threshold.
+
+This contribution addresses the practical need to trade off circuit depth for accuracy in the NISQ era, where small approximations may be acceptable if they lead to significant reductions in noise sensitivity. The theoretical analysis of error propagation in this context is novel.
+
+6.6 Dynamic Re-Optimization for Real-Time Hardware Adaptation
+
+Finally, the dissertation will propose a dynamic re-optimization mechanism that decouples the expensive rule-discovery and search from the final hardware-specific tuning. Key elements include:
+
+· Parameterized circuit templates that mark flexible zones (e.g., qubit assignments, SWAP placements).
+· Fast micro-optimization that runs immediately before execution, using the latest calibration data to adjust the circuit for minimal error.
+
+This contribution addresses the practical reality that device calibration changes over time, ensuring that optimized circuits remain near-optimal at runtime without incurring the full cost of re-running the search.
+
+6.7 Open-Source Implementation and Benchmarking Suite
+
+As a secondary but important contribution, the dissertation will produce an open-source implementation of the entire framework, including:
+
+· The rule discovery module (LLM + CEGIS loop),
+· The verification pipeline,
+· The RL/MCTS search engine,
+· The hardware adaptation components.
+
+The code will be accompanied by a benchmarking suite that includes the circuits described in Chapter 5, along with scripts to reproduce the evaluation. This will enable other researchers to build upon the work and to compare future optimizers against a common baseline.
+
+---
+
+Chapter 7: Conclusion
+
+This dissertation has proposed a comprehensive neuro-symbolic framework for optimizing quantum circuits for NISQ devices. The work addresses a critical challenge in quantum computing: the need to reduce circuit depth and two-qubit gate count to mitigate the effects of hardware noise, while simultaneously adapting to the specific characteristics of the target device.
+
+7.1 Summary of the Proposal
+
+The proposed framework integrates several innovative components:
+
+· Rule discovery via large language models guided by Counter-Example Guided Inductive Synthesis (CEGIS), which targets stubborn circuit fragments and iteratively expands a verified rule database.
+· Formal verification using symbolic algebra and ZX-calculus, ensuring that all transformations preserve unitary equivalence.
+· Circuit representation in ZX-calculus, which provides a graph-based structure conducive to AI-driven optimization and verification.
+· Hardware-aware search combining reinforcement learning and Monte Carlo Tree Search, with a cost function that accounts for depth, CNOT count, SWAP overhead, and estimated fidelity based on device calibration data.
+· Approximate compression via truncated BCH expansions, with a global error budget to control cumulative approximation errors.
+· Dynamic re-optimization that adapts circuits to real-time calibration changes, ensuring optimality at execution time.
+
+The evaluation plan outlined in Chapter 5 will systematically assess the framework against state-of-the-art compilers using a diverse set of benchmarks and metrics, including depth reduction, CNOT count reduction, estimated fidelity, and actual fidelity on IBM Quantum hardware. Ablation studies will isolate the contribution of each component.
+
+7.2 Expected Impact
+
+If successful, this research will have several important impacts:
+
+· Advancing quantum compilation: By demonstrating that AI can discover novel optimizations and adapt to hardware noise, the work will open new directions for compiler design.
+· Bridging AI and formal methods: The neuro-symbolic approach exemplifies how large language models can be combined with rigorous verification to produce reliable and creative tools.
+· Practical utility for NISQ computing: The resulting open-source tool will enable quantum programmers to obtain higher-fidelity circuits for near-term applications such as VQE and QAOA, potentially accelerating the path to quantum advantage.
+· Foundation for future research: The framework's modular design allows for easy substitution of components (e.g., different search algorithms, noise models, or rule discovery methods), making it a platform for continued exploration.
+
+7.3 Limitations and Future Work
+
+While the proposed framework is comprehensive, several limitations and avenues for future work should be acknowledged:
+
+· Scalability: The search space grows rapidly with circuit size; the local windowing and curriculum learning strategies mitigate this but may not suffice for circuits with hundreds of qubits. Future work could explore hierarchical decomposition or integration with analytical synthesis methods.
+· Noise model fidelity: The product model for estimated fidelity is approximate; more accurate noise simulation (e.g., including crosstalk) could be incorporated as computational resources allow.
+· LLM dependence: The rule discovery relies on a powerful LLM; as models improve, so will the quality of proposals. Future work might fine-tune a specialized quantum rewrite model.
+· Verification completeness: ZX-calculus is complete for Clifford+T, but not all circuits fall into this class. Extending verification to universal gate sets may require additional techniques.
+
+7.4 Final Remarks
+
+The intersection of artificial intelligence and quantum computing holds immense promise. This dissertation contributes a concrete, rigorously designed framework that leverages the strengths of both fields to tackle one of the most pressing challenges in NISQ computing: circuit optimization. By combining the creativity of LLMs with the precision of formal verification and the adaptability of reinforcement learning, the proposed work aspires to set a new standard for quantum compilers. The journey from idea to implementation will be challenging, but the potential rewards—both for quantum computing and for the broader field of AI-assisted scientific discovery—are well worth the effort.
+
+Appendices
+
+Appendix A: Detailed Mathematical Derivations
+
+A.1 Exponential Fidelity Decay in NISQ Circuits
+
+We derive the approximate exponential decay of circuit fidelity with depth. Consider a circuit composed of L layers, each containing gates that may act in parallel. Assume each gate is followed by a depolarizing channel with error probability p. The depolarizing channel on a single qubit is:
+
+\mathcal{E}(\rho) = (1-p)\rho + \frac{p}{3}(X\rho X + Y\rho Y + Z\rho Z).
+
+For a circuit with d layers, the overall channel is a composition of these noisy gates. The average fidelity of a quantum channel \mathcal{E} with respect to a unitary U is defined as:
+
+F_{\text{avg}}(\mathcal{E},U) = \int d\psi \langle \psi | U^\dagger \mathcal{E}(|\psi\rangle\langle\psi|) U |\psi \rangle,
+
+where the integral is over the uniform Haar measure on pure states. For depolarizing noise, the average fidelity of a single gate is 1-p. Assuming independent errors and ignoring crosstalk, the total average fidelity is the product of per-gate fidelities:
+
+F_{\text{total}} = \prod_{i=1}^{L} (1-p_i) \approx e^{-\sum_i p_i} \approx e^{-\lambda d},
+
+where \lambda is the average error rate per layer. This approximation holds when p_i \ll 1. More rigorous bounds can be obtained using the triangle inequality for the diamond norm (see Appendix A.4).
+
+A.2 Baker–Campbell–Hausdorff Formula and Error Bounds
+
+The BCH formula expresses the product of two exponentials of non-commuting operators as a single exponential:
+
+e^{A} e^{B} = \exp\left( A + B + \frac{1}{2}[A,B] + \frac{1}{12}[A,[A,B]] + \frac{1}{12}[B,[B,A]] + \cdots \right).
+
+The series converges if \|A\| and \|B\| are sufficiently small. For practical truncation, we keep terms up to order k:
+
+C_k = A + B + \sum_{m=2}^{k} \frac{1}{m} \sum_{\substack{\text{words of length }m \\ \text{in }A,B}} (\text{coefficient}) \cdot (\text{commutator}).
+
+An explicit error bound can be derived using the Baker–Campbell–Hausdorff theorem. Let Z = \log(e^A e^B). Then
+
+\|Z - C_k\| \leq \frac{1}{2} \left( \frac{e^{\|A\|+\|B\|}-1}{\|A\|+\|B\|} \right) \frac{(\|A\|+\|B\|)^{k+1}}{(k+1)!}.
+
+This bound ensures that the approximation error decreases rapidly with k when the norms are small. In quantum circuits, A and B are typically skew-Hermitian matrices (since gates are unitary), so \|A\| is bounded by \pi for rotations.
+
+A.3 ZX-Calculus: Rules and Completeness
+
+ZX-calculus represents quantum states and operations as string diagrams with two types of spiders:
+
+· Z spider (green): \tikz[baseline=-0.5ex] \node[circle,draw,fill=green!20,inner sep=1pt] (z) {$\alpha$}; represents the linear map |0\cdots0\rangle\langle0\cdots0| + e^{i\alpha}|1\cdots1\rangle\langle1\cdots1|.
+· X spider (red): \tikz[baseline=-0.5ex] \node[circle,draw,fill=red!20,inner sep=1pt] (x) {$\alpha$}; represents the map |+\cdots+\rangle\langle+\cdots+| + e^{i\alpha}|-\cdots-\rangle\langle-\cdots-|.
+
+The fundamental rewrite rules include:
+
+1. Spider fusion: Two connected spiders of the same color fuse by adding their phases.
+2. Identity removal: A spider with one input and one output and phase 0 is the identity.
+3. Bialgebra rule: \tikz[baseline=-0.5ex] \node[circle,draw,fill=green!20,inner sep=1pt] (z) {}; \node[circle,draw,fill=red!20,inner sep=1pt,right=0.2cm] (x) {}; patterns simplify.
+4. Hopf rule: \tikz[baseline=-0.5ex] \node[circle,draw,fill=green!20,inner sep=1pt] (z) {}; \node[circle,draw,fill=red!20,inner sep=1pt,below=0.2cm] (x) {}; with appropriate connectivity.
+
+The ZX-calculus is complete for Clifford+T quantum mechanics, meaning that any equality of Clifford+T unitaries can be proved using these rules. This completeness theorem (due to Backens) ensures that if two ZX diagrams represent the same unitary, there exists a sequence of rewrite rules transforming one into the other.
+
+A.4 Diamond Norm and Its Properties
+
+The diamond norm measures the distinguishability of two quantum channels. For a linear map \Phi: B(\mathcal{H}) \to B(\mathcal{H}), the diamond norm is defined as:
+
+\|\Phi\|_{\diamond} = \sup_{n \geq 1} \| \Phi \otimes \mathbb{I}_n \|_1,
+
+where \|\cdot\|_1 is the trace norm (sum of singular values). The supremum over n is necessary because a channel may act non-trivially on entangled inputs with an ancillary system. For two channels \mathcal{E} and \mathcal{F}, the diamond distance is \|\mathcal{E} - \mathcal{F}\|_{\diamond}.
+
+A key property is the triangle inequality and the fact that for unitary channels \mathcal{U} and \mathcal{V},
+
+\|\mathcal{U} - \mathcal{V}\|_{\diamond} \leq 2 \|U - V\|_\infty,
+
+where \|\cdot\|_\infty is the operator norm. This allows us to bound the worst-case error by the operator norm difference of the unitaries.
+
+A.5 KAK Decomposition for Two-Qubit Unitaries
+
+Any two-qubit unitary U \in SU(4) can be decomposed as:
+
+U = (A \otimes B) \cdot \exp\left( i \sum_{j \in \{x,y,z\}} \theta_j \sigma_j \otimes \sigma_j \right) \cdot (C \otimes D),
+
+where A,B,C,D \in SU(2) are single-qubit gates, and \theta_x, \theta_y, \theta_z are canonical parameters. This is the Cartan (KAK) decomposition. The coefficients \theta_j determine the "non-local" part. The circuit implementation requires at most 3 CNOTs, with the exact number depending on the \theta_j. The proof relies on the Lie algebra decomposition su(4) \simeq su(2) \oplus su(2) \oplus \text{span}\{\sigma_j \otimes \sigma_j\}.
+
+---
+
+Appendix B: Verification Algorithms
+
+B.1 Symbolic Unitary Equivalence Check
+
+Given two circuits P and Q on n qubits (with n \leq 3), we compute their unitary matrices symbolically:
+
+1. Convert each gate to its matrix representation using symbolic parameters (if any).
+2. Multiply matrices in the correct order to obtain U_P and U_Q.
+3. Compute the product U_P^\dagger U_Q.
+4. If the result is the identity matrix (up to a global phase), then P \equiv Q.
+
+For parameterized gates, we use SymPy to simplify trigonometric expressions. For example, the identity R_z(\alpha)R_z(\beta) = R_z(\alpha+\beta) is verified by:
+
+R_z(\alpha)R_z(\beta) = \begin{pmatrix} e^{-i\alpha/2} & 0 \\ 0 & e^{i\alpha/2} \end{pmatrix} \begin{pmatrix} e^{-i\beta/2} & 0 \\ 0 & e^{i\beta/2} \end{pmatrix} = \begin{pmatrix} e^{-i(\alpha+\beta)/2} & 0 \\ 0 & e^{i(\alpha+\beta)/2} \end{pmatrix} = R_z(\alpha+\beta).
+
+B.2 ZX-Calculus Equivalence Check
+
+For larger circuits, we use PyZX to test equivalence:
+
+1. Convert both circuits to ZX diagrams using PyZX's conversion functions.
+2. Apply PyZX's simplify.full_reduce to both diagrams, which greedily applies rewrite rules to reduce to a normal form.
+3. If the reduced diagrams are isomorphic (same graph structure and phases), then the circuits are equivalent.
+
+This method is heuristic but works well for Clifford+T circuits. For non-Clifford circuits, completeness is not guaranteed, but in practice many equivalences are detected.
+
+B.3 Parameterized Rule Verification
+
+For rules involving continuous parameters, we use symbolic manipulation in SymPy. For example, to verify the rule:
+
+R_x(\theta) R_z(\phi) R_x(-\theta) = R_z(\phi) \text{ (if } [R_x, R_z] = 0\text{? Actually this is false)}
+
+Better example: Verify the Euler angle decomposition: U = R_z(\alpha) R_x(\beta) R_z(\gamma) for an arbitrary single-qubit unitary. We set up the matrix equality and solve for \alpha,\beta,\gamma symbolically, showing that any SU(2) matrix can be expressed this way.
+
+---
+
+Appendix C: Reinforcement Learning and MCTS Details
+
+C.1 State Representation with Graph Neural Networks
+
+The ZX diagram is a graph with node features: node type (Z, X, boundary, etc.), phase (real number), and degree. We use a GraphSAGE architecture with mean aggregation. For each node v, the feature vector h_v^{(0)} includes:
+
+· One-hot encoding of node type (Z, X, input, output, etc.)
+· Phase (sin and cos to handle periodicity)
+· Node degree
+
+After several layers of aggregation, a global graph embedding is formed by summing node features. This embedding is fed into a policy head (outputs logits over action templates) and a value head (estimates the expected future reward).
+
+C.2 Action Templates
+
+Instead of considering every possible rule application, we define templates based on semantic subcircuit types:
+
+· Phase gadget region: A collection of Z spiders connected in a certain pattern. Actions: apply phase gadget simplification rules.
+· Clifford block: A subgraph consisting only of Clifford gates (H, S, CNOT). Actions: apply known Clifford simplifications (e.g., merging S gates).
+· Small gate sequence: A contiguous sequence of gates on a few qubits. Actions: apply any rule that matches the sequence.
+
+A template is parameterized by the subcircuit it applies to; the GNN outputs probabilities over templates, and then a fast pattern matcher finds all concrete matches within the current diagram.
+
+C.3 Monte Carlo Tree Search (MCTS) Pseudocode
+
+```
+function MCTS(root_state, policy_network, num_simulations):
+    for sim in 1..num_simulations:
+        node = root_state
+        trajectory = []
+        # Selection
+        while node is fully expanded and not terminal:
+            action = select_action(node, policy_network)
+            trajectory.append((node, action))
+            node = node.children[action]
+        # Expansion
+        if not node.terminal:
+            action = select_action(node, policy_network)  # from policy network
+            new_state = apply_action(node.state, action)
+            node.children[action] = new_node(state=new_state, parent=node)
+            trajectory.append((node, action))
+            node = new_node
+        # Rollout
+        value = rollout(node.state)
+        # Backpropagation
+        for (n, a) in reversed(trajectory):
+            n.visits += 1
+            n.total_value += value
+            n.children[a].visits += 1
+            n.children[a].total_value += value
+    return best_action(root_state)
+```
+
+The selection uses the PUCT formula:
+
+\text{score}(a) = Q(s,a) + c_{\text{puct}} \cdot \pi(s,a) \cdot \frac{\sqrt{\sum_b N(s,b)}}{1+N(s,a)},
+
+where Q(s,a) is the average value of action a from state s, \pi(s,a) is the policy network's probability, and N(s,a) is the visit count.
+
+---
+
+Appendix D: Noise Model Derivations
+
+D.1 Depolarizing Channel
+
+The single-qubit depolarizing channel with error probability p is:
+
+\mathcal{E}_p(\rho) = (1-p)\rho + \frac{p}{3}(X\rho X + Y\rho Y + Z\rho Z).
+
+Its average fidelity with the identity is F = 1-p. For a sequence of L independent depolarizing channels, the overall channel is also depolarizing with effective error probability 1-(1-p)^L, leading to exponential decay.
+
+D.2 Thermal Relaxation (T1/T2)
+
+The amplitude damping channel models energy relaxation:
+
+\mathcal{E}_{T_1}(\rho) = E_0 \rho E_0^\dagger + E_1 \rho E_1^\dagger,
+
+with E_0 = \begin{pmatrix}1 & 0 \\ 0 & \sqrt{1-\gamma}\end{pmatrix}, E_1 = \begin{pmatrix}0 & \sqrt{\gamma} \\ 0 & 0\end{pmatrix}, where \gamma = 1 - e^{-t/T_1}.
+
+The dephasing channel (phase damping) is:
+
+\mathcal{E}_{T_2}(\rho) = E_0 \rho E_0^\dagger + E_2 \rho E_2^\dagger,
+
+with E_0 = \begin{pmatrix}1 & 0 \\ 0 & \sqrt{1-\lambda}\end{pmatrix}, E_2 = \begin{pmatrix}0 & 0 \\ 0 & \sqrt{\lambda}\end{pmatrix}, where \lambda = 1 - e^{-t/T_2}.
+
+Combined, they give the thermal relaxation channel, which can be expressed as a Pauli channel with probabilities that depend on T_1 and T_2.
+
+D.3 Product Model for Circuit Fidelity
+
+Assuming independent errors, the fidelity of a circuit is the product of fidelities of individual gates. For a gate with error probability p, the fidelity is 1-p. Thus:
+
+F_{\text{circuit}} = \prod_{g \in \text{gates}} (1-p_g).
+
+This is an approximation because errors may not be independent, but it is commonly used in NISQ analysis and serves as a practical cost function.
+
+---
+
+Appendix E: CEGIS Algorithm for Rule Discovery
+
+```
+Input: Seed rule set R0, circuit corpus C, baseline optimizer B
+Output: Expanded rule set R
+
+R = R0
+while new rules found:
+    # Identify stubborn fragments
+    fragments = []
+    for circuit in C:
+        opt_circuit = B(circuit)  # baseline optimization
+        # Find subcircuits where B failed to reduce cost significantly
+        for subcircuit in extract_subcircuits(circuit):
+            cost_orig = cost(subcircuit)
+            cost_opt = cost(corresponding_subcircuit(opt_circuit))
+            if cost_opt >= cost_orig * threshold:
+                fragments.append(subcircuit)
+    
+    # Query LLM for each fragment
+    new_rules = []
+    for frag in unique(fragments):
+        query = construct_query(frag, target_cost=floor(cost(frag)/2))
+        response = LLM(query)
+        candidate_rule = parse_rule(response)
+        if verify(candidate_rule):
+            new_rules.append(candidate_rule)
+    
+    if new_rules:
+        R = R ∪ new_rules
+    else:
+        break
+
+return R
+```
+
+The verify function uses the methods of Appendix B. The threshold (e.g., 0.9) determines what counts as a stubborn fragment.
+
+---
+
+Appendix F: Proof of Equivalence Preservation Under Composition
+
+Theorem: If each rewrite rule T_i satisfies U(T_i(C)) = U(C) for any circuit C to which it applies, then any sequence of such rules T_{i_m} \circ \cdots \circ T_{i_1} applied to an initial circuit C_0 yields a circuit C_m with U(C_m) = U(C_0).
+
+Proof: By induction on m. Base case m=0 trivial. Assume U(C_{k}) = U(C_0). After applying T_{i_{k+1}} to C_k, we have U(C_{k+1}) = U(T_{i_{k+1}}(C_k)) = U(C_k) by the property of each rule. Hence U(C_{k+1}) = U(C_0). ∎
+
+This theorem justifies the correctness of the entire optimization process as long as each applied rule is verified.
+
+---
+
+These appendices provide the mathematical depth and algorithmic details that support the main proposal. They are intended for readers seeking a rigorous understanding of the underlying methods and proofs.
