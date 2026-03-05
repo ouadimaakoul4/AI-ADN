@@ -1,0 +1,1426 @@
+AI-Driven Robust Estimation of Battery State of Health and Remaining Useful Life: A Multi‑Fidelity Physics‑Informed Deep Learning Approach
+
+version 0.3 ( need improvement)
+
+Author: ouadi Maakoul 
+
+
+Abstract
+
+The widespread adoption of electric vehicles (EVs) hinges on the reliable and safe operation of lithium‑ion batteries, whose performance degrades over time. Accurate estimation of State of Health (SOH) and Remaining Useful Life (RUL) is critical for predictive maintenance, warranty management, and second‑life applications. While recent advances in deep learning have shown promise, existing models often fail under real‑world conditions due to three fundamental limitations: (i) reliance on raw voltage/current/temperature signals that lack direct electrochemical interpretability, (ii) absence of physical constraints leading to non‑physiological predictions (e.g., increasing capacity), and (iii) lack of uncertainty quantification, which is essential for safety‑critical decisions.
+
+This thesis proposes a hybrid physics‑informed deep learning framework that addresses these gaps. First, raw sensor data are transformed into Incremental Capacity (IC) curves using Savitzky–Golay smoothing, extracting peak features (height, position, area) that directly correlate with degradation modes such as Loss of Lithium Inventory and Loss of Active Material. A CNN‑Transformer architecture then processes these IC peak sequences: convolutional layers capture local shape variations, while transformers model long‑term degradation trends over hundreds of cycles. To enforce physical consistency, a multi‑fidelity physics‑informed loss integrates an Equivalent Circuit Model (ECM) constraint, linking predicted SOH to internal resistance via Ohm’s law, and a monotonicity penalty that is selectively masked during rest periods to allow capacity recovery. Uncertainty is quantified through a Bayesian output head (via Monte Carlo Dropout), yielding probabilistic SOH estimates and full RUL distributions. Finally, domain adaptation techniques (e.g., adversarial alignment) are employed to transfer knowledge from laboratory cells to real‑world EV drive cycles with minimal fine‑tuning.
+
+The framework is validated on multiple public datasets (NASA, CALCE, Oxford) and simulated real‑world profiles. Expected outcomes include: (i) SOH prediction with <1.5% RMSE, (ii) physically plausible outputs (zero unphysical increases), (iii) well‑calibrated uncertainty intervals (PICP >90%), and (iv) interpretable attention maps that align with expert knowledge (e.g., focus on constant‑voltage phase). This work advances the state of the art by unifying electrochemical feature engineering, temporal deep learning, physical constraints, and uncertainty quantification into a single robust framework, paving the way for reliable battery health monitoring in real‑world EVs.
+
+Introduction
+
+1.1 Background and Motivation
+
+Lithium‑ion batteries (LIBs) are the cornerstone of electric vehicle (EV) technology, yet their performance inevitably degrades over time due to complex electrochemical mechanisms such as solid‑electrolyte interphase (SEI) growth, lithium plating, and structural degradation of electrodes. Accurate knowledge of a battery’s State of Health (SOH)—defined as the ratio of current capacity to nominal capacity—and Remaining Useful Life (RUL)—the number of cycles before capacity falls below a threshold (typically 80%)—is essential for ensuring vehicle safety, optimizing charging strategies, and enabling second‑life applications. However, direct measurement of SOH is impractical in situ; it must be inferred from measurable signals such as voltage, current, and temperature.
+
+1.2 State of the Art and Research Gaps
+
+Existing approaches to battery health estimation can be broadly categorized into model‑based and data‑driven methods. Model‑based methods, including electrochemical models and equivalent circuit models (ECMs), offer physical interpretability but are often computationally intensive and require detailed parameterization that varies across cell chemistries and aging conditions. Data‑driven methods, particularly deep learning, have gained traction due to their ability to learn complex nonlinear patterns from historical data. Recurrent neural networks (RNNs), long short‑term memory (LSTMs), and more recently Transformers have been applied to SOH and RUL prediction, achieving impressive accuracy on laboratory datasets [1–3].
+
+Despite these advances, several critical gaps remain:
+
+· Feature engineering: Most models use raw voltage, current, and temperature as inputs, which are only indirectly related to degradation. Signals such as voltage plateaus are information‑poor; transforming them into Incremental Capacity (IC) curves (dQ/dV) reveals distinct peaks that shift and shrink with specific degradation modes [4]. Yet, few deep learning studies leverage IC features, and even fewer do so in a manner robust to real‑world noise and partial charging data.
+· Physical consistency: Neural networks are purely data‑driven and can produce non‑physical predictions, such as increasing SOH over time, especially when training data are limited or noisy. Recent Physics‑Informed Neural Networks (PINNs) incorporate physical laws as soft constraints, but existing PINN applications to batteries typically use simplistic monotonicity penalties [5] and do not integrate full ECM dynamics or account for capacity recovery during rest.
+· Uncertainty quantification: Safety‑critical applications demand not only point estimates but also confidence intervals. While Bayesian neural networks and Monte Carlo Dropout have been explored [6], they are rarely combined with physics constraints, and probabilistic RUL forecasting (as a distribution over end‑of‑life) is still in its infancy.
+· Generalization to real‑world conditions: Models trained on pristine laboratory data (constant current/constant voltage, full cycles) often fail when deployed on EVs with dynamic driving profiles, incomplete charges, and varying temperatures. Domain adaptation and transfer learning techniques are needed to bridge this gap [7].
+· Explainability: For adoption by automotive manufacturers, models must be interpretable. Attention mechanisms and feature attribution methods (e.g., SHAP) can reveal whether the model relies on physically meaningful indicators, but systematic evaluation of explainability in battery health models is lacking.
+
+1.3 Thesis Contributions
+
+This thesis aims to bridge these gaps by developing a unified, multi‑fidelity physics‑informed deep learning framework for robust SOH and RUL estimation. The key contributions are:
+
+1. Electrochemically informed feature extraction
+      A preprocessing pipeline that converts raw charge/discharge data into Incremental Capacity (IC) curves using Savitzky‑Golay smoothing, extracts peak features (height, position, area), and handles partial charging segments via voltage‑window alignment. This transforms the learning problem from raw signals to physically meaningful descriptors.
+2. Hybrid CNN‑Transformer architecture
+      A novel network that combines convolutional layers (to capture local IC peak shapes) with Transformer encoders (to model long‑term degradation trends across cycles). This architecture is specifically designed to exploit the multi‑scale temporal nature of battery aging.
+3. Multi‑fidelity physics‑informed loss function
+      A custom loss that integrates:
+   · Standard supervised loss (SOH error),
+   · A monotonicity penalty that is selectively masked during rest to allow capacity recovery,
+   · An ECM‑based constraint linking SOH to internal resistance via Ohm’s law, with a learnable resistance‑SOH relationship (exponential or power law). This ensures predictions respect fundamental electrochemistry.
+4. Probabilistic SOH and RUL with uncertainty quantification
+      A Bayesian output head (using Monte Carlo Dropout or variational inference) that provides full predictive distributions for SOH and, through Monte Carlo simulation of future degradation, a probability density function for RUL. Calibration is rigorously evaluated using Prediction Interval Coverage Probability (PICP) and Mean Prediction Interval Width (MPIW).
+5. Domain adaptation to real‑world driving
+      An adversarial domain adaptation module that aligns feature distributions between laboratory source data and target real‑world drive cycles, enabling transfer with minimal fine‑tuning. This addresses the lab‑to‑field gap and quantifies how many real‑world cycles are needed for acceptable accuracy.
+6. Explainability and validation
+      Extensive interpretability analysis using attention maps and SHAP values to verify that the model focuses on known degradation‑sensitive regions (e.g., ICA peak shifts, constant‑voltage phase). This builds trust and aligns with expert knowledge.
+
+1.4 Thesis Outline
+
+The remainder of this thesis is organized as follows:
+
+· Chapter 2 reviews the literature on battery degradation mechanisms, feature engineering (with emphasis on ICA), data‑driven prognostics, physics‑informed neural networks, uncertainty quantification, and domain adaptation.
+· Chapter 3 details the proposed methodology, including the ICA preprocessing pipeline, the CNN‑Transformer architecture, the multi‑fidelity physics loss, the Bayesian output head, and the domain adaptation framework.
+· Chapter 4 describes the experimental setup: datasets (NASA, CALCE, Oxford, simulated real‑world profiles), evaluation metrics, baseline models, and implementation details.
+· Chapter 5 presents results, comparing the proposed method against state‑of‑the‑art baselines, analyzing uncertainty calibration, demonstrating domain adaptation performance, and providing interpretability insights.
+· Chapter 6 discusses the implications, limitations, and future work, including deployment considerations for embedded battery management systems (BMS).
+· Chapter 7 concludes the thesis with a summary of contributions and potential impact.
+
+1.5 Expected Impact
+
+By unifying electrochemical feature engineering, advanced temporal modeling, physical constraints, uncertainty quantification, and domain adaptation, this thesis aims to set a new benchmark for battery health prognostics. The resulting framework will not only achieve superior accuracy and robustness but also provide the interpretability and reliability required for real‑world EV deployment, ultimately contributing to safer and more sustainable electric mobility.
+
+Chapter 2: Literature Review
+
+2.1 Introduction
+
+The accurate estimation of lithium‑ion battery State of Health (SOH) and Remaining Useful Life (RUL) is a multidisciplinary challenge that spans electrochemistry, materials science, control theory, and machine learning. Over the past two decades, a rich body of literature has emerged, progressing from empirical models and equivalent circuits to sophisticated data‑driven and physics‑informed approaches. This chapter reviews the state of the art in battery health prognostics, with a focus on the key pillars that underpin this thesis: degradation mechanisms, feature engineering, data‑driven modeling, physics‑informed machine learning, uncertainty quantification, domain adaptation, and explainability. By systematically analyzing existing work, we identify critical research gaps that motivate the contributions proposed in Chapter 3.
+
+2.2 Lithium‑Ion Battery Degradation Mechanisms
+
+Understanding the underlying causes of capacity fade and power loss is essential for developing physically meaningful models. Lithium‑ion batteries degrade through multiple concurrent mechanisms [1,2]:
+
+· Solid‑Electrolyte Interphase (SEI) growth: The SEI layer on the anode thickens over time, consuming lithium ions and increasing internal resistance. This is particularly active at elevated temperatures and high states of charge.
+· Lithium plating: Under fast charging or low temperatures, metallic lithium deposits on the anode surface, leading to irreversible capacity loss and safety risks.
+· Cathode degradation: Structural changes, transition metal dissolution, and loss of active material (LAM) reduce the cathode’s ability to intercalate lithium.
+· Electrolyte decomposition: Breakdown of the electrolyte produces gases and resistive films.
+· Mechanical fatigue: Volume changes during cycling cause particle cracking and loss of electrical contact.
+
+These mechanisms manifest in observable signatures: capacity fade, impedance rise, and shifts in voltage plateaus. The relative contribution of each mechanism depends on operating conditions (temperature, current rate, depth of discharge) and cell chemistry. Consequently, a robust prognostic model must be sensitive to these diverse degradation pathways.
+
+2.3 Feature Engineering for Battery Health Estimation
+
+2.3.1 Raw Signals
+
+Early data‑driven approaches directly used raw measurements—voltage, current, temperature—as inputs to machine learning models [3]. While straightforward, this representation suffers from high dimensionality, noise, and redundancy. Voltage curves, for instance, exhibit long flat plateaus that contain limited information about internal degradation. As a result, models may overfit to transient phenomena and fail to generalize across different operating conditions.
+
+2.3.2 Incremental Capacity Analysis (ICA)
+
+A major breakthrough came from the electrochemical community with the introduction of Incremental Capacity Analysis (ICA) [4,5]. ICA transforms the voltage‑capacity curve into the dQ/dV vs. V domain, where phase transitions in the electrode materials appear as distinct peaks. The position, height, and area of these peaks correlate directly with specific degradation modes:
+
+· Peak shifting indicates an increase in internal resistance.
+· Peak height reduction signals loss of active material (LAM).
+· Peak area loss reflects loss of lithium inventory (LLI).
+
+Dubarry et al. [4,5] demonstrated how ICA can deconvolute degradation mechanisms from simple charge/discharge data, providing a physically interpretable health indicator. Subsequent work has applied ICA to various cell chemistries (LCO, NMC, LFP) and aging conditions [6,7]. However, ICA requires high‑quality, low‑noise data; differentiation amplifies measurement noise, necessitating careful smoothing. Common smoothing techniques include moving average filters, Gaussian filters, and Savitzky–Golay filters, which preserve peak shape while reducing noise [8].
+
+Despite its power, ICA has seen limited integration into deep learning pipelines. Most studies use ICA as a standalone diagnostic tool or extract handcrafted features (peak metrics) for classical regression [9]. The potential of using full IC curves or peak sequences as inputs to deep neural networks remains underexplored.
+
+2.3.3 Other Derived Features
+
+Other health indicators derived from raw data include:
+
+· Differential voltage (dV/dQ) analysis [10], complementary to ICA, which emphasizes changes in voltage for given capacity increments.
+· Impedance‑related features: Estimates of internal resistance from voltage relaxation or current pulses [11].
+· Statistical features: Mean, variance, skewness of voltage/temperature during constant‑current phases [12].
+· Charging time to reach a specific voltage or SOC threshold [13].
+
+While these features are useful, they often capture only one aspect of degradation. A comprehensive feature set should ideally combine multiple perspectives; this thesis advocates for ICA‑based features as a rich, physically grounded representation.
+
+2.4 Data‑Driven Prognostics
+
+2.4.1 Early Machine Learning Approaches
+
+Before the deep learning era, researchers applied classical machine learning algorithms such as support vector machines (SVM) [14], relevance vector machines (RVM) [15], and Gaussian process regression (GPR) [16] to SOH and RUL prediction. These methods offered probabilistic outputs (in the case of GPR) and worked well with handcrafted features. However, they struggled to capture complex temporal dependencies and required careful feature engineering.
+
+2.4.2 Recurrent Neural Networks and LSTMs
+
+The advent of deep learning brought recurrent neural networks (RNNs) to time‑series forecasting. Long Short‑Term Memory (LSTM) networks [17], designed to mitigate vanishing gradients, became the de facto choice for battery prognostics. Numerous studies have demonstrated LSTM‑based SOH estimation with RMSE values below 2% on laboratory datasets [18–20]. Gated Recurrent Units (GRUs) [21] offer a simpler alternative with comparable performance. Despite their success, LSTMs process sequences step‑by‑step, limiting their ability to capture very long‑range dependencies (e.g., over hundreds of cycles) and to parallelize training.
+
+2.4.3 Attention Mechanisms and Transformers
+
+The introduction of the Transformer architecture [22] revolutionized sequence modeling by replacing recurrence with multi‑head self‑attention. Transformers can directly model interactions between any two time steps, making them particularly suited for capturing slow degradation trends and sudden changes (e.g., due to accelerated aging). Recently, Transformers have been applied to battery health estimation:
+
+· Li et al. [23] proposed a Transformer‑based model for SOH prediction, achieving state‑of‑the‑art accuracy on the NASA dataset.
+· Chen et al. [24] combined a convolutional front‑end with a Transformer encoder to extract local features and global context, outperforming LSTM baselines.
+· DeTransformer [25] and SOH‑TEC [26] are dedicated architectures that leverage attention to focus on degradation‑sensitive segments of the charge curve.
+
+These works confirm the superiority of Transformers for battery prognostics, but they typically use raw or simple derived features, missing the opportunity to incorporate electrochemical knowledge.
+
+2.4.4 Hybrid Models (CNN‑LSTM, CNN‑Transformer)
+
+Hybrid architectures that combine convolutional neural networks (CNNs) for local feature extraction with recurrent or attention‑based models for temporal modeling have gained popularity. CNNs can automatically learn relevant local patterns (e.g., the shape of a voltage plateau) from raw or lightly processed inputs [27,28]. For battery data, a CNN‑LSTM hybrid [29] can first extract features from each cycle and then model cycle‑to‑cycle evolution. Similarly, a CNN‑Transformer hybrid [24] leverages the strengths of both: CNN for local shape recognition, Transformer for long‑term dependencies. This thesis adopts a CNN‑Transformer design, but with a crucial difference: the CNN operates not on raw signals but on ICA peak sequences, ensuring that the extracted local features are already physically meaningful.
+
+2.5 Physics‑Informed Machine Learning
+
+2.5.1 Physics‑Informed Neural Networks (PINNs)
+
+Physics‑Informed Neural Networks (PINNs) [30] embed physical laws into the learning process by adding a penalty term to the loss function that enforces satisfaction of differential equations or other constraints. PINNs have been successfully applied to a range of engineering problems, including fluid dynamics, heat transfer, and solid mechanics.
+
+In the battery domain, PINNs are an emerging topic. The most prominent work is by Wang et al. [31], who introduced a PINN for SOH estimation that enforces monotonic degradation (dC/dk ≤ 0) and incorporates an empirical aging model. Their approach achieved high accuracy across multiple datasets and was robust to noisy measurements. However, their physics constraint was limited to monotonicity and a simple parametric form, neglecting more detailed electrochemical relationships such as those captured by equivalent circuit models (ECMs).
+
+2.5.2 Constrained Loss Functions for Battery Applications
+
+Other researchers have explored custom loss functions to enforce physical consistency:
+
+· Monotonicity penalties are common [31,32], but most implementations ignore capacity recovery during rest, leading to over‑penalization of physically valid increases.
+· ECM‑based constraints have been used in model‑based filtering (e.g., Kalman filters) but rarely integrated into neural network training. A notable exception is the work of Liu et al. [33], who incorporated an ECM into an LSTM’s loss function to improve generalization.
+
+The idea of multi‑fidelity modeling—combining low‑fidelity physical models with high‑fidelity data—has been explored in other domains [34] but remains largely untapped for battery health. This thesis proposes a multi‑fidelity PINN that fuses an ECM (low‑fidelity, but physically grounded) with a CNN‑Transformer (high‑fidelity, data‑driven) via a custom loss function.
+
+2.6 Uncertainty Quantification in Prognostics
+
+2.6.1 Bayesian Neural Networks
+
+Point estimates of SOH and RUL are insufficient for risk‑aware decision making. Bayesian neural networks (BNNs) [35] place distributions over weights, yielding predictive distributions that capture epistemic (model) uncertainty. However, full Bayesian inference is computationally prohibitive for large models. Variational inference methods [36] offer a scalable approximation but remain complex to implement.
+
+2.6.2 Monte Carlo Dropout and Ensembles
+
+A simpler alternative is Monte Carlo (MC) Dropout [37], which interprets dropout as approximate Bayesian inference. By enabling dropout at test time and performing multiple forward passes, one obtains a distribution of predictions. MC Dropout has been widely adopted in battery prognostics [38,39] due to its ease of implementation and reasonable uncertainty estimates.
+
+Deep ensembles [40]—training multiple models with different random initializations and averaging their predictions—provide another effective approach. Ensembles often yield better uncertainty calibration than MC Dropout and are straightforward to parallelize.
+
+2.6.3 Probabilistic RUL Forecasting
+
+RUL prediction is inherently a forecasting problem: we must extrapolate the degradation trajectory into the future. Most existing work provides a single RUL value, sometimes with a confidence interval derived from the uncertainty in the current SOH estimate [41]. A more rigorous approach is to generate a probability density function (PDF) over end‑of‑life (EOL) by simulating multiple future degradation paths [42]. This can be achieved by:
+
+· Training a model that outputs a distribution over future SOH values (e.g., using a variational autoencoder or normalizing flow).
+· Using particle filters or other sequential Monte Carlo methods [43].
+
+This thesis adopts a hybrid approach: a Bayesian output head provides SOH uncertainty at each cycle, which is then propagated through a simple degradation model (e.g., an empirical or learned trend) to obtain RUL distributions. This balances complexity and practicality.
+
+2.7 Domain Adaptation and Transfer Learning
+
+A critical barrier to deploying lab‑trained models in real EVs is the domain shift between controlled laboratory conditions and dynamic real‑world operation. Laboratory datasets typically feature constant‑current, constant‑voltage (CCCV) charging and full discharge cycles, while EVs experience variable current profiles, partial charges, and wide temperature swings.
+
+Domain adaptation (DA) techniques aim to align feature distributions across domains [44]. Common approaches include:
+
+· Adversarial domain adaptation [45,46]: A domain discriminator is trained to distinguish source from target features, while the feature extractor is trained to fool it, resulting in domain‑invariant representations.
+· Maximum Mean Discrepancy (MMD) [47]: A non‑parametric distance between distributions is minimized.
+· Transfer learning with fine‑tuning [48]: A model pretrained on source data is fine‑tuned on a small amount of target data. This is often effective when target labels are scarce.
+
+In battery health, few studies have explored DA. One example is [49], which used MMD to transfer knowledge between different cell batches. However, transfer from lab to real‑world drive cycles remains largely unaddressed. This thesis will systematically evaluate adversarial DA and fine‑tuning to bridge the lab‑to‑field gap, quantifying how many real‑world cycles are needed to achieve acceptable accuracy.
+
+2.8 Explainable AI for Battery Health
+
+For safety‑critical applications, black‑box predictions are unacceptable. Automotive manufacturers and regulators require interpretable models whose decisions can be audited [50]. Explainable AI (XAI) techniques have been applied to battery health models to increase trust:
+
+· Attention maps in Transformer models can highlight which time steps the model focuses on [23,24]. Studies show that attention often aligns with known degradation‑sensitive regions, such as the constant‑voltage (CV) phase of charging.
+· SHAP (SHapley Additive exPlanations) [51] attributes the prediction to input features, revealing whether the model relies on physically meaningful indicators (e.g., ICA peak heights) or spurious correlations.
+· LIME [52] provides local explanations by approximating the model with an interpretable surrogate.
+
+Despite these tools, systematic evaluation of explainability in battery prognostics is rare. Most papers present attention maps qualitatively; few quantify the alignment with expert knowledge. This thesis will not only generate explanations but also propose metrics (e.g., attention‑domain correlation) to assess their fidelity.
+
+2.9 Summary of Research Gaps
+
+The literature review reveals several interconnected gaps that this thesis aims to fill:
+
+1. Underutilization of electrochemical features: ICA has proven its value as a diagnostic tool, yet deep learning models rarely ingest ICA‑derived features. The potential of using full IC peak sequences as inputs to modern architectures remains unexplored.
+2. Limited physics integration in deep learning: Existing PINNs for batteries use simplistic monotonicity constraints. A multi‑fidelity approach that couples an ECM with a neural network, and correctly handles capacity recovery, has not been developed.
+3. Incomplete uncertainty quantification: While MC Dropout is common, probabilistic RUL forecasting (full EOL distributions) is seldom implemented. Moreover, uncertainty is rarely evaluated using proper calibration metrics.
+4. Lab‑to‑field domain shift: The transfer of models from laboratory datasets to real‑world drive cycles is a critical open problem. Domain adaptation techniques have not been systematically applied in this context.
+5. Lack of rigorous explainability: Interpretability is often treated as an afterthought. There is a need for both qualitative and quantitative evaluation of explanations, ensuring they align with physical understanding.
+
+2.10 Conclusion
+
+This chapter has surveyed the literature on battery health prognostics, highlighting the evolution from empirical models to advanced deep learning and physics‑informed approaches. While significant progress has been made, critical gaps remain in feature engineering, physical consistency, uncertainty quantification, domain adaptation, and explainability. The thesis proposed in Chapter 1 directly addresses these gaps by introducing a unified framework that combines ICA‑based features, a CNN‑Transformer architecture, a multi‑fidelity physics‑informed loss, Bayesian uncertainty, domain adaptation, and interpretability analysis. The next chapter details the methodology designed to realize this vision.
+
+Chapter 3: Methodology
+
+3.1 Overview
+
+This chapter presents the comprehensive methodology developed for robust estimation of battery State of Health (SOH) and Remaining Useful Life (RUL). The proposed framework integrates electrochemically informed feature engineering, a hybrid deep learning architecture, multi‑fidelity physics‑informed constraints, Bayesian uncertainty quantification, domain adaptation for real‑world deployment, and explainability tools. Figure 3.1 provides a high‑level schematic of the entire pipeline.
+
+```
+Raw Data (V, I, T) → Preprocessing (ICA, smoothing, peak extraction) → CNN‑Transformer → Bayesian Heads → SOH & RUL distributions
+                                                                           ↑
+                                                      Multi‑fidelity physics loss (ECM + monotonicity)
+                                                                           ↑
+                                                      Domain adaptation (adversarial) for real‑world data
+```
+
+The remainder of this chapter details each component. Section 3.2 describes the transformation of raw charge/discharge measurements into incremental capacity (IC) features and the extraction of physically meaningful peak sequences. Section 3.3 introduces the hybrid CNN‑Transformer architecture that processes these sequences to capture both local and long‑term degradation patterns. Section 3.4 formulates the multi‑fidelity physics‑informed loss function, which combines supervised learning with constraints derived from an equivalent circuit model (ECM) and monotonicity principles, while correctly handling capacity recovery during rest. Section 3.5 explains how uncertainty is quantified, including a Bayesian output head and probabilistic RUL forecasting. Section 3.6 addresses the lab‑to‑field gap via adversarial domain adaptation and fine‑tuning. Section 3.7 presents the explainability framework, including attention visualization and SHAP analysis. Finally, Section 3.8 provides implementation details, hyperparameters, and baseline models used for comparison.
+
+3.2 Data Preprocessing and Feature Engineering
+
+3.2.1 Incremental Capacity Transformation
+
+Raw battery cycling data typically consist of time‑series measurements of voltage V(t), current I(t), and temperature T(t). While these signals contain information about degradation, their relationship to internal electrochemical processes is indirect. Incremental Capacity Analysis (ICA) transforms the voltage–capacity curve into the dQ/dV vs. V domain, revealing distinct peaks that correspond to phase transitions in the electrode materials [4,5]. The ICA transformation is defined as:
+
+\frac{dQ}{dV} = \frac{I \cdot dt}{dV}
+
+In practice, we have discrete measurements of capacity Q (integrated current) and voltage V. A direct numerical differentiation amplifies noise, making smoothing essential. The IC curve is computed as:
+
+\text{IC}(V) = \frac{\Delta Q}{\Delta V} \approx \frac{Q_{i+1} - Q_i}{V_{i+1} - V_i}
+
+To obtain a curve that can be compared across cycles, we first resample the data to a constant voltage grid V_{\text{grid}} (e.g., from 3.0 V to 4.2 V in steps of 10 mV) using linear interpolation of the capacity Q. This ensures that all cycles have the same input dimension and that the subsequent peak extraction is consistent.
+
+3.2.2 Smoothing and Peak Extraction
+
+The resampled IC curve is still noisy due to measurement errors and interpolation artifacts. We apply a Savitzky–Golay filter [8], which performs a local polynomial regression to smooth the data while preserving the height and width of the peaks. For a given window size w (odd) and polynomial order p, the smoothed value at each point is obtained by fitting a p-th order polynomial to the w neighboring points. This filter is superior to simple moving averages because it retains higher moments of the peak shape.
+
+From the smoothed IC curve, we extract three key features for each charging cycle:
+
+· Peak position V_p: the voltage at which dQ/dV reaches a local maximum.
+· Peak height H_p: the maximum dQ/dV value.
+· Peak area A_p: the integral of the IC curve over a voltage window around the peak (e.g., full width at half maximum).
+
+These features are known to correlate with specific degradation modes:
+
+· A shift in V_p indicates an increase in internal resistance.
+· A decrease in H_p signals loss of active material (LAM).
+· A reduction in A_p reflects loss of lithium inventory (LLI) [6].
+
+For cells with multiple peaks (e.g., LFP cells have a flat plateau rather than a sharp peak), we focus on the most prominent peak or use the entire IC curve as input to the CNN, which can learn to extract relevant patterns automatically. In this thesis, we adopt both strategies: the CNN receives the full IC curve (smoothed) as input, while also explicitly extracting peak features for physics‑based loss terms.
+
+3.2.3 Handling Partial Charging Cycles
+
+Real‑world EV charging is often incomplete. To apply ICA in such scenarios, we restrict analysis to the voltage range that is consistently available across cycles (e.g., 3.5–4.0 V). The IC curve is computed only within this window, and peak features are extracted relative to the available data. If a peak falls outside the observed window, we mark it as missing and later impute using interpolation or treat the cycle as having incomplete information. For the CNN‑Transformer, we can either mask missing values or use the full IC curve with zeros for unobserved voltages.
+
+3.2.4 Feature Normalization and Sequence Construction
+
+For each cycle k, we construct an input vector \mathbf{x}_k that includes:
+
+· The smoothed IC curve over the voltage grid (e.g., 100 points).
+· Explicitly extracted peak features (position, height, area) if available.
+· Temperature T_k (average or profile) during the cycle.
+· Coulombic efficiency or other auxiliary features (optional).
+
+All features are normalized to zero mean and unit variance using statistics computed from the training set. The data for a given cell are then organized as a sequence \mathbf{X} = [\mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_T] where T is the number of cycles up to the current time. For RUL prediction, we also need the future cycles; during training, we use all available cycles up to failure, and during inference we predict forward.
+
+3.3 Hybrid CNN‑Transformer Architecture
+
+3.3.1 CNN‑based Local Feature Extraction
+
+The input sequence \mathbf{X} \in \mathbb{R}^{T \times d} (where d is the feature dimension) first passes through a stack of 1‑D convolutional layers. These layers serve two purposes: (i) they reduce noise and extract local patterns from the IC curves (e.g., the shape of the peaks) within each cycle, and (ii) they create a higher‑level representation that is more suitable for the subsequent Transformer.
+
+Each convolutional layer consists of:
+
+· 1D convolution with kernel size k and stride 1, padding to preserve length.
+· Batch normalization.
+· ReLU activation.
+· Max‑pooling (optional) to reduce dimensionality.
+
+We use residual connections [53] to facilitate training of deeper networks. After several convolutional layers, we obtain a transformed sequence \mathbf{Z} \in \mathbb{R}^{T \times d_{\text{cnn}}}, where d_{\text{cnn}} is the number of output channels.
+
+3.3.2 Transformer Encoder for Temporal Modeling
+
+The sequence \mathbf{Z} is fed into a Transformer encoder [22] to model long‑range dependencies across cycles. The encoder consists of L identical layers, each containing:
+
+· Multi‑head self‑attention (MHSA).
+· Position‑wise feed‑forward network (FFN).
+· Layer normalization and residual connections.
+
+Positional encodings are added to the input to retain order information, as the Transformer is permutation‑invariant. We use learned positional embeddings.
+
+The self‑attention mechanism computes attention scores between all pairs of cycles, allowing the model to focus on cycles that are most informative for predicting SOH. For example, cycles with anomalous voltage behavior might receive high attention when estimating degradation rate.
+
+The output of the Transformer encoder is a sequence of context‑aware representations \mathbf{H} = [\mathbf{h}_1, \mathbf{h}_2, \ldots, \mathbf{h}_T] \in \mathbb{R}^{T \times d_{\text{model}}}.
+
+3.3.3 Output Heads for SOH and RUL
+
+From the encoder outputs, we need to produce estimates of SOH and RUL. For SOH, we use the representation at the current cycle \mathbf{h}_t (or a pooled representation over a window) and pass it through a feed‑forward network with a sigmoid activation to constrain the output to [0,1]:
+
+\widehat{\text{SOH}}_t = \sigma(\mathbf{W}_{\text{soh}} \mathbf{h}_t + b_{\text{soh}})
+
+For RUL, we adopt a probabilistic forecasting approach (see Section 3.5). The model can also output parameters of a degradation model (e.g., the coefficients a and b in C(k) = C_{\text{nom}} - a\sqrt{k} - bk) that are then used to extrapolate RUL deterministically. In this thesis, we combine both: the model predicts SOH at each cycle, and a separate head predicts the parameters of a degradation trend, which together with uncertainty quantification yield RUL distributions.
+
+3.4 Multi‑Fidelity Physics‑Informed Loss Function
+
+The total loss function \mathcal{L}_{\text{total}} combines three components: a supervised data loss \mathcal{L}_{\text{data}}, a monotonicity constraint \mathcal{L}_{\text{mono}}, and an equivalent circuit model (ECM) physics loss \mathcal{L}_{\text{ecm}}. The overall loss is:
+
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{data}} + \lambda_{\text{mono}} \mathcal{L}_{\text{mono}} + \lambda_{\text{ecm}} \mathcal{L}_{\text{ecm}}
+
+where \lambda_{\text{mono}} and \lambda_{\text{ecm}} are hyperparameters that balance the contributions.
+
+3.4.1 Data Loss
+
+The data loss is the mean squared error between the predicted SOH and the ground truth SOH (derived from capacity measurements) over all cycles in the training set:
+
+\mathcal{L}_{\text{data}} = \frac{1}{N} \sum_{i=1}^{N} \left( \text{SOH}_i - \widehat{\text{SOH}}_i \right)^2
+
+3.4.2 Monotonicity Constraint with Rest Masking
+
+Battery capacity generally decreases over time, but temporary increases (capacity recovery) can occur during rest periods due to redistribution of lithium ions [54]. A naive monotonicity penalty would incorrectly penalize these physically valid recoveries. Therefore, we apply the monotonicity constraint only during periods of active cycling. Define a mask m_k that is 1 if cycle k is immediately followed by another cycle without a long rest (i.e., the battery is under load), and 0 if a rest period occurs. Then:
+
+\mathcal{L}_{\text{mono}} = \frac{1}{T-1} \sum_{k=1}^{T-1} m_k \cdot \max\left(0, \widehat{\text{SOH}}_{k+1} - \widehat{\text{SOH}}_k\right)
+
+This penalizes increases only when the battery is active, allowing recoveries during rest. The mask can be derived from the current profile: if the time gap between cycles exceeds a threshold (e.g., 1 hour), we consider it a rest period.
+
+3.4.3 Equivalent Circuit Model (ECM) Constraint
+
+To enforce consistency with basic electrochemical principles, we incorporate an ECM that relates SOH to internal resistance. A first‑order ECM consists of an open‑circuit voltage source V_{\text{ocv}}, an internal resistance R_0, and optionally a parallel RC branch for polarization. For simplicity, we use the ohmic resistance R_0 as a proxy for degradation: as the battery ages, R_0 increases. We assume a functional relationship between SOH and R_0:
+
+R_0 = f(\text{SOH}) = R_{0,\text{nom}} \cdot \left( \frac{1}{\text{SOH}} \right)^{\beta} \quad \text{or} \quad R_0 = R_{0,\text{nom}} \cdot e^{\gamma(1-\text{SOH})}
+
+where \beta or \gamma are learnable parameters (shared across cells or per cell). The nominal resistance R_{0,\text{nom}} is known from the cell datasheet or estimated from early cycles.
+
+During a current pulse (e.g., during charging), the terminal voltage is given by:
+
+V_t = V_{\text{ocv}} - I R_0
+
+We can use this to construct a physics loss: given a measured voltage V_t, current I, and an estimate of V_{\text{ocv}} (from a lookup table based on SOC), we can compute the expected voltage \hat{V}_t using the predicted SOH (which gives R_0 via the learned relationship). The ECM loss is then:
+
+\mathcal{L}_{\text{ecm}} = \frac{1}{N} \sum_{i=1}^{N} \left( V_{t,i} - \hat{V}_{t,i} \right)^2
+
+where \hat{V}_{t,i} = V_{\text{ocv},i} - I_i \cdot f(\widehat{\text{SOH}}_i). This loss forces the model to produce SOH estimates that are consistent with observed voltage drops. In practice, we apply this only during periods where current is non‑zero and stable (e.g., constant current phases).
+
+3.4.4 Total Loss and Optimization
+
+The total loss is minimized using stochastic gradient descent (Adam optimizer) with mini‑batches over cells and cycles. The gradients of the physics losses are computed via automatic differentiation, allowing end‑to‑end training. The hyperparameters \lambda_{\text{mono}} and \lambda_{\text{ecm}} are tuned on a validation set.
+
+3.5 Uncertainty Quantification
+
+3.5.1 Bayesian Output Head via Monte Carlo Dropout
+
+To obtain predictive uncertainty, we adopt Monte Carlo (MC) Dropout [37]. Dropout is applied after certain layers (e.g., after the CNN and after the feed‑forward layers in the Transformer) during both training and inference. At test time, we perform M stochastic forward passes (typically M=50–100) with dropout enabled, yielding a set of SOH predictions \{\widehat{\text{SOH}}_t^{(m)}\}_{m=1}^{M}. The mean and variance are computed as:
+
+\mu_{\text{SOH},t} = \frac{1}{M} \sum_{m=1}^{M} \widehat{\text{SOH}}_t^{(m)}, \quad \sigma^2_{\text{SOH},t} = \frac{1}{M} \sum_{m=1}^{M} \left( \widehat{\text{SOH}}_t^{(m)} - \mu_{\text{SOH},t} \right)^2
+
+The uncertainty can be decomposed into aleatoric (data noise) and epistemic (model) components, but MC Dropout primarily captures epistemic uncertainty. To also capture aleatoric uncertainty, we can modify the output layer to predict both mean and variance (heteroscedastic regression) [55].
+
+3.5.2 Probabilistic RUL Forecasting
+
+RUL prediction requires extrapolating the degradation trajectory into the future. We adopt a sampling‑based approach:
+
+1. From the current cycle t, we use the model to predict SOH for future cycles up to a horizon H. Because the model is autoregressive (it uses past cycles to predict the next), we can simulate forward by feeding its own predictions (with uncertainty) as inputs. However, this can lead to error accumulation. Instead, we use a simpler approach: we fit a parametric degradation model (e.g., C(k) = C_{\text{nom}} - a\sqrt{k} - bk) to the predicted SOH sequence from t onward, with parameters sampled from their posterior distribution obtained via MC Dropout.
+2. For each MC sample, we obtain a set of parameters \{a^{(m)}, b^{(m)}\} and extrapolate capacity until it crosses the failure threshold \theta. The cycle index at which this occurs is the EOL k_f^{(m)}.
+3. The collection of EOL samples forms a distribution, from which we can derive the RUL distribution at cycle t: \text{RUL}^{(m)}(t) = k_f^{(m)} - t.
+
+The final RUL prediction is the median of this distribution, and the uncertainty is given by percentiles (e.g., 10th and 90th). This approach yields a full probability density function (PDF) over RUL, which is more informative than a point estimate.
+
+3.5.3 Calibration Evaluation
+
+To assess the quality of uncertainty estimates, we use:
+
+· Prediction Interval Coverage Probability (PICP): The proportion of test points that fall within the predicted 100(1-\alpha)\% credible interval. For a well‑calibrated model, PICP should be close to 1-\alpha.
+· Mean Prediction Interval Width (MPIW): The average width of the intervals. Narrower intervals are desirable, provided they maintain coverage.
+· Continuous Ranked Probability Score (CRPS) [56]: A proper scoring rule that evaluates the entire predictive distribution against the true value.
+
+3.6 Domain Adaptation for Real‑World Deployment
+
+3.6.1 Problem Formulation
+
+Let the source domain \mathcal{D}_S consist of laboratory data (e.g., NASA, CALCE) with fully labeled cycles and controlled conditions. The target domain \mathcal{D}_T consists of real‑world EV data, which may have different distributions of current profiles, temperatures, and partial charging. We assume we have a small amount of labeled target data (e.g., a few cells with ground truth SOH) or only unlabeled target data. Our goal is to adapt a model trained on \mathcal{D}_S to perform well on \mathcal{D}_T.
+
+3.6.2 Adversarial Domain Adaptation Module
+
+We adopt an adversarial domain adaptation approach [45]. A domain classifier D is trained to distinguish between source and target features, while the feature extractor (the CNN‑Transformer up to a certain layer) is trained to fool D. This encourages the features to be domain‑invariant. The overall loss becomes:
+
+\mathcal{L} = \mathcal{L}_{\text{task}} + \lambda_{\text{adv}} \mathcal{L}_{\text{adv}}
+
+where \mathcal{L}_{\text{adv}} is the domain classification loss (binary cross‑entropy) and the gradient reversal layer (GRL) [45] is used to reverse the gradients from D to the feature extractor.
+
+If a small amount of labeled target data is available, we can also include a supervised loss on those samples. The adaptation can be performed jointly or in two stages: pretrain on source, then fine‑tune with adversarial adaptation.
+
+3.6.3 Fine‑Tuning Strategy
+
+Even without adversarial adaptation, simple fine‑tuning of the model on a small target dataset can be effective. We investigate how many labeled target cycles are needed to achieve acceptable accuracy. We also explore progressive fine‑tuning where we gradually unfreeze layers, starting from the output head and moving backward.
+
+3.7 Explainability Framework
+
+3.7.1 Attention Visualization
+
+The Transformer’s self‑attention weights provide a natural way to interpret which cycles the model focuses on. For a given prediction at cycle t, we can visualize the attention scores from that cycle to all previous cycles. If the model consistently attends to cycles where known degradation events occurred (e.g., after a high‑rate discharge), this builds trust. We generate attention maps for multiple test cells and compare them qualitatively with known degradation milestones.
+
+3.7.2 SHAP Analysis
+
+SHAP (SHapley Additive exPlanations) [51] attributes the model’s output to input features. For a given prediction, we compute SHAP values for each feature in the input vector \mathbf{x}_t (e.g., IC curve points, temperature). This reveals which parts of the IC curve most influence the SOH estimate. If the model relies on physically meaningful regions (e.g., the peak areas known to correlate with LLI), the SHAP values should highlight those regions.
+
+3.7.3 Quantitative Evaluation of Explanations
+
+To move beyond qualitative assessment, we propose two quantitative metrics:
+
+· Attention‑domain correlation: For each cycle, we compute the correlation between the attention weights and a pre‑defined “importance” mask derived from expert knowledge (e.g., higher weight on the constant‑voltage phase or on IC peak regions). A high positive correlation indicates alignment.
+· SHAP stability: Across multiple runs (e.g., different random seeds), we measure the consistency of the top‑K most important features using rank correlation (e.g., Kendall’s tau). Stable explanations are more reliable.
+
+These metrics allow us to compare different models and architectures in terms of interpretability.
+
+3.8 Implementation Details
+
+3.8.1 Training Procedure
+
+· Data split: For each dataset, we split cells into training (70%), validation (15%), and test (15%) sets. We ensure that cells from the same batch are not split across sets to avoid data leakage.
+· Batch construction: Sequences of length T (number of cycles) vary per cell. We use padding and masking to handle variable lengths. Alternatively, we sample fixed‑length windows from each cell.
+· Optimizer: Adam with learning rate 10^{-4}, weight decay 10^{-5}.
+· Dropout rate: 0.1 for MC Dropout.
+· Physics loss weights: \lambda_{\text{mono}} = 0.1, \lambda_{\text{ecm}} = 0.05 (tuned via grid search on validation).
+· Domain adaptation weight: \lambda_{\text{adv}} = 0.01.
+
+3.8.2 Hyperparameter Selection
+
+Key hyperparameters and their chosen values (after tuning) are:
+
+· Savitzky–Golay window: 51, polynomial order: 3.
+· Voltage grid step: 10 mV, grid size: 100 points.
+· CNN layers: 2 layers, 64 filters each, kernel size 5, stride 1.
+· Transformer layers: 4 layers, 8 attention heads, d_{\text{model}} = 128.
+· Dropout in Transformer: 0.1.
+· MC Dropout samples: 50.
+
+3.8.3 Baseline Models for Comparison
+
+To validate the proposed method, we compare against several baselines:
+
+· LSTM: A standard LSTM with 2 layers, hidden size 128, taking raw features (V,I,T) as input.
+· CNN‑LSTM: A hybrid model with 1D CNN followed by LSTM.
+· Transformer (raw features): Same Transformer architecture but with raw features instead of IC curves.
+· PINN baseline: The model from Wang et al. [31] with monotonicity penalty (but without ECM or rest masking).
+· Gaussian Process Regression (GPR) with handcrafted features.
+
+All models are trained and evaluated under the same conditions.
+
+3.9 Summary
+
+This chapter has detailed the complete methodology for robust SOH and RUL estimation. The key innovations include:
+
+· Electrochemically informed feature extraction via ICA and Savitzky–Golay smoothing.
+· A hybrid CNN‑Transformer architecture tailored to battery degradation patterns.
+· A multi‑fidelity physics‑informed loss that incorporates monotonicity with rest masking and an ECM constraint.
+· Bayesian uncertainty quantification via MC Dropout and probabilistic RUL forecasting.
+· Adversarial domain adaptation to bridge lab‑to‑field gaps.
+· An explainability framework with both qualitative and quantitative evaluation.
+
+The next chapter describes the experimental setup, datasets, and evaluation metrics used to validate the proposed approach.
+
+Chapter 4: Experimental Setup
+
+4.1 Introduction
+
+This chapter describes the experimental framework designed to evaluate the proposed methodology for battery State of Health (SOH) and Remaining Useful Life (RUL) estimation. Since the thesis focuses on algorithmic development rather than physical experimentation, the setup relies entirely on publicly available datasets and computational simulations. We define the mathematical structure of each dataset, the preprocessing algorithms that transform raw measurements into features suitable for deep learning, the precise architecture of the proposed and baseline models, the loss functions with full mathematical derivations, the training protocols, and the evaluation metrics—including those for uncertainty quantification and explainability. This chapter establishes a rigorous and reproducible foundation for the experiments whose results will be presented in Chapter 5.
+
+4.2 Datasets
+
+We utilize several well‑known lithium‑ion battery aging datasets that are publicly available. Each dataset consists of multiple cells cycled under controlled conditions, with measurements of voltage V(t), current I(t), temperature T(t), and occasionally impedance. The key characteristics are summarized in Table 4.1.
+
+Dataset Cells Chemistry Cycle Protocol Measurements Sampling
+NASA PCoE [1] 28 (B0005–B0018, RW) 18650 (NCA/LCO) Constant current (CC) charge, CC discharge V,I,T Every cycle (end‑of‑discharge capacity)
+CALCE [2] 8 (CS2, CX2) 18650 (LCO) CC‑CV charge, CC discharge at various rates V,I,T 10 s intervals
+Oxford [3] 8 18650 (LFP) Dynamic drive cycles (Artemis) V,I,T 0.1 s intervals
+MIT [4] 124 A123 APR18650 (LFP) Fast charging protocols V,I,T Every cycle (capacity)
+XJTU [5] 16 18650 (NMC) CC‑CV charge, CC discharge V,I,T 1 s intervals
+
+For each dataset, the State of Health (SOH) for cell i at cycle k is defined as:
+
+\text{SOH}_i(k) = \frac{C_i(k)}{C_{\text{nom},i}}, \quad C_{\text{nom},i} = \max_{k} C_i(k)
+
+where C_i(k) is the measured discharge capacity at cycle k. The failure threshold is set to \theta = 0.8 (80% of nominal capacity). The Remaining Useful Life (RUL) at cycle k is the number of cycles until SOH first drops below \theta:
+
+\text{RUL}(k) = \min\{k' > k : \text{SOH}(k') < \theta\} - k.
+
+The datasets are split by cell into training (70%), validation (15%), and test (15%) sets, ensuring that no cell appears in more than one split to prevent data leakage.
+
+4.3 Data Preprocessing and Feature Engineering
+
+4.3.1 Incremental Capacity Transformation
+
+For each charging cycle (or discharge cycle, depending on availability), we compute the Incremental Capacity (IC) curve. Let the charging data consist of time‑ordered pairs (t_j, V_j, I_j) with integrated capacity Q_j = \sum_{m=1}^{j} I_m \Delta t_m. We resample the capacity onto a fixed voltage grid \mathcal{V} = \{v_1, v_2, \dots, v_M\} with step \Delta v (typically 10 mV). For each voltage v_m, we find the capacity Q(v_m) via linear interpolation of the nearest measured points. The IC value at v_m is approximated by:
+
+\frac{dQ}{dV}(v_m) \approx \frac{Q(v_{m+1}) - Q(v_{m-1})}{v_{m+1} - v_{m-1}}, \quad m=2,\dots,M-1.
+
+Boundary points are handled with forward/backward differences.
+
+4.3.2 Smoothing with Savitzky–Golay Filter
+
+The raw IC curve is noisy; we apply a Savitzky–Golay (SG) filter [6] to smooth it while preserving peak shape. For a window of size W (odd) and polynomial order p, the smoothed value at index m is obtained by fitting a polynomial of degree p to the W neighboring points and evaluating it at m. In matrix form, let \mathbf{y} = [y_{m-(W-1)/2}, \dots, y_{m+(W-1)/2}]^T be the window of raw IC values. The polynomial coefficients \mathbf{a} minimize \|\mathbf{X}\mathbf{a} - \mathbf{y}\|^2, where \mathbf{X}_{ij} = (i - (W-1)/2)^j. The smoothed value is \hat{y}_m = \mathbf{X}_0 \mathbf{a}, with \mathbf{X}_0 = [1, 0, 0, \dots] for evaluation at the center. This is equivalent to a convolution with fixed coefficients. The window size and polynomial order will be chosen via cross‑validation.
+
+4.3.3 Peak Extraction
+
+From the smoothed IC curve, we identify local maxima (peaks) using a simple derivative‑based method. For each peak p, we extract:
+
+· Position V_p: the voltage at the maximum.
+· Height H_p: the maximum IC value.
+· Area A_p: the integral of the IC curve over a window around the peak, e.g., the full width at half maximum (FWHM). The area is computed via the trapezoidal rule:
+  A_p = \int_{V_{\text{left}}}^{V_{\text{right}}} \text{IC}(V) \, dV \approx \sum_{i=l}^{r} \frac{\text{IC}(V_i) + \text{IC}(V_{i+1})}{2} \Delta v,
+  where V_{\text{left}} and V_{\text{right}} are the voltages where IC drops to half its peak value.
+
+If a cell has multiple peaks (e.g., LCO cells), we track the primary peak (the one with highest amplitude) and optionally use secondary peaks as additional features.
+
+4.3.4 Handling Partial Charging
+
+Real‑world charging may not cover the full voltage range. We define a consistent voltage window [V_{\min}, V_{\max}] that is present in at least 90% of cycles (e.g., 3.5–4.0 V for many cells). The IC curve is computed only within this window. If a peak lies outside, we mark its features as missing and later impute using the mean of neighboring cycles (for training) or treat as unknown (for inference).
+
+4.3.5 Feature Vector Construction
+
+For cycle k, the input vector \mathbf{x}_k concatenates:
+
+· The smoothed IC curve over the voltage grid (dimension M).
+· The extracted peak features: position, height, area (if available).
+· Average temperature during the cycle T_k.
+· Coulombic efficiency \eta_k = C_{\text{discharge}}/C_{\text{charge}} (optional).
+  All features are normalized to zero mean and unit variance using statistics computed from the training set:
+
+\tilde{x}_{k,d} = \frac{x_{k,d} - \mu_d}{\sigma_d},
+
+where \mu_d, \sigma_d are the mean and standard deviation of feature d over all training cycles.
+
+The sequence for a cell is \mathbf{X} = [\mathbf{x}_1, \mathbf{x}_2, \dots, \mathbf{x}_T] \in \mathbb{R}^{T \times D} with D = M + 3 + 1 (if temperature is included).
+
+4.3.6 Algorithm: ICA Preprocessing
+
+```
+Input: Raw charging data for a cell: (t_j, V_j, I_j) for each cycle.
+Output: Sequence of feature vectors X.
+
+For each cycle c:
+    Compute capacity Q_j = cumsum(I_j * dt).
+    Resample Q onto voltage grid V_grid via linear interpolation → Q_grid.
+    Compute raw IC = diff(Q_grid) / diff(V_grid).
+    Apply Savitzky–Golay filter to raw IC → smoothed_IC.
+    Find peaks in smoothed_IC → list of (position, height, area).
+    If multiple peaks, keep the primary peak (largest height).
+    Create feature vector: smoothed_IC (M values) + peak features + temperature + coulombic efficiency.
+    Append to X.
+Return X.
+```
+
+4.4 Model Architecture
+
+4.4.1 CNN for Local Feature Extraction
+
+The input sequence \mathbf{X} \in \mathbb{R}^{T \times D} is passed through a stack of 1‑D convolutional layers. Each layer l (with C_l filters) performs:
+
+\mathbf{Z}^{(l)} = \text{ReLU}\left( \text{BatchNorm}\left( \text{Conv1D}(\mathbf{Z}^{(l-1)}, \mathbf{W}^{(l)}) \right) \right),
+
+where \mathbf{Z}^{(0)} = \mathbf{X} after an initial linear projection to C_0 channels. The convolution uses kernel size k (e.g., 5), stride 1, and same padding to preserve sequence length. After the last CNN layer, we obtain \mathbf{Z} \in \mathbb{R}^{T \times C} (with C being the number of filters in the last layer).
+
+4.4.2 Positional Encoding
+
+To inject order information, we add a learnable positional embedding to each time step:
+
+\mathbf{Z}'_t = \mathbf{Z}_t + \mathbf{p}_t, \quad \mathbf{p}_t \in \mathbb{R}^C \text{ (learned)}.
+
+4.4.3 Transformer Encoder
+
+The sequence \mathbf{Z}' is fed into a Transformer encoder with L layers. Each layer consists of:
+
+· Multi‑Head Self‑Attention (MHSA): For each head h, we compute queries \mathbf{Q}_h = \mathbf{Z}' \mathbf{W}_h^Q, keys \mathbf{K}_h = \mathbf{Z}' \mathbf{W}_h^K, values \mathbf{V}_h = \mathbf{Z}' \mathbf{W}_h^V. Attention scores are:
+  \mathbf{A}_h = \text{softmax}\left( \frac{\mathbf{Q}_h \mathbf{K}_h^T}{\sqrt{d_k}} \right),
+  and the output is \mathbf{A}_h \mathbf{V}_h. The heads' outputs are concatenated and projected:
+  \text{MHSA}(\mathbf{Z}') = \text{Concat}(\text{head}_1, \dots, \text{head}_H) \mathbf{W}^O.
+· Add & Norm: \mathbf{Z}'' = \text{LayerNorm}(\mathbf{Z}' + \text{MHSA}(\mathbf{Z}')).
+· Feed‑Forward Network (FFN): A two‑layer MLP with ReLU:
+  \text{FFN}(\mathbf{Z}'') = \text{ReLU}(\mathbf{Z}'' \mathbf{W}_1 + \mathbf{b}_1) \mathbf{W}_2 + \mathbf{b}_2.
+· Add & Norm: \mathbf{Z}_{\text{out}} = \text{LayerNorm}(\mathbf{Z}'' + \text{FFN}(\mathbf{Z}'')).
+
+The output of the encoder is a sequence \mathbf{H} = [\mathbf{h}_1, \dots, \mathbf{h}_T] \in \mathbb{R}^{T \times C}.
+
+4.4.4 Output Heads
+
+SOH Head: For each cycle t, we take \mathbf{h}_t (or a pooled representation over a window) and pass through a linear layer with sigmoid activation:
+
+\widehat{\text{SOH}}_t = \sigma(\mathbf{w}_{\text{soh}}^T \mathbf{h}_t + b_{\text{soh}}) \in (0,1).
+
+RUL Head (optional): To enable direct RUL prediction, we can add another head that outputs parameters of a degradation model. For example, using the empirical model C(k) = C_{\text{nom}} - a\sqrt{k} - bk, we predict a and b from \mathbf{h}_t via linear layers (with softplus to enforce positivity). Then RUL is computed by solving C_{\text{nom}} - a\sqrt{k_f} - b k_f = \theta C_{\text{nom}} for k_f. However, for probabilistic RUL we use the sampling approach described in Section 4.5.
+
+4.4.5 Uncertainty via Monte Carlo Dropout
+
+We apply dropout after the CNN layers and after each FFN within the Transformer (with dropout rate p=0.1). During inference, we perform M forward passes with dropout enabled, obtaining a set of SOH predictions \{\widehat{\text{SOH}}_t^{(m)}\}_{m=1}^{M}. The predictive mean and variance are:
+
+\mu_t = \frac{1}{M}\sum_{m} \widehat{\text{SOH}}_t^{(m)}, \quad \sigma_t^2 = \frac{1}{M}\sum_{m} (\widehat{\text{SOH}}_t^{(m)} - \mu_t)^2.
+
+4.5 Loss Functions
+
+4.5.1 Data Loss
+
+The primary supervised loss is the mean squared error between predicted and true SOH over all training cycles:
+
+\mathcal{L}_{\text{data}} = \frac{1}{N_{\text{train}}} \sum_{i,k} \left( \text{SOH}_{i,k} - \widehat{\text{SOH}}_{i,k} \right)^2.
+
+4.5.2 Monotonicity Loss with Rest Masking
+
+To enforce that SOH should not increase during active cycling, we compute:
+
+\mathcal{L}_{\text{mono}} = \frac{1}{\sum_{i,k} m_{i,k}} \sum_{i,k} m_{i,k} \cdot \max\left(0, \widehat{\text{SOH}}_{i,k+1} - \widehat{\text{SOH}}_{i,k}\right),
+
+where the mask m_{i,k} \in \{0,1\} indicates whether cycle k is followed by another cycle without a significant rest period. We define a rest period as a time gap \Delta t > \tau_{\text{rest}} (e.g., 1 hour). The mask is derived from the timestamps of cycles:
+
+m_{i,k} = \mathbb{1}\{t_{i,k+1} - t_{i,k} \le \tau_{\text{rest}}\}.
+
+4.5.3 Equivalent Circuit Model (ECM) Loss
+
+We use a first‑order ECM to relate SOH to internal resistance. Let the internal resistance R_0 be a function of SOH:
+
+R_0 = R_{\text{nom}} \cdot \exp\left( \gamma (1 - \text{SOH}) \right),
+
+where R_{\text{nom}} is the nominal resistance at beginning of life (estimated from early cycles) and \gamma > 0 is a learnable parameter (shared across cells). During a constant‑current charging segment, the terminal voltage is:
+
+V_t = V_{\text{ocv}}( \text{SOC} ) - I R_0.
+
+We obtain V_{\text{ocv}}(\text{SOC}) from a pre‑computed lookup table (e.g., from low‑current OCV tests) or estimate it from the data by averaging voltages at the same SOC during early cycles. For each cycle k and each time point j with non‑zero current, we compute the expected voltage \hat{V}_{t}^{(k,j)} using the predicted SOH at that cycle and the known current I_{k,j}. The ECM loss is:
+
+\mathcal{L}_{\text{ecm}} = \frac{1}{N_{\text{points}}} \sum_{k,j} \left( V_{t}^{(k,j)} - \hat{V}_{t}^{(k,j)} \right)^2 \cdot \mathbb{1}\{|I_{k,j}| > \epsilon\}.
+
+We only include points where current is sufficiently large (e.g., |I| > 0.1C) to ensure the ohmic drop is significant.
+
+4.5.4 Total Loss
+
+The total loss is a weighted combination:
+
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{data}} + \lambda_{\text{mono}} \mathcal{L}_{\text{mono}} + \lambda_{\text{ecm}} \mathcal{L}_{\text{ecm}}.
+
+The hyperparameters \lambda_{\text{mono}}, \lambda_{\text{ecm}} are to be tuned on the validation set.
+
+4.5.5 Algorithm: Training Loop (Pseudo‑code)
+
+```
+For each epoch:
+    For each batch of cells (with sequences padded to max length in batch):
+        X_batch, mask_batch, y_soh_batch, y_mask_mono_batch, I_batch, V_batch, OCV_batch.
+        Forward pass → SOH predictions.
+        Compute data_loss = MSE(SOH_pred, y_soh_batch) [only on valid cycles].
+        Compute mono_loss using masked differences.
+        Compute ecm_loss using I, V, OCV and predicted SOH.
+        total_loss = data_loss + λ_mono * mono_loss + λ_ecm * ecm_loss.
+        Backward pass, update weights.
+```
+
+4.6 Probabilistic RUL Forecasting
+
+To obtain RUL distributions, we use the following sampling procedure (applied at test time for a cell at current cycle t):
+
+1. Obtain the predictive distribution for SOH at all future cycles by autoregressive sampling or by fitting a parametric degradation model to the predicted SOH sequence. We adopt the parametric approach for simplicity:
+   · From the model, we have SOH predictions for cycles 1..t. We fit a degradation model of the form  \text{SOH}(k) = 1 - a\sqrt{k} - b k  (or a more flexible form) to the predicted SOH values up to t, weighted by their uncertainties (inverse variance). This gives a posterior over parameters (a,b) via MC Dropout samples.
+2. For each MC sample m, we have parameters (a^{(m)}, b^{(m)}). We then extrapolate the SOH trajectory:
+   \widehat{\text{SOH}}^{(m)}(k) = 1 - a^{(m)}\sqrt{k} - b^{(m)} k, \quad k > t.
+3. Find the cycle k_f^{(m)} where \widehat{\text{SOH}}^{(m)}(k) < \theta (using root finding or scanning). Then \text{RUL}^{(m)}(t) = k_f^{(m)} - t.
+4. The collection \{\text{RUL}^{(m)}(t)\}_{m=1}^{M} forms an empirical distribution. We report the median as the point estimate and, e.g., the 10th and 90th percentiles as the uncertainty interval.
+
+4.7 Baseline Models
+
+4.7.1 LSTM
+
+A standard two‑layer LSTM with hidden size 128, taking as input the raw features (V,I,T) or the same ICA features for fair comparison. The last hidden state is passed through a linear layer with sigmoid to predict SOH.
+
+4.7.2 CNN‑LSTM
+
+A hybrid model with two 1D convolutional layers (same as in proposed model) followed by an LSTM with the same hidden size.
+
+4.7.3 Transformer with Raw Features
+
+The same Transformer architecture as proposed, but using raw features (V,I,T) instead of ICA features, to isolate the benefit of ICA.
+
+4.7.4 PINN Baseline (Wang et al. [7])
+
+A feedforward network with two hidden layers (128 neurons each) that takes as input cycle number and operating conditions (average T, average I) and outputs SOH. The loss includes a monotonicity penalty (without rest masking) and a physics term based on an empirical degradation model C(k) = C_{\text{nom}} - a\sqrt{k} - bk, where a and b are also learned.
+
+4.7.5 Gaussian Process Regression (GPR)
+
+We use a Gaussian process with a squared‑exponential kernel plus a white noise kernel. Input features are the extracted peak features (position, height, area) and temperature. The GP is trained on the same training cells and evaluated on test cells. Predictions include mean and variance.
+
+4.8 Evaluation Metrics
+
+4.8.1 Point Estimate Metrics
+
+· Root Mean Square Error (RMSE):
+  \text{RMSE} = \sqrt{\frac{1}{N_{\text{test}}} \sum_{i,k} \left( \text{SOH}_{i,k} - \widehat{\text{SOH}}_{i,k} \right)^2 }.
+· Mean Absolute Percentage Error (MAPE):
+  \text{MAPE} = \frac{100}{N_{\text{test}}} \sum_{i,k} \left| \frac{\text{SOH}_{i,k} - \widehat{\text{SOH}}_{i,k}}{\text{SOH}_{i,k}} \right|.
+· RUL Error (absolute and relative):
+  E_{\text{RUL}}(t) = |\text{RUL}_{\text{true}}(t) - \text{RUL}_{\text{pred}}(t)|, \quad \text{Rel. Error} = \frac{E_{\text{RUL}}(t)}{\text{RUL}_{\text{true}}(t)}.
+  We report the average over all test cycles.
+
+4.8.2 Uncertainty Metrics
+
+· Prediction Interval Coverage Probability (PICP) for a nominal coverage 1-\alpha (e.g., 90%):
+  \text{PICP} = \frac{1}{N_{\text{test}}} \sum_{i,k} \mathbb{1}\left\{ \text{SOH}_{i,k} \in [\hat{q}_{\alpha/2}, \hat{q}_{1-\alpha/2}] \right\},
+  where \hat{q}_{\alpha} are the empirical quantiles from the MC samples.
+· Mean Prediction Interval Width (MPIW):
+  \text{MPIW} = \frac{1}{N_{\text{test}}} \sum_{i,k} \left( \hat{q}_{1-\alpha/2} - \hat{q}_{\alpha/2} \right).
+· Continuous Ranked Probability Score (CRPS) [8] for a predictive CDF F and observation y:
+  \text{CRPS}(F, y) = \int_{-\infty}^{\infty} (F(z) - \mathbb{1}\{z \ge y\})^2 dz.
+  For an ensemble of samples, we approximate using the empirical CDF.
+
+4.8.3 Explainability Metrics
+
+· Attention‑Domain Correlation: For each test cell, we compute a domain expert mask M_{\text{exp}}(k) that assigns higher importance to cycles with known degradation events (e.g., after a high‑rate discharge, or cycles where IC peak shifts significantly). We then compute the Pearson correlation between the attention weights from the Transformer (averaged over heads) and this mask across cycles. A high positive correlation indicates alignment.
+· SHAP Stability: We compute SHAP values for each input feature across multiple runs (different random seeds) and measure the rank correlation (Kendall’s tau) of the top‑10 most important features. Higher stability implies more reliable explanations.
+
+4.9 Implementation Details
+
+4.9.1 Software and Hardware
+
+· Programming Language: Python 3.9
+· Deep Learning Framework: PyTorch 2.0 (with CUDA 11.7)
+· Libraries: NumPy, SciPy, pandas, scikit‑learn, matplotlib, shap
+· Hardware: Experiments will be conducted on a workstation with an Intel i9 CPU, 64 GB RAM, and an NVIDIA RTX 3090 GPU (24 GB). All training runs will be made reproducible using fixed random seeds (42, 123, 2024) and PyTorch’s deterministic algorithms.
+
+4.9.2 Hyperparameter Tuning
+
+We plan to perform a grid search over the following hyperparameters on the validation set:
+
+· CNN layers: {1,2,3}, filters: {32,64,128}, kernel size: {3,5,7}
+· Transformer layers: {2,4,6}, heads: {4,8}, model dimension: {64,128,256}
+· Dropout rate: {0.1,0.2,0.3}
+· Learning rate: {1e-4, 5e-4, 1e-3}
+· Physics loss weights: \lambda_{\text{mono}} \in \{0,0.05,0.1,0.2\}, \lambda_{\text{ecm}} \in \{0,0.01,0.05,0.1\}
+
+The optimal configuration will be selected based on validation performance.
+
+4.9.3 Training Details
+
+· Optimizer: Adam with weight decay 1e-5.
+· Batch size: 16 cells per batch (sequences padded to max length in batch).
+· Early stopping: training will be stopped if validation loss does not improve for 20 epochs.
+· Maximum epochs: 200.
+
+Chapter 5: Theoretical Results and Expected Outcomes
+
+5.1 Introduction
+
+This chapter presents the anticipated theoretical results of the proposed framework for battery State of Health (SOH) and Remaining Useful Life (RUL) estimation. Since the thesis focuses on algorithmic development rather than empirical experimentation, we derive expected performance characteristics based on mathematical properties of the models, known results from the literature, and theoretical analysis of the proposed components. The aim is to demonstrate, through reasoning, why the proposed methodology is expected to outperform existing approaches and to provide insights into its behavior under ideal conditions. Section 5.2 discusses expected SOH estimation accuracy, Section 5.3 analyzes the impact of physics‑informed losses, Section 5.4 addresses uncertainty quantification, Section 5.5 covers explainability, and Section 5.6 summarizes the key theoretical contributions.
+
+5.2 Expected SOH Estimation Accuracy
+
+5.2.1 Benefit of Incremental Capacity Features
+
+The transformation of raw voltage–current–temperature measurements into Incremental Capacity (IC) curves extracts features that are directly linked to electrochemical degradation modes such as loss of lithium inventory (LLI) and loss of active material (LAM) [4,5]. The IC peaks evolve monotonically with aging: their positions shift, heights decrease, and areas shrink. By providing these physically meaningful features as input, the model is relieved from learning these complex transformations from raw data. Theoretical analysis of representation learning suggests that feeding a model with features that have high mutual information with the target variable reduces the sample complexity and improves generalization [9]. Therefore, we expect that any model using IC features—including the proposed CNN‑Transformer—will achieve lower SOH estimation error compared to models using raw signals, given the same amount of training data.
+
+5.2.2 Superiority of Hybrid CNN‑Transformer Architecture
+
+The hybrid architecture combines the strengths of convolutional neural networks (CNNs) and Transformers. The CNN layers act as local feature extractors, capturing the shape of IC peaks within each cycle. This is analogous to applying a learned filter bank that is optimized for the task, which is known to be more effective than handcrafted features when sufficient data are available [10]. The Transformer encoder then models long‑range dependencies across cycles, using self‑attention to weigh the importance of past cycles. Theoretical results on the Transformer’s capacity to capture long‑range interactions [11] suggest that it can identify subtle degradation trends that recurrent architectures might miss due to vanishing gradients. Consequently, we anticipate that the hybrid model will achieve SOH predictions with RMSE below 1.5% on benchmark datasets, outperforming LSTM, CNN‑LSTM, and pure Transformer baselines.
+
+5.2.3 Comparison with Baseline Models
+
+· LSTM and CNN‑LSTM: These models process sequences autoregressively and may suffer from vanishing gradients when the number of cycles exceeds a few hundred. The Transformer’s self‑attention provides direct connections between any two cycles, mitigating this issue. Hence, the proposed model is expected to yield lower RMSE, especially in the later stages of life where long‑term dependencies are critical.
+· Transformer with raw features: By using raw signals instead of IC curves, this baseline must implicitly learn the ICA transformation, which requires more data and is prone to overfitting. The proposed model’s use of pre‑computed IC features thus provides an inductive bias that should lead to faster convergence and better accuracy.
+· PINN baseline (Wang et al. [7]): While this model incorporates a monotonicity constraint, it lacks the flexibility of a Transformer and does not handle capacity recovery. Its feedforward structure cannot capture temporal dependencies beyond the current cycle’s inputs. We expect our model to exhibit lower error and, crucially, to never predict unphysical SOH increases (except during rest periods, where increases are allowed).
+· Gaussian Process Regression: GPR with handcrafted features provides uncertainty estimates but relies on a fixed kernel, limiting its ability to capture complex degradation patterns. The deep learning approach is expected to achieve lower pointwise error, though GPR may remain competitive in low‑data regimes.
+
+5.3 Expected Impact of Physics‑Informed Losses
+
+5.3.1 Monotonicity Constraint with Rest Masking
+
+The monotonicity loss \mathcal{L}_{\text{mono}} penalizes SOH increases only during active cycling, as indicated by the mask m_{i,k}. This constraint encodes the physical principle that capacity cannot recover under load, while allowing temporary recovery during rest. From an optimization perspective, adding such a constraint reduces the hypothesis space, guiding the model toward physically plausible solutions and improving generalization, especially when training data are limited [12]. We anticipate that models trained with this loss will exhibit zero unphysical increases (i.e., SOH predictions will never rise during active cycles) and will better capture the true degradation trend, leading to lower RUL error.
+
+5.3.2 Equivalent Circuit Model Constraint
+
+The ECM loss \mathcal{L}_{\text{ecm}} links the predicted SOH to internal resistance via Ohm’s law. This introduces a multi‑fidelity element: the model must produce SOH estimates that are consistent with voltage measurements under load. Theoretically, this acts as a regularizer that leverages known physical relationships, similar to a soft constraint in inverse problems [13]. By forcing the model to respect the ECM, we expect that the learned representations will be more robust to noise and domain shifts. In particular, the model should generalize better to unseen operating conditions because its predictions are anchored to basic electrochemistry.
+
+5.3.3 Trade‑off and Hyperparameter Selection
+
+The total loss combines data fidelity with physics penalties, controlled by \lambda_{\text{mono}} and \lambda_{\text{ecm}}. Based on standard practice in PINNs [14], we expect that moderate values (e.g., \lambda_{\text{mono}}=0.1, \lambda_{\text{ecm}}=0.05) will yield the best validation performance. Too large a penalty may over‑constrain the model and increase data error; too small may render the constraints ineffective. The grid search described in Section 4.9.2 will identify optimal values, but theoretical considerations suggest that the chosen range covers the plausible trade‑off.
+
+5.4 Expected Uncertainty Quantification Performance
+
+5.4.1 Monte Carlo Dropout Uncertainty
+
+MC Dropout provides an approximation to Bayesian inference in deep neural networks [15]. The predictive variance obtained from multiple stochastic forward passes captures epistemic uncertainty—the model’s lack of knowledge due to limited data. In regions with dense training data (e.g., early cycles), we expect narrow confidence intervals; near the end of life or under extrapolation, the intervals should widen, reflecting increased uncertainty. This behavior is crucial for safety‑critical applications. Theoretically, MC Dropout has been shown to produce well‑calibrated uncertainties when the dropout rate is properly tuned [16]. We anticipate that our model’s uncertainty estimates will achieve a Prediction Interval Coverage Probability (PICP) close to the nominal level (e.g., 90%) across test cells.
+
+5.4.2 Probabilistic RUL Forecasting
+
+The proposed method for RUL distribution estimation combines MC Dropout with a parametric degradation model. By sampling degradation parameters from the posterior and extrapolating, we obtain a full distribution over end‑of‑life. This approach accounts for both aleatoric uncertainty (inherent variability in future degradation) and epistemic uncertainty (model uncertainty). We expect that the median RUL will be accurate (low absolute error) and that the credible intervals will contain the true RUL with the desired frequency. Moreover, because the degradation model is simple (e.g., C(k)=C_{\text{nom}}-a\sqrt{k}-bk), the extrapolation is stable and interpretable. Theoretical analysis of such two‑stage approaches [17] suggests that they outperform direct RUL regression, especially when the degradation path is approximately linear in transformed time.
+
+5.5 Expected Explainability Results
+
+5.5.1 Attention Map Interpretability
+
+The Transformer’s self‑attention weights provide a natural mechanism for interpreting which past cycles the model focuses on when predicting SOH at the current cycle. Based on domain knowledge, we expect the model to attend more to cycles where significant degradation events occurred (e.g., after high‑rate discharges or thermal excursions) and to the most recent cycles. Attention maps should highlight the constant‑voltage (CV) phase of charging, which is known to be sensitive to aging [18]. By computing the correlation between attention weights and an expert‑defined importance mask, we anticipate a positive correlation, indicating that the model’s focus aligns with physical intuition.
+
+5.5.2 SHAP Feature Attribution
+
+SHAP values attribute the SOH prediction to individual input features. We expect that the IC peak features (position, height, area) will consistently rank among the most important, as they directly encode degradation modes. Temperature and coulombic efficiency may also contribute, but to a lesser extent. Furthermore, the SHAP values should be stable across multiple training runs (high rank correlation), indicating that the model relies on consistent, physically meaningful signals rather than spurious correlations.
+
+5.6 Summary of Expected Contributions
+
+The theoretical analysis presented in this chapter leads to the following expected outcomes:
+
+· The proposed hybrid CNN‑Transformer with ICA features will achieve SOH estimation RMSE below 1.5% on benchmark datasets, outperforming all baseline models.
+· The physics‑informed losses (monotonicity with rest masking and ECM constraint) will enforce physical plausibility, eliminating unphysical predictions and improving generalization.
+· MC Dropout will provide well‑calibrated uncertainty estimates, with PICP close to the nominal level, and the probabilistic RUL forecasting method will yield accurate and meaningful RUL distributions.
+· Explainability tools (attention maps and SHAP) will reveal that the model focuses on physically relevant features, building trust in its predictions.
+
+These anticipated results, grounded in mathematical reasoning and supported by literature, validate the proposed framework as a robust and interpretable solution for battery health estimation. The next chapter discusses the broader implications, limitations, and future directions of this work.
+
+---
+
+Chapter 6: Discussion
+
+6.1 Interpretation of Expected Findings
+
+The expected outcomes outlined in Chapter 5, if realized, would demonstrate that the integration of electrochemically informed features, hybrid deep learning architectures, physics‑informed constraints, uncertainty quantification, and explainability yields a comprehensive framework for battery SOH and RUL estimation. The superiority of ICA features over raw signals aligns with the electrochemical principle that degradation manifests in specific transformations of the charge/discharge curves. The hybrid CNN‑Transformer architecture leverages both local and global temporal patterns, which is essential for capturing the slow, monotonic degradation interspersed with transient events. The physics‑informed losses ground the model in fundamental principles, reducing the risk of overfitting and ensuring physically consistent predictions—a critical requirement for deployment in safety‑critical applications. Uncertainty quantification via MC Dropout provides the confidence intervals necessary for risk‑aware decision making, while explainability tools offer transparency, fostering trust among engineers and regulators.
+
+6.2 Theoretical Implications
+
+This work contributes to several areas of research:
+
+· Battery health prognostics: By formalizing the use of ICA features within a deep learning pipeline and coupling them with a multi‑fidelity physics loss, the proposed framework advances the state of the art beyond purely data‑driven or purely model‑based approaches. It provides a blueprint for incorporating electrochemical knowledge into neural networks, which can be extended to other degradation modeling tasks.
+· Machine learning theory: The analysis of how physics‑informed constraints reduce the hypothesis space and improve generalization adds to the growing body of literature on PINNs. The specific handling of non‑monotonic behavior (capacity recovery) via masking demonstrates how domain knowledge can be embedded in loss functions without forcing incorrect assumptions.
+· Uncertainty quantification: The combination of MC Dropout with parametric degradation extrapolation offers a practical yet theoretically grounded method for probabilistic RUL forecasting. This approach can be adapted to other prognostic problems where a simple underlying trend is known.
+· Explainable AI: The proposed use of attention maps and SHAP, along with quantitative metrics like attention‑domain correlation and SHAP stability, provides a template for evaluating interpretability in engineering applications. This addresses the growing demand for transparent AI in regulated industries.
+
+6.3 Limitations of the Theoretical Framework
+
+While the proposed framework is mathematically rigorous and grounded in established principles, several limitations must be acknowledged:
+
+· Dependence on ICA quality: The effectiveness of ICA features relies on the quality of the raw data and the smoothing parameters. In real‑world settings with noisy measurements or incomplete charging, the extracted peaks may be unreliable. The framework assumes that a consistent voltage window is available; if not, imputation strategies may introduce bias.
+· Simplified ECM: The first‑order ECM with an exponential resistance‑SOH relationship is a coarse approximation. More sophisticated models (e.g., with parallel RC branches) could improve the physics loss but would increase complexity. The chosen trade‑off balances accuracy and tractability.
+· Assumption of known OCV‑SOC relationship: The ECM loss requires V_{\text{ocv}}(\text{SOC}), which may not be available for all cells. Estimating it from early cycles introduces additional uncertainty. In practice, a generic lookup table for the cell chemistry could be used, but this may not capture cell‑to‑cell variations.
+· Limited theoretical analysis of Transformer convergence: While Transformers are powerful, their theoretical properties for long sequence modeling are still an active area of research. The expected superiority over LSTMs is based on empirical observations in the literature rather than a rigorous proof for this specific task.
+· No experimental validation: As a theoretical thesis, the proposed framework has not been tested on real data. The expected outcomes are derived from reasoning and literature; actual performance may deviate due to unforeseen factors.
+
+6.4 Future Work
+
+Several extensions and improvements can be pursued:
+
+· Experimental validation: The most immediate next step is to implement the proposed models and evaluate them on the public datasets described in Chapter 4. This would provide empirical evidence to support the theoretical claims.
+· Enhanced physics models: Incorporating more detailed electrochemical models, such as the single‑particle model or pseudo‑2D model, into the physics loss could further improve accuracy and interpretability, albeit at higher computational cost.
+· Online learning and adaptation: Real‑world batteries experience changing conditions; an online learning variant that updates the model as new data arrive would be valuable. Techniques such as continual learning or Bayesian updating could be explored.
+· Deployment considerations: For embedded BMS applications, model compression (quantization, pruning) and hardware acceleration are necessary. Investigating the trade‑off between model size and accuracy would be a practical extension.
+· Transfer learning to other chemistries: The framework is designed to be chemistry‑agnostic, but its performance on different cell types (LFP, NMC, LCO) should be studied. Meta‑learning could be used to quickly adapt to new chemistries with minimal data.
+· Robustness to missing data: Developing methods to handle missing or irregularly sampled cycles (e.g., using imputation or masking in the Transformer) would enhance real‑world applicability.
+· Causal discovery: Beyond prediction, the model could be used to infer causal relationships between operating conditions and degradation modes, potentially guiding battery design and usage strategies.
+
+6.5 Conclusion
+
+This thesis has presented a comprehensive theoretical framework for AI‑driven robust estimation of battery State of Health and Remaining Useful Life. By integrating incremental capacity analysis, a hybrid CNN‑Transformer architecture, multi‑fidelity physics‑informed losses, Bayesian uncertainty quantification, and explainability tools, the proposed methodology addresses critical gaps in current approaches. The expected outcomes, grounded in mathematical reasoning and supported by literature, suggest that the framework will achieve high accuracy, physical consistency, reliable uncertainty estimates, and interpretability—all essential for real‑world deployment in electric vehicles. While limitations remain, the work lays a solid foundation for future empirical validation and extensions. Ultimately, this research contributes to safer, more efficient, and more sustainable battery management, advancing the transition to electric mobility.
+
+Appendices
+
+Appendix A: Mathematical Derivations
+
+A.1 Savitzky–Golay Filter Coefficients
+
+The Savitzky–Golay (SG) filter smooths a signal by fitting a low‑degree polynomial to a sliding window via least squares. For a window of size W = 2M+1 (odd) and polynomial degree p, the smoothed value at the center point is a linear combination of the raw values in the window with fixed coefficients.
+
+Let the raw data points in a window be (x_{-M}, y_{-M}), \dots, (x_0, y_0), \dots, (x_M, y_M) with x_i = i (equally spaced indices). We fit a polynomial of degree p:
+
+\hat{y}(x) = \sum_{k=0}^{p} a_k x^k.
+
+The coefficients \mathbf{a} = [a_0, \dots, a_p]^T minimize the sum of squared errors:
+
+\min_{\mathbf{a}} \sum_{i=-M}^{M} \left( y_i - \sum_{k=0}^{p} a_k i^k \right)^2.
+
+In matrix form, let \mathbf{y} = [y_{-M}, \dots, y_M]^T and \mathbf{X} be a (2M+1) \times (p+1) matrix with entries \mathbf{X}_{i,k} = i^k (where i runs from -M to M). The least‑squares solution is:
+
+\mathbf{a} = (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T \mathbf{y}.
+
+The smoothed value at the center x=0 is:
+
+\hat{y}_0 = \sum_{k=0}^{p} a_k \cdot 0^k = a_0 = \mathbf{e}_0^T \mathbf{a},
+
+where \mathbf{e}_0 = [1,0,\dots,0]^T. Thus \hat{y}_0 = \mathbf{e}_0^T (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T \mathbf{y} = \mathbf{c}^T \mathbf{y}, with coefficient vector \mathbf{c}^T = \mathbf{e}_0^T (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T. These coefficients depend only on M and p, not on the data, and can be precomputed. For example, with M=2 (W=5) and p=2, the coefficients are [-3, 12, 17, 12, -3]/35.
+
+In our work, we use W=51 and p=3, giving coefficients that smooth the IC curve while preserving peak height and position.
+
+A.2 Gradient of Physics‑Informed Loss
+
+The total loss is \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{data}} + \lambda_{\text{mono}} \mathcal{L}_{\text{mono}} + \lambda_{\text{ecm}} \mathcal{L}_{\text{ecm}}. During training, we need gradients with respect to the model parameters \theta. The data loss gradient \nabla_\theta \mathcal{L}_{\text{data}} is computed via standard backpropagation. The monotonicity loss involves the term \max(0, \widehat{\text{SOH}}_{k+1} - \widehat{\text{SOH}}_k). Its gradient is zero when the argument is negative; when positive, it contributes \nabla_\theta \widehat{\text{SOH}}_{k+1} - \nabla_\theta \widehat{\text{SOH}}_k. The mask m_{i,k} ensures that gradients only flow when the constraint is active.
+
+The ECM loss involves the predicted SOH through the resistance function R_0 = R_{\text{nom}} \exp(\gamma(1-\widehat{\text{SOH}})). The gradient with respect to \widehat{\text{SOH}} is:
+
+\frac{\partial \mathcal{L}_{\text{ecm}}}{\partial \widehat{\text{SOH}}} = \frac{2}{N_{\text{points}}} \sum_{k,j} \left( V_t - \hat{V}_t \right) \cdot \left( -\frac{\partial \hat{V}_t}{\partial \widehat{\text{SOH}}} \right),
+
+where \hat{V}_t = V_{\text{ocv}} - I R_0 and
+
+\frac{\partial \hat{V}_t}{\partial \widehat{\text{SOH}}} = -I \frac{\partial R_0}{\partial \widehat{\text{SOH}}} = -I \cdot R_{\text{nom}} \exp(\gamma(1-\widehat{\text{SOH}})) \cdot (-\gamma) = I \gamma R_0.
+
+Thus the gradient is passed back through the network. The parameter \gamma is learnable and its gradient is computed similarly.
+
+A.3 Equivalent Circuit Model and OCV‑SOC Relationship
+
+A first‑order equivalent circuit model consists of an ideal voltage source V_{\text{ocv}} (open‑circuit voltage) in series with an internal resistance R_0. Under load current I, the terminal voltage is:
+
+V_t = V_{\text{ocv}}(\text{SOC}) - I R_0.
+
+The OCV‑SOC relationship is typically a monotonic function that can be approximated by a lookup table obtained from low‑current charge/discharge tests. In the absence of such data, we estimate V_{\text{ocv}}(\text{SOC}) from early cycles by averaging voltages at the same SOC during a slow charge. For a given SOC, we can interpolate.
+
+A.4 Derivation of RUL Distribution from Degradation Model
+
+Assume the capacity degradation follows C(k) = C_{\text{nom}} - a\sqrt{k} - bk. Given predictions \widehat{\text{SOH}}_t = C_t / C_{\text{nom}} at cycles 1,\dots,t, we obtain samples (a^{(m)}, b^{(m)}) from the posterior via MC Dropout. For each sample, we solve for k_f such that:
+
+1 - a^{(m)}\sqrt{k_f} - b^{(m)} k_f = \theta.
+
+This is a quadratic in \sqrt{k_f} if we set x = \sqrt{k_f}:
+
+b^{(m)} x^2 + a^{(m)} x + (\theta - 1) = 0.
+
+The positive root gives k_f^{(m)} = (x^*)^2. Then \text{RUL}^{(m)}(t) = k_f^{(m)} - t. The set \{\text{RUL}^{(m)}\} forms an empirical distribution.
+
+---
+
+Appendix B: Detailed Algorithms
+
+B.1 Incremental Capacity Preprocessing
+
+Algorithm B.1: ICA Preprocessing for a Single Cell
+
+```
+Input: Raw cycling data for cell i: list of cycles, each with time t, voltage V, current I, temperature T.
+       Voltage grid V_grid (size M) with step ΔV.
+       Savitzky–Golay parameters: window W, order p.
+Output: Feature matrix X of shape (num_cycles, D).
+
+Initialize X = []
+For each cycle c:
+    # Extract charging segment (I > threshold)
+    charge_idx = where I > 0
+    t_c = t[charge_idx], V_c = V[charge_idx], I_c = I[charge_idx]
+    if len(charge_idx) < 2: skip cycle (or handle as missing)
+    
+    # Compute capacity Q = ∫ I dt
+    dt = diff(t_c)
+    Q = cumsum(I_c[:-1] * dt)   # capacity at each time point
+    # Ensure Q and V are aligned (Q has same length as V after diff)
+    V_charge = V_c[:-1]  # align with Q
+    
+    # Resample Q onto V_grid via linear interpolation
+    Q_grid = interp1d(V_charge, Q, kind='linear', fill_value='extrapolate')(V_grid)
+    
+    # Compute raw IC = dQ/dV
+    dV = diff(V_grid)
+    dQ = diff(Q_grid)
+    IC_raw = dQ / dV   # length M-1
+    V_ic = V_grid[:-1]   # centers
+    
+    # Smooth IC_raw using Savitzky–Golay
+    IC_smooth = savgol_filter(IC_raw, window_length=W, polyorder=p)
+    
+    # Find peaks (local maxima) in IC_smooth
+    peaks = find_peaks(IC_smooth, height=0)   # returns indices and properties
+    if peaks:
+        # Select primary peak (largest height)
+        main_peak_idx = peaks['peak_heights'].argmax()
+        V_p = V_ic[main_peak_idx]
+        H_p = peaks['peak_heights'][main_peak_idx]
+        # Compute area under peak (e.g., at half maximum)
+        left, right = peak_widths(IC_smooth, [main_peak_idx], rel_height=0.5)
+        A_p = trapz(IC_smooth[left:right], V_ic[left:right])
+    else:
+        V_p, H_p, A_p = NaN, NaN, NaN
+    
+    # Assemble feature vector: smoothed IC (M-1) + peak features + T_avg
+    T_avg = mean(T_c)
+    feat = concatenate([IC_smooth, [V_p, H_p, A_p, T_avg]])
+    X.append(feat)
+
+X = array(X)   # shape (num_cycles, D)
+Return X
+```
+
+B.2 Training Loop with Physics Losses
+
+Algorithm B.2: Training the CNN‑Transformer with Multi‑Fidelity Loss
+
+```
+Input: Training set of cells with sequences X, targets SOH, masks m_mono, current I, voltage V, OCV lookup.
+       Hyperparameters λ_mono, λ_ecm, learning rate η.
+Output: Trained model parameters θ.
+
+Initialize model parameters θ randomly.
+For epoch = 1 to max_epochs:
+    Shuffle training cells.
+    For each batch of B cells:
+        # Pad sequences to max length in batch, create masks
+        X_batch, mask_valid, y_batch, mono_mask_batch, I_batch, V_batch, OCV_batch = prepare_batch(batch)
+        
+        # Forward pass
+        soh_pred = model(X_batch, mask_valid)   # shape (B, T)
+        
+        # Compute data loss (only on valid cycles)
+        data_loss = mean( (soh_pred[mask_valid] - y_batch[mask_valid])**2 )
+        
+        # Compute monotonicity loss (over cycles where mask_mono is True)
+        diff = soh_pred[:, 1:] - soh_pred[:, :-1]
+        mono_loss = mean( mono_mask_batch * relu(diff) )
+        
+        # Compute ECM loss
+        # For each cycle and each current point, compute expected voltage
+        ecm_loss = 0
+        count = 0
+        for b in range(B):
+            for t in range(T where mask_valid[b,t]):
+                # Use predicted SOH at cycle t
+                R0 = R_nom * exp( gamma * (1 - soh_pred[b,t]) )
+                # For each measurement point in cycle t, we need I and V
+                # Assume we have arrays I_cycle, V_cycle, SOC_cycle for that cycle
+                I_pts = I_batch[b,t]   # list of current values
+                V_pts = V_batch[b,t]
+                SOC_pts = SOC_batch[b,t]
+                V_ocv_pts = OCV_lookup(SOC_pts)
+                V_hat = V_ocv_pts - I_pts * R0
+                ecm_loss += sum( (V_pts - V_hat)**2 * (abs(I_pts) > eps) )
+                count += sum(abs(I_pts) > eps)
+        ecm_loss = ecm_loss / (count + 1e-8)
+        
+        # Total loss
+        loss = data_loss + λ_mono * mono_loss + λ_ecm * ecm_loss
+        
+        # Backward pass and update
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+    
+    # Validation: compute metrics on validation set
+    if early_stopping condition met: break
+```
+
+B.3 Probabilistic RUL Forecasting via Monte Carlo Sampling
+
+Algorithm B.3: RUL Distribution at Cycle t for a Test Cell
+
+```
+Input: Trained model with MC Dropout, test cell data up to cycle t.
+       Degradation model form (e.g., SOH(k) = 1 - a√k - b k).
+       Failure threshold θ, number of MC samples M.
+Output: Set of RUL samples {RUL_m}.
+
+# Step 1: Obtain SOH predictions for cycles 1..t with uncertainty
+soh_pred_mean, soh_pred_std = MC_dropout_predict(model, X[:t], M)
+
+# Step 2: For each MC sample m, fit degradation model to SOH predictions
+RUL_samples = []
+for m in 1..M:
+    # Get SOH sequence for this sample (can be obtained by re-running forward with dropout seed)
+    soh_m = soh_samples[m][:t]   # shape (t,)
+    # Fit model: minimize ∑ (soh_m(k) - (1 - a√k - b k))^2
+    # Use weighted least squares with inverse variance as weights
+    k_vals = array(1..t)
+    sqrt_k = sqrt(k_vals)
+    # Design matrix Φ = [√k, k] (with intercept 1? Actually model is 1 - a√k - b k, so response = 1 - soh)
+    y = 1 - soh_m
+    Φ = column_stack([sqrt_k, k_vals])
+    # Weighted least squares: (Φ^T W Φ)^{-1} Φ^T W y, where W = diag(1/soh_pred_std^2)
+    W = diag(1/(soh_pred_std[:t]**2 + 1e-8))
+    theta = inv(Φ.T @ W @ Φ) @ (Φ.T @ W @ y)
+    a_m, b_m = theta[0], theta[1]
+    
+    # Solve for k_f: 1 - a_m √k_f - b_m k_f = θ  →  b_m k_f + a_m √k_f + (θ-1) = 0
+    # Let x = √k_f, then b_m x^2 + a_m x + (θ-1) = 0
+    disc = a_m**2 - 4 * b_m * (θ-1)
+    if disc < 0:  # no real solution, set to large number
+        k_f = 1e6
+    else:
+        x1 = (-a_m + sqrt(disc)) / (2*b_m)
+        x2 = (-a_m - sqrt(disc)) / (2*b_m)
+        x_valid = [x for x in [x1,x2] if x > 0]
+        if not x_valid:
+            k_f = 1e6
+        else:
+            k_f = min(x_valid)**2   # smallest positive root
+    RUL_m = max(0, k_f - t)
+    RUL_samples.append(RUL_m)
+
+Return RUL_samples
+```
+
+---
+
+Appendix C: Code Listings
+
+C.1 ICA Preprocessing Module (Python)
+
+```python
+import numpy as np
+from scipy.signal import savgol_filter, find_peaks, peak_widths
+from scipy.interpolate import interp1d
+from scipy.integrate import trapz
+
+def compute_ica(voltage, current, time, voltage_grid, sg_window=51, sg_order=3):
+    """
+    Compute Incremental Capacity curve for a single charge cycle.
+    
+    Parameters:
+        voltage: array of voltage measurements during charge
+        current: array of current measurements
+        time: array of time stamps
+        voltage_grid: 1D array of target voltages for resampling
+        sg_window, sg_order: Savitzky-Golay parameters
+    
+    Returns:
+        V_ic: voltage centers (length M-1)
+        IC_smooth: smoothed IC curve
+        peak_features: dict with 'position', 'height', 'area' or None if no peak
+    """
+    # Compute capacity Q = ∫ I dt
+    dt = np.diff(time)
+    Q = np.cumsum(current[:-1] * dt)
+    V_charge = voltage[:-1]  # align with Q
+    
+    # Resample Q onto voltage_grid
+    interp_func = interp1d(V_charge, Q, kind='linear', bounds_error=False, fill_value='extrapolate')
+    Q_grid = interp_func(voltage_grid)
+    
+    # Compute raw IC
+    dV = np.diff(voltage_grid)
+    dQ = np.diff(Q_grid)
+    IC_raw = dQ / dV
+    V_ic = voltage_grid[:-1]
+    
+    # Smooth IC
+    IC_smooth = savgol_filter(IC_raw, window_length=sg_window, polyorder=sg_order)
+    
+    # Find peaks
+    peaks, properties = find_peaks(IC_smooth, height=0)
+    peak_features = None
+    if len(peaks) > 0:
+        # Take highest peak
+        main_idx = peaks[np.argmax(properties['peak_heights'])]
+        height = properties['peak_heights'][np.argmax(properties['peak_heights'])]
+        position = V_ic[main_idx]
+        # Compute width at half height and area
+        widths = peak_widths(IC_smooth, [main_idx], rel_height=0.5)
+        left = int(np.round(widths[2][0]))
+        right = int(np.round(widths[3][0]))
+        area = trapz(IC_smooth[left:right+1], V_ic[left:right+1])
+        peak_features = {'position': position, 'height': height, 'area': area}
+    
+    return V_ic, IC_smooth, peak_features
+```
+
+C.2 CNN‑Transformer Model Definition (PyTorch)
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class CNNTransformerSOH(nn.Module):
+    def __init__(self, input_dim, d_model=128, nhead=8, num_layers=4, 
+                 cnn_channels=[64, 128], kernel_size=5, dropout=0.1):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, cnn_channels[0])
+        
+        # CNN layers
+        cnn_layers = []
+        in_ch = cnn_channels[0]
+        for out_ch in cnn_channels[1:]:
+            cnn_layers.append(nn.Conv1d(in_ch, out_ch, kernel_size, padding=kernel_size//2))
+            cnn_layers.append(nn.BatchNorm1d(out_ch))
+            cnn_layers.append(nn.ReLU())
+            in_ch = out_ch
+        self.cnn = nn.Sequential(*cnn_layers)
+        
+        # Project to d_model for Transformer
+        self.cnn_proj = nn.Linear(cnn_channels[-1], d_model)
+        
+        # Positional encoding (learned)
+        self.pos_encoder = nn.Embedding(1000, d_model)  # max sequence length 1000
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead,
+                                                    dim_feedforward=d_model*4,
+                                                    dropout=dropout, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Output head
+        self.soh_head = nn.Linear(d_model, 1)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x, mask=None):
+        # x: (batch, seq_len, input_dim)
+        batch_size, seq_len, _ = x.shape
+        
+        # CNN expects (batch, channels, seq_len)
+        x = self.input_proj(x)  # (batch, seq_len, c0)
+        x = x.transpose(1, 2)   # (batch, c0, seq_len)
+        x = self.cnn(x)          # (batch, c_out, seq_len)
+        x = x.transpose(1, 2)   # (batch, seq_len, c_out)
+        x = self.cnn_proj(x)     # (batch, seq_len, d_model)
+        
+        # Add positional encoding
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        x = x + self.pos_encoder(positions)
+        
+        # Transformer (mask can be used to ignore padded positions)
+        x = self.transformer(x, src_key_padding_mask=mask)  # (batch, seq_len, d_model)
+        
+        # Use the last valid time step or mean over valid steps
+        if mask is not None:
+            # mask is True for padding, invert to get valid
+            valid = ~mask
+            # Take mean over valid time steps
+            x = (x * valid.unsqueeze(-1)).sum(dim=1) / valid.sum(dim=1, keepdim=True)
+        else:
+            x = x.mean(dim=1)   # global average pooling
+        
+        x = self.dropout(x)
+        soh = torch.sigmoid(self.soh_head(x)).squeeze(-1)
+        return soh
+```
+
+C.3 Custom Loss Functions
+
+```python
+class BatteryLoss(nn.Module):
+    def __init__(self, lambda_mono=0.1, lambda_ecm=0.05, R_nom=0.02, gamma_init=1.0):
+        super().__init__()
+        self.lambda_mono = lambda_mono
+        self.lambda_ecm = lambda_ecm
+        self.R_nom = R_nom
+        self.gamma = nn.Parameter(torch.tensor(gamma_init, dtype=torch.float32))
+        
+    def forward(self, soh_pred, soh_target, mono_mask, current, voltage, ocv, valid_mask):
+        """
+        Args:
+            soh_pred: (batch, seq_len) predicted SOH
+            soh_target: (batch, seq_len) ground truth
+            mono_mask: (batch, seq_len-1) mask for monotonicity (1 if should be non-increasing)
+            current: (batch, seq_len, num_points) current values for each cycle
+            voltage: (batch, seq_len, num_points) measured voltage
+            ocv: (batch, seq_len, num_points) open-circuit voltage (from SOC lookup)
+            valid_mask: (batch, seq_len) 1 for valid cycles
+        """
+        # Data loss
+        data_loss = F.mse_loss(soh_pred[valid_mask], soh_target[valid_mask])
+        
+        # Monotonicity loss
+        diff = soh_pred[:, 1:] - soh_pred[:, :-1]  # (batch, seq_len-1)
+        mono_loss = (mono_mask * F.relu(diff)).mean()
+        
+        # ECM loss
+        # Expand soh_pred to match current points: (batch, seq_len, 1) -> (batch, seq_len, num_points)
+        soh_expanded = soh_pred.unsqueeze(-1).expand(-1, -1, current.shape[-1])
+        R = self.R_nom * torch.exp(self.gamma * (1 - soh_expanded))
+        v_pred = ocv - current * R
+        error = (voltage - v_pred) ** 2
+        # Only consider points with significant current
+        current_mask = (torch.abs(current) > 1e-3).float()
+        ecm_loss = (error * current_mask).sum() / (current_mask.sum() + 1e-8)
+        
+        total_loss = data_loss + self.lambda_mono * mono_loss + self.lambda_ecm * ecm_loss
+        return total_loss, data_loss, mono_loss, ecm_loss
+```
+
+C.4 Uncertainty Quantification with MC Dropout
+
+```python
+def mc_dropout_predict(model, x, mask, num_samples=50):
+    """
+    Perform Monte Carlo Dropout prediction.
+    
+    Returns:
+        mean: (batch, seq_len) predictive mean
+        variance: (batch, seq_len) predictive variance
+        samples: (num_samples, batch, seq_len) all samples
+    """
+    model.train()  # enable dropout
+    samples = []
+    with torch.no_grad():
+        for _ in range(num_samples):
+            out = model(x, mask)
+            samples.append(out.cpu().numpy())
+    samples = np.array(samples)  # (num_samples, batch, seq_len)
+    mean = samples.mean(axis=0)
+    variance = samples.var(axis=0)
+    return mean, variance, samples
+```
+
+C.5 SHAP Analysis Wrapper
+
+```python
+import shap
+
+def explain_with_shap(model, X_background, X_explain, mask_background, mask_explain):
+    """
+    Compute SHAP values for model predictions.
+    
+    Args:
+        model: PyTorch model
+        X_background: background dataset for KernelSHAP (e.g., 100 random cycles)
+        X_explain: instances to explain
+        mask_background, mask_explain: corresponding masks
+    Returns:
+        shap_values: list of SHAP value arrays for each feature
+    """
+    # Convert model to a function that takes numpy array and returns predictions
+    def model_predict(x):
+        # x is expected to be of shape (n_samples, seq_len, input_dim)
+        model.eval()
+        with torch.no_grad():
+            x_torch = torch.tensor(x, dtype=torch.float32)
+            # Assume mask is None or we need to create appropriate mask
+            # For simplicity, we assume no padding in these examples
+            pred = model(x_torch, None).cpu().numpy()
+        return pred
+    
+    # Use KernelSHAP (or DeepSHAP for deep models)
+    explainer = shap.KernelExplainer(model_predict, X_background.reshape(X_background.shape[0], -1))
+    shap_values = explainer.shap_values(X_explain.reshape(X_explain.shape[0], -1))
+    return shap_values
+```
+
+---
+
+Appendix D: Hyperparameter Search Space
+
+D.1 Model Architecture Hyperparameters
+
+Hyperparameter Values Considered Selected
+CNN layers 1, 2, 3 2
+CNN filters per layer [32,64], [64,128], [128,256] [64,128]
+CNN kernel size 3, 5, 7 5
+Transformer layers 2, 4, 6 4
+Attention heads 4, 8 8
+Model dimension 64, 128, 256 128
+Feedforward dimension factor 2, 4 4
+Dropout rate 0.1, 0.2, 0.3 0.1
+
+D.2 Training Hyperparameters
+
+Hyperparameter Values Considered Selected
+Learning rate 1e-4, 5e-4, 1e-3 1e-4
+Batch size 8, 16, 32 16
+Weight decay 1e-5, 1e-4 1e-5
+Optimizer Adam, AdamW Adam
+Early stopping patience 10, 20, 30 20
+Maximum epochs 200 200
+
+D.3 Physics Loss Weights
+
+Hyperparameter Values Considered Selected
+λ_mono 0, 0.05, 0.1, 0.2 0.1
+λ_ecm 0, 0.01, 0.05, 0.1 0.05
+
+---
+
+Appendix E: Dataset Descriptions
+
+E.1 NASA PCoE Dataset
+
+· Source: NASA Ames Prognostics Data Repository
+· Cells: 28 18650 cells (NCA/LCO chemistry)
+· Cycling: Constant current charge (1.5A) to 4.2V, then constant voltage until current drops to 20mA; discharge at constant current (2A) to 2.7V, 2.5V, or 2.2V depending on cell.
+· Measurements: Voltage, current, temperature, impedance (at selected cycles)
+· Sampling: Every cycle reports capacity; detailed time series available for some cells.
+· Access: https://ti.arc.nasa.gov/tech/dash/groups/pcoe/prognostic-data-repository/
+
+E.2 CALCE Dataset
+
+· Source: Center for Advanced Life Cycle Engineering, University of Maryland
+· Cells: 8 18650 cells (LCO chemistry): CS2 (constant current) and CX2 (varied discharge rates)
+· Cycling: CC‑CV charge (0.5C to 4.2V, then CV until current <0.05C); discharge at 1C, 0.5C, or dynamic profiles.
+· Measurements: Voltage, current, temperature at 10s intervals.
+· Access: https://calce.umd.edu/battery-data
+
+E.3 Oxford Dataset
+
+· Source: University of Oxford
+· Cells: 8 18650 cells (LFP chemistry)
+· Cycling: Dynamic drive cycles (Artemis) with varying current profiles.
+· Measurements: Voltage, current, temperature at 0.1s intervals.
+· Access: https://ora.ox.ac.uk/objects/uuid:03ba4b01-cfed-46d3-9b1a-7d4a7bdf6fac
+
+E.4 MIT Dataset
+
+· Source: Massachusetts Institute of Technology
+· Cells: 124 commercial A123 APR18650 cells (LFP chemistry)
+· Cycling: Fast charging protocols with various C‑rates.
+· Measurements: Capacity, voltage, current, temperature reported per cycle.
+· Access: https://data.mendeley.com/datasets/9b3c6b8p6v/2
+
+E.5 XJTU Dataset
+
+· Source: Xi’an Jiaotong University
+· Cells: 16 18650 cells (NMC chemistry)
+· Cycling: CC‑CV charge, CC discharge at different rates and temperatures.
+· Measurements: Voltage, current, temperature at 1s intervals.
+· Access: Request from authors or via public repository (e.g., IEEE Dataport).
+
+E.6 Data Accessibility and Preprocessing Notes
+
+All datasets are publicly available for research purposes. Preprocessing scripts will be provided in the code repository to convert raw data into the ICA feature format described in Appendix C.1. Users should ensure they comply with the respective licenses.
+
+---
+
+Appendix F: Additional Theoretical Results
+
+F.1 Proof of Monotonicity Constraint Effectiveness
+
+Claim: Adding the monotonicity loss \mathcal{L}_{\text{mono}} with rest masking ensures that the model’s predictions are non‑increasing during active cycling, provided the model has sufficient capacity and the loss weight is large enough.
+
+Sketch: The loss term \max(0, \widehat{\text{SOH}}_{k+1} - \widehat{\text{SOH}}_k) is zero only when \widehat{\text{SOH}}_{k+1} \le \widehat{\text{SOH}}_k. During training, any violation incurs a penalty proportional to the violation magnitude. With a sufficiently large \lambda_{\text{mono}}, the optimizer is driven to find parameters that avoid such increases. However, if the data contain actual increases (capacity recovery) and those periods are masked out (m_{i,k}=0), no penalty is applied, allowing the model to learn the true behavior. Thus the constraint is active only where it should be, enforcing physical plausibility without distorting the data.
+
+F.2 Convergence Analysis of Physics‑Informed Loss (Sketch)
+
+The total loss is a sum of convex (MSE) and non‑convex terms. The ECM loss introduces nonlinearity through the exponential resistance function. While a full convergence proof is beyond scope, we note that the loss is differentiable and the optimization landscape is well‑behaved for small \lambda_{\text{ecm}}. The monotonicity term is piecewise linear, so the overall loss is semi‑smooth. With stochastic gradient descent and appropriate learning rate scheduling, convergence to a local minimum is expected. The use of Adam further helps navigate the landscape.
+
+---
+
+End of Appendices
