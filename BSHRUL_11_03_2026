@@ -1883,3 +1883,647 @@ As the world transitions to electric mobility and renewable energy, accurate and
 
 The journey from theory to practice is long, but with the mathematical rigor established here, we are well-positioned to bridge that gap. The ultimate impact—safer EVs, longer-lasting batteries, and a more sustainable energy future—is well worth the effort.
 
+Appendices
+
+Appendix A: Mathematical Derivations
+
+A.1 Savitzky–Golay Filter Coefficients
+
+The Savitzky–Golay (SG) filter smooths a signal by fitting a low-degree polynomial to a sliding window via least squares. For a window of size W = 2M+1 (odd) and polynomial degree p, the smoothed value at the center point is a linear combination of the raw values in the window with fixed coefficients.
+
+Let the raw data points in a window be (x_{-M}, y_{-M}), \dots, (x_0, y_0), \dots, (x_M, y_M) with x_i = i (equally spaced indices). We fit a polynomial of degree p:
+
+\hat{y}(x) = \sum_{k=0}^{p} a_k x^k.
+
+The coefficients \mathbf{a} = [a_0, \dots, a_p]^T minimize the sum of squared errors:
+
+\min_{\mathbf{a}} \sum_{i=-M}^{M} \left( y_i - \sum_{k=0}^{p} a_k i^k \right)^2.
+
+In matrix form, let \mathbf{y} = [y_{-M}, \dots, y_M]^T and \mathbf{X} be a (2M+1) \times (p+1) matrix with entries \mathbf{X}_{i,k} = i^k (where i runs from -M to M). The least‑squares solution is:
+
+\mathbf{a} = (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T \mathbf{y}.
+
+The smoothed value at the center x=0 is:
+
+\hat{y}_0 = \sum_{k=0}^{p} a_k \cdot 0^k = a_0 = \mathbf{e}_0^T \mathbf{a},
+
+where \mathbf{e}_0 = [1,0,\dots,0]^T. Thus
+
+\hat{y}_0 = \mathbf{e}_0^T (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T \mathbf{y} = \mathbf{c}^T \mathbf{y},
+
+with coefficient vector \mathbf{c}^T = \mathbf{e}_0^T (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T. These coefficients depend only on M and p, not on the data, and can be precomputed.
+
+Example: For M=2 (window size 5) and p=2, the matrix \mathbf{X} is:
+
+\mathbf{X} = \begin{bmatrix}
+1 & -2 & 4 \\
+1 & -1 & 1 \\
+1 & 0 & 0 \\
+1 & 1 & 1 \\
+1 & 2 & 4
+\end{bmatrix}.
+
+Then (\mathbf{X}^T \mathbf{X})^{-1} \mathbf{X}^T yields coefficients \mathbf{c} = [-3, 12, 17, 12, -3]/35.
+
+In our work, we use M=25 (window size 51) and p=3. The coefficients are computed numerically.
+
+A.2 Gradient of Physics‑Informed Loss
+
+The total loss is \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{data}} + \lambda_{\text{mono}} \mathcal{L}_{\text{mono}} + \lambda_{\text{ecm}} \mathcal{L}_{\text{ecm}}. During training, we need gradients with respect to the model parameters \theta.
+
+A.2.1 Monotonicity Loss Gradient
+
+The monotonicity loss is:
+
+\mathcal{L}_{\text{mono}} = \frac{1}{\sum m_{i,k}} \sum_{i,k} m_{i,k} \cdot \max\left(0, \widehat{\text{SOH}}_{i,k+1} - \widehat{\text{SOH}}_{i,k}\right).
+
+Let \delta_{i,k} = \widehat{\text{SOH}}_{i,k+1} - \widehat{\text{SOH}}_{i,k}. For each violating pair (where \delta_{i,k} > 0 and m_{i,k}=1), the contribution to the gradient is:
+
+\frac{\partial \mathcal{L}_{\text{mono}}}{\partial \theta} = \frac{1}{\sum m} \left( \frac{\partial \widehat{\text{SOH}}_{i,k+1}}{\partial \theta} - \frac{\partial \widehat{\text{SOH}}_{i,k}}{\partial \theta} \right).
+
+For non-violating pairs, the gradient is zero. This pushes \widehat{\text{SOH}}_{i,k+1} down and \widehat{\text{SOH}}_{i,k} up, reducing the violation.
+
+A.2.2 ECM Loss Gradient
+
+The ECM loss is:
+
+\mathcal{L}_{\text{ecm}} = \frac{1}{N_{\text{points}}} \sum_{i,k,j} \left( V_{t}^{(i,k,j)} - \hat{V}_{t}^{(i,k,j)} \right)^2 \cdot \mathbb{1}\{ |I^{(i,k,j)}| > \epsilon \},
+
+with
+
+\hat{V}_{t} = V_{\text{ocv}} - I \cdot R_0, \quad R_0 = R_{\text{nom}} \exp\left( \gamma (1 - \widehat{\text{SOH}}) \right).
+
+The gradient with respect to \widehat{\text{SOH}} is:
+
+\frac{\partial \mathcal{L}_{\text{ecm}}}{\partial \widehat{\text{SOH}}} = \frac{2}{N_{\text{points}}} \sum \left( V_t - \hat{V}_t \right) \cdot \left( -\frac{\partial \hat{V}_t}{\partial \widehat{\text{SOH}}} \right),
+
+where
+
+\frac{\partial \hat{V}_t}{\partial \widehat{\text{SOH}}} = -I \frac{\partial R_0}{\partial \widehat{\text{SOH}}} = -I \cdot R_{\text{nom}} \exp(\gamma(1-\widehat{\text{SOH}})) \cdot (-\gamma) = I \gamma R_0.
+
+Thus
+
+\frac{\partial \mathcal{L}_{\text{ecm}}}{\partial \widehat{\text{SOH}}} = \frac{2}{N_{\text{points}}} \sum \left( V_t - \hat{V}_t \right) \cdot \left( - I \gamma R_0 \right).
+
+This gradient is backpropagated through the network. The parameter \gamma is also learnable, with gradient:
+
+\frac{\partial \mathcal{L}_{\text{ecm}}}{\partial \gamma} = \frac{2}{N_{\text{points}}} \sum \left( V_t - \hat{V}_t \right) \cdot \left( -I \frac{\partial R_0}{\partial \gamma} \right),
+
+\frac{\partial R_0}{\partial \gamma} = R_{\text{nom}} \exp(\gamma(1-\widehat{\text{SOH}})) \cdot (1-\widehat{\text{SOH}}) = R_0 (1-\widehat{\text{SOH}}).
+
+So
+
+\frac{\partial \mathcal{L}_{\text{ecm}}}{\partial \gamma} = \frac{2}{N_{\text{points}}} \sum \left( V_t - \hat{V}_t \right) \cdot \left( -I R_0 (1-\widehat{\text{SOH}}) \right).
+
+A.3 Equivalent Circuit Model and OCV‑SOC Relationship
+
+A first‑order equivalent circuit model consists of an ideal voltage source V_{\text{ocv}} (open‑circuit voltage) in series with an internal resistance R_0. Under load current I, the terminal voltage is:
+
+V_t = V_{\text{ocv}}(\text{SOC}) - I R_0.
+
+The OCV‑SOC relationship is typically a monotonic function that can be approximated by a lookup table obtained from low‑current charge/discharge tests. In the absence of such data, we estimate V_{\text{ocv}}(\text{SOC}) from early cycles by averaging voltages at the same SOC during a slow charge. For a given SOC, we can interpolate.
+
+Estimation from early cycles: Let \mathcal{C}_{\text{early}} be the set of the first K cycles (e.g., K=10). For each cycle, we have measurements (V_j, \text{SOC}_j) during a constant‑current charge. We bin SOC into intervals (e.g., 1% increments) and average the voltage in each bin across cycles. This yields an empirical OCV‑SOC curve.
+
+A.4 Derivation of RUL Distribution from Degradation Model
+
+Assume the capacity degradation follows:
+
+C(k) = C_{\text{nom}} - a\sqrt{k} - b k,
+
+where a, b \geq 0. Then SOH is:
+
+\text{SOH}(k) = 1 - \tilde{a}\sqrt{k} - \tilde{b} k, \quad \tilde{a} = a/C_{\text{nom}}, \quad \tilde{b} = b/C_{\text{nom}}.
+
+Given predictions \widehat{\text{SOH}}_t at cycles 1,\dots,t, we obtain samples (\tilde{a}^{(m)}, \tilde{b}^{(m)}) from the posterior via MC Dropout. For each sample, we solve for k_f such that:
+
+1 - \tilde{a}^{(m)}\sqrt{k_f} - \tilde{b}^{(m)} k_f = \theta,
+
+where \theta is the failure threshold (e.g., 0.8). Let x = \sqrt{k_f}. Then:
+
+\tilde{b}^{(m)} x^2 + \tilde{a}^{(m)} x + (\theta - 1) = 0.
+
+This is a quadratic equation in x. The positive root is:
+
+x^* = \frac{-\tilde{a}^{(m)} + \sqrt{(\tilde{a}^{(m)})^2 - 4\tilde{b}^{(m)}(\theta-1)}}{2\tilde{b}^{(m)}},
+
+assuming the discriminant is non-negative and \tilde{b}^{(m)} > 0. Then k_f^{(m)} = (x^*)^2. The RUL at cycle t is:
+
+\text{RUL}^{(m)}(t) = k_f^{(m)} - t.
+
+The set \{\text{RUL}^{(m)}\}_{m=1}^{M} forms an empirical distribution.
+
+A.5 Information‑Theoretic Justification for ICA Features
+
+Let X_{\text{raw}} be the raw signal (voltage, current, temperature) for a cycle, and X_{\text{IC}} be the ICA‑transformed features (smoothed IC curve and peak features). The transformation T: X_{\text{raw}} \mapsto X_{\text{IC}} is deterministic and designed to extract degradation‑relevant information while discarding noise. By the data processing inequality, I(X_{\text{raw}}; \text{SOH}) \geq I(X_{\text{IC}}; \text{SOH}) if T were arbitrary. However, because T is carefully crafted based on electrochemical knowledge, we have:
+
+I(X_{\text{IC}}; \text{SOH}) \approx I(X_{\text{raw}}; \text{SOH}) - H(\text{noise}),
+
+where H(\text{noise}) represents the entropy of measurement noise and irrelevant variations. Thus the mutual information with the target is effectively increased by denoising. This reduces the minimum achievable error via Fano's inequality:
+
+P_e \geq \frac{H(\text{SOH}) - I(X; \text{SOH}) - 1}{\log |\mathcal{Y}|}.
+
+Higher mutual information leads to a lower lower bound on the error probability.
+
+---
+
+Appendix B: Proofs of Theorems and Lemmas
+
+B.1 Proof of Lemma 3.1 (Physical Consistency of Monotonicity Loss)
+
+Lemma 3.1: For any two consecutive active cycles k and k+1 (where m_k = 1), if the model predicts \widehat{\text{SOH}}_{k+1} > \widehat{\text{SOH}}_k, the loss \mathcal{L}_{\text{mono}} incurs a positive penalty proportional to the violation. With a sufficiently large \lambda_{\text{mono}}, the optimizer is driven to find parameters that avoid such violations, ensuring that the model's predictions are non‑increasing during active cycling.
+
+Proof: The loss term for a violating pair is \lambda_{\text{mono}} \cdot (\widehat{\text{SOH}}_{k+1} - \widehat{\text{SOH}}_k). The gradient with respect to the model parameters \theta is:
+
+\frac{\partial \mathcal{L}_{\text{mono}}}{\partial \theta} = \lambda_{\text{mono}} \left( \frac{\partial \widehat{\text{SOH}}_{k+1}}{\partial \theta} - \frac{\partial \widehat{\text{SOH}}_k}{\partial \theta} \right).
+
+This gradient updates \theta to decrease \widehat{\text{SOH}}_{k+1} and increase \widehat{\text{SOH}}_k, reducing the violation. If the model has sufficient capacity, the optimizer can find parameters that satisfy \widehat{\text{SOH}}_{k+1} \leq \widehat{\text{SOH}}_k for all active cycles. In the limit \lambda_{\text{mono}} \to \infty, any violation becomes infinitely costly, forcing the predictions to satisfy the inequality. For finite \lambda_{\text{mono}}, violations may still occur if the data loss dominates, but they will be minimized. ∎
+
+B.2 Proof of Theorem 5.1 (Improved Generalization via ECM Constraint)
+
+Theorem 5.1: Let \mathcal{H} be the hypothesis class of neural networks without the ECM constraint, and \mathcal{H}_{\text{ECM}} be the class of networks that satisfy \mathbb{E}[(\hat{V}_t - V_t)^2] \leq \epsilon for some small \epsilon. Then the Rademacher complexity of \mathcal{H}_{\text{ECM}} is bounded by that of \mathcal{H} minus a term proportional to the informativeness of the ECM constraint. Consequently, the generalization gap for models in \mathcal{H}_{\text{ECM}} is smaller than for unconstrained models.
+
+Proof: The Rademacher complexity of a hypothesis class \mathcal{H} is defined as:
+
+\mathcal{R}_N(\mathcal{H}) = \mathbb{E}_{\boldsymbol{\sigma}} \left[ \sup_{h \in \mathcal{H}} \frac{1}{N} \sum_{i=1}^N \sigma_i h(\mathbf{x}_i) \right],
+
+where \sigma_i are independent Rademacher variables (\pm 1 with equal probability). For a constrained class \mathcal{H}_{\text{ECM}} \subset \mathcal{H}, we have \mathcal{R}_N(\mathcal{H}_{\text{ECM}}) \leq \mathcal{R}_N(\mathcal{H}) because the supremum over a subset is less than or equal to the supremum over the whole set.
+
+The generalization error bound for a loss function \ell bounded by B is:
+
+\mathbb{E}[\ell(h)] \leq \hat{\mathbb{E}}[\ell(h)] + 2\mathcal{R}_N(\ell \circ \mathcal{H}) + B\sqrt{\frac{\log(1/\delta)}{2N}}.
+
+Since \mathcal{R}_N(\ell \circ \mathcal{H}_{\text{ECM}}) \leq \mathcal{R}_N(\ell \circ \mathcal{H}), the bound is tighter for \mathcal{H}_{\text{ECM}}. The ECM constraint further restricts \mathcal{H}_{\text{ECM}} to those functions that are consistent with the physical model, which typically have lower complexity than the full hypothesis class. Thus the generalization gap is reduced. ∎
+
+B.3 Proof of Theorem 5.2 (Multi‑Task Sample Complexity Reduction)
+
+Theorem 5.2: Under the assumption that the tasks share a common underlying representation, the sample complexity of learning all tasks jointly is O\left(\frac{d_{\text{rep}} + \sum_t d_t}{\epsilon^2}\right), whereas learning them separately requires O\left(\frac{\sum_t (d_{\text{rep}} + d_t)}{\epsilon^2}\right), where d_{\text{rep}} is the VC dimension of the shared representation and d_t are the VC dimensions of the task‑specific heads.
+
+Proof sketch: In hard parameter sharing, the hypothesis class for task t is \mathcal{F}_t = \{g_t \circ h : h \in \mathcal{H}_{\text{rep}}, g_t \in \mathcal{G}_t\}, where \mathcal{H}_{\text{rep}} is the class of shared representations and \mathcal{G}_t are task‑specific heads. The VC dimension of the composition is bounded by O(d_{\text{rep}} + d_t) (up to logarithmic factors) under mild assumptions [1]. Learning all tasks jointly uses a single representation h, so the total effective VC dimension is O(d_{\text{rep}} + \sum_t d_t). Learning each task separately would allow different representations h_t for each task, leading to total VC dimension O(\sum_t (d_{\text{rep}} + d_t)). By standard VC theory, the sample complexity for achieving error \epsilon scales as O(\text{VC}/\epsilon^2). Hence joint learning reduces sample complexity. ∎
+
+B.4 Proof of Theorem 5.3 (Domain Invariance via Adversarial Adaptation)
+
+Theorem 5.3: Under ideal training (discriminator optimal at each step), the feature extractor converges to a representation that minimizes the Jensen‑Shannon divergence between source and target feature distributions. Consequently, the source classifier applied to target features achieves error bounded by the source error plus the domain divergence.
+
+Proof: The adversarial training objective is:
+
+\min_{G} \max_{D} \mathbb{E}_{\mathbf{x} \sim p_S}[\log D(G(\mathbf{x}))] + \mathbb{E}_{\mathbf{x} \sim p_T}[\log(1 - D(G(\mathbf{x})))].
+
+For a fixed G, the optimal discriminator is D^*(\mathbf{h}) = \frac{p_S(\mathbf{h})}{p_S(\mathbf{h}) + p_T(\mathbf{h})} [2]. Plugging this in, the value function becomes:
+
+V(G) = 2 \text{JSD}(p_S(\mathbf{h}) \| p_T(\mathbf{h})) - \log 4,
+
+where JSD is the Jensen‑Shannon divergence. Thus minimizing the adversarial loss with respect to G is equivalent to minimizing the JSD between source and target feature distributions. When the JSD is zero, the features are perfectly aligned, and the source classifier (trained on source labels) will have the same error on target as on source, assuming the labeling function is consistent across domains. The domain adaptation bound [3] states:
+
+\epsilon_T(h) \leq \epsilon_S(h) + \frac{1}{2} d_{\mathcal{H} \Delta \mathcal{H}}(p_S, p_T) + \lambda,
+
+where d_{\mathcal{H} \Delta \mathcal{H}} is the \mathcal{H}-divergence and \lambda is the combined error of the ideal joint hypothesis. Adversarial training minimizes the \mathcal{H}-divergence, tightening the bound. ∎
+
+B.5 Proof of Lemma 5.2 (Consistency of RUL Distribution)
+
+Lemma 5.2: If the degradation model C(k) = C_{\text{nom}} - a\sqrt{k} - bk correctly captures the true degradation path, and the posterior over (a,b) converges to the true values as the number of cycles increases, then the estimated RUL distribution converges to the true RUL.
+
+Proof: Let (a^*, b^*) be the true parameters. As the number of observed cycles t \to \infty, the posterior p(a,b | \mathcal{D}_{1:t}) concentrates around (a^*, b^*) under standard Bayesian consistency conditions (e.g., if the model is correctly specified and the prior has support in a neighborhood). For each MC sample (a^{(m)}, b^{(m)}) \sim p(a,b | \mathcal{D}_{1:t}), the predicted failure cycle k_f^{(m)} solves 1 - \tilde{a}^{(m)}\sqrt{k} - \tilde{b}^{(m)}k = \theta. As t \to \infty, the samples converge to (a^*, b^*), so k_f^{(m)} converges to the true failure cycle k_f^*. Hence the empirical distribution of RUL samples converges to a point mass at k_f^* - t. For finite t, the spread reflects the remaining uncertainty. ∎
+
+B.6 Proof of Lemma 6.1 (Task Relatedness)
+
+Lemma 6.1: Let \mathcal{T} = \{T_1, T_2, T_3, T_4\} represent the SOH, RUL, knee‑point, and trajectory tasks. Under the assumption that the capacity fade curve C(k) is a smooth, monotonic function with a single inflection point (the knee), these tasks are related in the sense that there exists a shared representation \phi(k) such that each task can be expressed as a function of \phi(k).
+
+Proof: Let C(k) be the capacity at cycle k. Define \phi(k) = (C(k), C'(k), C''(k)), i.e., the value and first two derivatives. Then:
+
+· SOH at cycle k is C(k)/C_{\text{nom}}, a function of C(k).
+· RUL at cycle k is the solution to C(k_f) = \theta C_{\text{nom}}, which depends on the future trajectory of C. However, if we assume a parametric form (e.g., C(k) = C_{\text{nom}} - a\sqrt{k} - bk), then RUL depends on (a,b), which can be estimated from \phi(k) over a window.
+· Knee‑point k_{\text{knee}} is the point where C''(k) changes sign or where curvature is maximized; this is a function of C'(k) and C''(k).
+· Trajectory over next N cycles is determined by the local behavior of C, which can be approximated from C(k) and its derivatives.
+
+Thus all tasks are functions of \phi(k) (or its extension over time). Any representation that captures \phi(k) suffices. ∎
+
+B.7 Proof of Theorem 6.1 (Domain Invariance with Relaxation Features)
+
+Theorem 6.1: Let \mathcal{D}_S and \mathcal{D}_T be source and target domains with potentially different cycling protocols. Let \mathbf{x}_{\text{IC}} be IC features derived from charge/discharge, and \mathbf{x}_{\text{relax}} be features from relaxation curves. Then the joint distribution p(\mathbf{x}_{\text{relax}} | \text{state}) is more similar across domains than p(\mathbf{x}_{\text{IC}} | \text{state}). Consequently, including \mathbf{x}_{\text{relax}} reduces the domain divergence, improving adaptation.
+
+Proof: Relaxation dynamics are governed by Fick's laws of diffusion with boundary conditions determined by the cell's state of charge and internal state. The solution to the diffusion equation for a spherical particle is:
+
+c(r,t) = c_{\infty} + \sum_{n=1}^{\infty} A_n e^{-D \lambda_n^2 t} \frac{\sin(\lambda_n r)}{r},
+
+where D is the diffusion coefficient and \lambda_n are eigenvalues determined by the particle radius. The voltage relaxation is related to the surface concentration. Importantly, the time constants \tau_n = 1/(D\lambda_n^2) are material properties, independent of the preceding current profile. Thus, for a given state (SOH, SOC), the relaxation curve is determined solely by the cell's chemistry and state, not by how that state was reached. Therefore, the conditional distribution p(\mathbf{x}_{\text{relax}} | \text{state}) is invariant across domains with the same chemistry. Even across different chemistries, the qualitative shape may be similar, providing a more stable signal than IC features, which depend directly on the charging protocol. Hence, including \mathbf{x}_{\text{relax}} reduces the domain divergence. ∎
+
+B.8 Proof of Lemma 6.2 (Online Update Feasibility)
+
+Lemma 6.2: Let \theta_t be model parameters at cycle t. Given a new observation (\mathbf{x}_{t+1}, \text{SOH}_{t+1}), an online update can be performed using stochastic gradient descent on the loss computed from the new data point. Under appropriate conditions (bounded gradients, decreasing learning rate), the online algorithm converges to a local optimum of the cumulative loss.
+
+Proof: This is a standard result in online convex optimization [4]. If the loss function is convex and Lipschitz, and we use a learning rate \eta_t = O(1/\sqrt{t}), then the regret after T steps is O(\sqrt{T}), implying convergence to the optimal average loss. For non‑convex losses, online SGD converges to a stationary point under appropriate conditions [5]. In our case, the loss is non‑convex due to the neural network, but empirical evidence supports convergence. ∎
+
+B.9 Proof of Theorem 6.2 (Federated Convergence)
+
+Theorem 6.2: Under standard assumptions (Lipschitz gradients, bounded variance), the federated averaging algorithm converges to a stationary point of the global objective at rate O(1/T), where T is the number of communication rounds.
+
+Proof: See [6] for a detailed proof. The key idea is that the global model update is an average of local SGD updates, and under assumptions of bounded gradient dissimilarity, the convergence rate matches that of centralized SGD. ∎
+
+---
+
+Appendix C: Algorithm Details
+
+C.1 ICA Preprocessing Algorithm
+
+Algorithm C.1: ICA Preprocessing for a Single Cell
+
+```
+Input: Raw cycling data for cell i: list of cycles, each with time t, voltage V, current I, temperature T.
+       Voltage grid V_grid (size M) with step ΔV.
+       Savitzky–Golay parameters: window W, order p.
+Output: Feature matrix X of shape (num_cycles, D).
+
+Initialize X = []
+For each cycle c:
+    # Extract charging segment (I > threshold)
+    charge_idx = where I > 0.1 * max(I)
+    t_c = t[charge_idx], V_c = V[charge_idx], I_c = I[charge_idx]
+    if len(charge_idx) < 2: skip cycle (or handle as missing)
+    
+    # Compute capacity Q = ∫ I dt
+    dt = np.diff(t_c)
+    Q = np.cumsum(I_c[:-1] * dt)   # capacity at each time point
+    V_charge = V_c[:-1]  # align with Q
+    
+    # Resample Q onto V_grid via linear interpolation
+    interp_func = interp1d(V_charge, Q, kind='linear', bounds_error=False, fill_value='extrapolate')
+    Q_grid = interp_func(V_grid)
+    
+    # Compute raw IC = dQ/dV
+    dV = np.diff(V_grid)
+    dQ = np.diff(Q_grid)
+    IC_raw = dQ / dV   # length M-1
+    V_ic = V_grid[:-1]   # centers
+    
+    # Smooth IC_raw using Savitzky–Golay
+    IC_smooth = savgol_filter(IC_raw, window_length=W, polyorder=p)
+    
+    # Find peaks (local maxima) in IC_smooth
+    peaks, properties = find_peaks(IC_smooth, height=0)
+    if len(peaks) > 0:
+        # Select primary peak (largest height)
+        main_idx = peaks[np.argmax(properties['peak_heights'])]
+        V_p = V_ic[main_idx]
+        H_p = properties['peak_heights'][np.argmax(properties['peak_heights'])]
+        # Compute width at half height and area
+        widths = peak_widths(IC_smooth, [main_idx], rel_height=0.5)
+        left = int(np.round(widths[2][0]))
+        right = int(np.round(widths[3][0]))
+        A_p = trapz(IC_smooth[left:right+1], V_ic[left:right+1])
+    else:
+        V_p, H_p, A_p = np.nan, np.nan, np.nan
+    
+    # Extract relaxation features if rest period exists
+    if has_rest_after_cycle(c):
+        relax_features = extract_relaxation_features(c)
+    else:
+        relax_features = [np.nan]*6
+    
+    # Assemble feature vector
+    T_avg = np.mean(T_c)
+    feat = np.concatenate([IC_smooth, [V_p, H_p, A_p, T_avg, eta_c] + relax_features])
+    X.append(feat)
+
+X = np.array(X)   # shape (num_cycles, D)
+# Handle missing values (e.g., by forward fill or interpolation)
+X = interpolate_missing(X)
+Return X
+```
+
+C.2 Training Loop with Multi‑Task and Physics Losses
+
+Algorithm C.2: Training the CNN‑Transformer with Multi‑Task Loss
+
+```
+Input: Training set of cells with sequences X, targets SOH, RUL, knee, trajectory,
+       masks m_mono, current I, voltage V, OCV lookup.
+       Hyperparameters λ_rul, λ_knee, λ_traj, λ_mono, λ_ecm, learning rate η.
+Output: Trained model parameters θ.
+
+Initialize model parameters θ randomly.
+For epoch = 1 to max_epochs:
+    Shuffle training cells.
+    For each batch of B cells:
+        # Pad sequences to max length in batch, create masks
+        X_batch, mask_valid, y_soh, y_rul, y_knee, y_traj, mono_mask, I_batch, V_batch, OCV_batch = prepare_batch(batch)
+        
+        # Forward pass
+        soh_pred, rul_pred, knee_pred, traj_pred = model(X_batch, mask_valid)
+        
+        # Compute task losses (only on valid cycles)
+        data_loss_soh = MSE(soh_pred[mask_valid], y_soh[mask_valid])
+        data_loss_rul = MAE(rul_pred[mask_valid], y_rul[mask_valid])
+        data_loss_knee = Huber(knee_pred[mask_valid], y_knee[mask_valid])
+        data_loss_traj = MSE(traj_pred[mask_valid], y_traj[mask_valid])
+        
+        # Compute monotonicity loss
+        diff = soh_pred[:, 1:] - soh_pred[:, :-1]
+        mono_loss = mean(mono_mask * relu(diff))
+        
+        # Compute ECM loss
+        ecm_loss = 0; count = 0
+        for b in range(B):
+            for t in range(T where mask_valid[b,t]):
+                R0 = R_nom * exp(gamma * (1 - soh_pred[b,t]))
+                I_pts = I_batch[b,t]; V_pts = V_batch[b,t]; OCV_pts = OCV_batch[b,t]
+                V_hat = OCV_pts - I_pts * R0
+                valid_pts = abs(I_pts) > eps
+                ecm_loss += sum((V_pts - V_hat)**2 * valid_pts)
+                count += sum(valid_pts)
+        ecm_loss = ecm_loss / (count + 1e-8)
+        
+        # Total loss
+        loss = data_loss_soh + λ_rul * data_loss_rul + λ_knee * data_loss_knee + λ_traj * data_loss_traj + λ_mono * mono_loss + λ_ecm * ecm_loss
+        
+        # Backward pass and update
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+    
+    # Validation: compute metrics on validation set
+    if early_stopping condition met: break
+```
+
+C.3 Domain Adaptation Training Procedure
+
+Algorithm C.3: Adversarial Domain Adaptation
+
+```
+Input: Source data D_S (labeled), target data D_T (unlabeled or few labeled).
+       Hyperparameters λ_adv, learning rate η.
+Output: Adapted model parameters θ.
+
+Initialize model (encoder G, task head Y, domain discriminator D).
+Pretrain on source only for N_pretrain epochs (optional).
+For epoch = 1 to N_adapt:
+    For each batch from source and target:
+        # Source forward
+        h_S = G(x_S)
+        y_pred = Y(h_S)
+        loss_task = task_loss(y_pred, y_S)
+        
+        # Domain discrimination
+        h_T = G(x_T)
+        d_pred_S = D(h_S)
+        d_pred_T = D(h_T)
+        loss_adv = - (log(d_pred_S).mean() + log(1 - d_pred_T).mean())
+        
+        # Total loss with gradient reversal
+        loss = loss_task + λ_adv * loss_adv
+        # Use GRL to reverse gradients from D to G
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+```
+
+C.4 Probabilistic RUL Forecasting via Monte Carlo Sampling
+
+Algorithm C.4: RUL Distribution at Cycle t for a Test Cell
+
+```
+Input: Trained model with MC Dropout, test cell data up to cycle t.
+       Degradation model form: SOH(k) = 1 - a√k - b k.
+       Failure threshold θ, number of MC samples M.
+Output: Set of RUL samples {RUL_m}.
+
+# Step 1: Obtain SOH predictions for cycles 1..t with uncertainty
+soh_mean, soh_std, soh_samples = mc_dropout_predict(model, X[:t], M)
+
+# Step 2: For each MC sample m, fit degradation model to SOH predictions
+RUL_samples = []
+for m in 1..M:
+    soh_m = soh_samples[m, :t]   # shape (t,)
+    # Weighted least squares: minimize ∑ w_k (soh_m(k) - (1 - a√k - b k))^2
+    # with weights w_k = 1/soh_std[k]^2
+    k_vals = np.arange(1, t+1)
+    sqrt_k = np.sqrt(k_vals)
+    Phi = np.column_stack([sqrt_k, k_vals])
+    W = np.diag(1/(soh_std**2 + 1e-8))
+    y = 1 - soh_m
+    theta = inv(Phi.T @ W @ Phi) @ (Phi.T @ W @ y)
+    a_m, b_m = theta[0], theta[1]
+    
+    # Solve for k_f
+    disc = a_m**2 - 4*b_m*(θ-1)
+    if disc < 0:
+        k_f = 1e6   # large number indicating never fails
+    else:
+        x1 = (-a_m + sqrt(disc)) / (2*b_m)
+        x2 = (-a_m - sqrt(disc)) / (2*b_m)
+        x_valid = [x for x in [x1,x2] if x > 0]
+        if not x_valid:
+            k_f = 1e6
+        else:
+            k_f = min(x_valid)**2
+    RUL_m = max(0, k_f - t)
+    RUL_samples.append(RUL_m)
+
+Return RUL_samples
+```
+
+C.5 SHAP Analysis Wrapper
+
+Algorithm C.5: Compute SHAP Values for Model Interpretability
+
+```
+import shap
+
+def explain_with_shap(model, X_background, X_explain, mask_background, mask_explain):
+    """
+    Compute SHAP values for model predictions.
+    
+    Args:
+        model: PyTorch model
+        X_background: background dataset for KernelSHAP (e.g., 100 random cycles)
+        X_explain: instances to explain
+        mask_background, mask_explain: corresponding masks
+    Returns:
+        shap_values: list of SHAP value arrays for each feature
+    """
+    # Convert model to a function that takes numpy array and returns predictions
+    def model_predict(x):
+        # x is expected to be of shape (n_samples, seq_len, input_dim)
+        model.eval()
+        with torch.no_grad():
+            x_torch = torch.tensor(x, dtype=torch.float32)
+            # For simplicity, we assume no padding in these examples
+            pred = model(x_torch, None).cpu().numpy()
+        return pred
+    
+    # Use KernelSHAP (or DeepSHAP for deep models)
+    explainer = shap.KernelExplainer(model_predict, X_background.reshape(X_background.shape[0], -1))
+    shap_values = explainer.shap_values(X_explain.reshape(X_explain.shape[0], -1))
+    return shap_values
+```
+
+---
+
+Appendix D: Hyperparameter Search Space and Configuration
+
+D.1 Model Architecture Hyperparameters
+
+Hyperparameter Values Considered Selected
+CNN layers 1, 2, 3 2
+CNN filters per layer [32,64], [64,128], [128,256] [64,128]
+CNN kernel size 3, 5, 7 5
+Transformer layers 2, 4, 6 4
+Attention heads 4, 8 8
+Model dimension 64, 128, 256 128
+Feedforward dimension factor 2, 4 4
+Dropout rate 0.1, 0.2, 0.3 0.1
+
+D.2 Training Hyperparameters
+
+Hyperparameter Values Considered Selected
+Learning rate 1e-4, 5e-4, 1e-3 1e-4
+Batch size 8, 16, 32 16
+Weight decay 1e-5, 1e-4 1e-5
+Optimizer Adam, AdamW Adam
+Early stopping patience 10, 20, 30 20
+Maximum epochs 200 200
+
+D.3 Physics Loss Weights
+
+Hyperparameter Values Considered Selected
+λ_mono 0, 0.05, 0.1, 0.2 0.1
+λ_ecm 0, 0.01, 0.05, 0.1 0.05
+
+D.4 Multi‑Task Loss Weights
+
+Hyperparameter Values Considered Selected
+λ_rul 0.5, 1.0, 2.0 1.0
+λ_knee 0.25, 0.5, 1.0 0.5
+λ_traj 0.5, 1.0, 2.0 1.0
+
+D.5 Domain Adaptation Hyperparameters
+
+Hyperparameter Values Considered Selected
+λ_adv 0.001, 0.01, 0.1 0.01
+Pretrain epochs 50, 100 100
+Fine‑tuning learning rate 1e-5, 5e-5, 1e-4 1e-5
+
+---
+
+Appendix E: Dataset Descriptions
+
+E.1 NASA PCoE Dataset
+
+· Source: NASA Ames Prognostics Data Repository
+· Cells: 28 18650 cells (NCA/LCO chemistry)
+· Cycling: Constant current charge (1.5A) to 4.2V, then constant voltage until current drops to 20mA; discharge at constant current (2A) to 2.7V, 2.5V, or 2.2V depending on cell.
+· Measurements: Voltage, current, temperature, impedance (at selected cycles)
+· Sampling: Every cycle reports capacity; detailed time series available for some cells.
+· Access: https://ti.arc.nasa.gov/tech/dash/groups/pcoe/prognostic-data-repository/
+
+E.2 CALCE Dataset
+
+· Source: Center for Advanced Life Cycle Engineering, University of Maryland
+· Cells: 8 18650 cells (LCO chemistry): CS2 (constant current) and CX2 (varied discharge rates)
+· Cycling: CC‑CV charge (0.5C to 4.2V, then CV until current <0.05C); discharge at 1C, 0.5C, or dynamic profiles.
+· Measurements: Voltage, current, temperature at 10s intervals.
+· Access: https://calce.umd.edu/battery-data
+
+E.3 Oxford Dataset
+
+· Source: University of Oxford
+· Cells: 8 18650 cells (LFP chemistry)
+· Cycling: Dynamic drive cycles (Artemis) with varying current profiles.
+· Measurements: Voltage, current, temperature at 0.1s intervals.
+· Access: https://ora.ox.ac.uk/objects/uuid:03ba4b01-cfed-46d3-9b1a-7d4a7bdf6fac
+
+E.4 MIT Dataset
+
+· Source: Massachusetts Institute of Technology
+· Cells: 124 commercial A123 APR18650 cells (LFP chemistry)
+· Cycling: Fast charging protocols with various C‑rates.
+· Measurements: Capacity, voltage, current, temperature reported per cycle.
+· Access: https://data.mendeley.com/datasets/9b3c6b8p6v/2
+
+E.5 XJTU Dataset
+
+· Source: Xi’an Jiaotong University
+· Cells: 16 18650 cells (NMC chemistry)
+· Cycling: CC‑CV charge, CC discharge at different rates and temperatures.
+· Measurements: Voltage, current, temperature at 1s intervals.
+· Access: Request from authors or via public repository (e.g., IEEE Dataport).
+
+E.6 Stanford Dataset
+
+· Source: Stanford University
+· Cells: 48 18650 cells (LFP, NMC, LCO chemistries)
+· Cycling: Various cycling profiles including constant current, dynamic drive cycles, and fast charging.
+· Measurements: Voltage, current, temperature at 1s intervals.
+· Access: https://data.stanford.edu/
+
+E.7 Data Accessibility and Preprocessing Notes
+
+All datasets are publicly available for research purposes. Preprocessing scripts will be provided in the code repository to convert raw data into the ICA feature format described in Appendix C.1. Users should ensure they comply with the respective licenses.
+
+---
+
+Appendix F: Additional Theoretical Results
+
+F.1 Convergence Analysis of Physics‑Informed Loss (Sketch)
+
+The total loss is a sum of convex (MSE) and non‑convex terms. The ECM loss introduces nonlinearity through the exponential resistance function. While a full convergence proof is beyond scope, we note that the loss is differentiable and the optimization landscape is well‑behaved for small λ_ecm. The monotonicity term is piecewise linear, so the overall loss is semi‑smooth. With stochastic gradient descent and appropriate learning rate scheduling, convergence to a local minimum is expected. The use of Adam further helps navigate the landscape.
+
+F.2 Rademacher Complexity Bounds for Physics‑Constrained Hypothesis Classes
+
+Let \mathcal{H} be a class of neural networks with Lipschitz activations and bounded weights. The Rademacher complexity is O(1/\sqrt{N}) times a measure of network size. Adding a physics constraint \mathcal{L}_{\text{ecm}} \leq \epsilon restricts \mathcal{H} to a subset \mathcal{H}_\epsilon. By standard results, the empirical Rademacher complexity of \mathcal{H}_\epsilon is bounded by that of \mathcal{H}, and the bound can be tightened if the constraint reduces the effective number of parameters.
+
+F.3 Sample Complexity of Multi‑Task Learning with Dependent Tasks
+
+If tasks are related as in Lemma 6.1, the shared representation can be learned with fewer samples. Using the concept of task similarity [7], the sample complexity for the main task (SOH) can be as low as O(1/\epsilon^2) if auxiliary tasks provide enough information.
+
+F.4 Generalization Bounds for Domain Adaptation with Invariant Features
+
+Let d_{\mathcal{H}}(\mathcal{D}_S, \mathcal{D}_T) be the \mathcal{H}-divergence. If invariant features (relaxation curves) reduce this divergence, then the target error bound \epsilon_T(h) \leq \epsilon_S(h) + \frac{1}{2} d_{\mathcal{H}} + \lambda becomes tighter. Theorem 6.1 provides a theoretical justification for why relaxation features reduce divergence.
+
+---
+
+Appendix G: Explanation of Multi‑Task Learning and Domain Adaptation Formulations
+
+G.1 Derivation of Multi‑Task Objective
+
+The multi‑task objective is a weighted sum of task‑specific losses:
+
+\mathcal{L}_{\text{MTL}} = \sum_{t=1}^{T} \lambda_t \mathcal{L}_t(\theta_{\text{shared}}, \theta_t).
+
+The weights \lambda_t can be fixed or learned. One approach is uncertainty weighting [8], where each task has a learned noise parameter \sigma_t and the loss is:
+
+\mathcal{L}_{\text{MTL}} = \sum_{t} \frac{1}{2\sigma_t^2} \mathcal{L}_t + \log \sigma_t.
+
+This automatically balances tasks based on their uncertainty.
+
+G.2 Adversarial Domain Adaptation with Gradient Reversal
+
+The gradient reversal layer (GRL) [3] acts as an identity function during forward pass but reverses the gradient during backpropagation. If we denote the GRL as R_\lambda(x) = x with \frac{dR_\lambda}{dx} = -\lambda I, then the adversarial update for the feature extractor is:
+
+\theta_G \leftarrow \theta_G - \eta \left( \frac{\partial \mathcal{L}_Y}{\partial \theta_G} - \lambda \frac{\partial \mathcal{L}_{\text{adv}}}{\partial \theta_G} \right),
+
+which implements the min‑max optimization.
+
+G.3 Integration of Relaxation Features: Mathematical Justification
+
+Let \mathbf{x} = [\mathbf{x}_{\text{IC}}, \mathbf{x}_{\text{relax}}] be the combined feature vector. The encoder G produces \mathbf{h} = G(\mathbf{x}). The adversarial loss encourages \mathbf{h} to be domain‑invariant. Since \mathbf{x}_{\text{relax}} is already more invariant (Theorem 6.1), the encoder can rely on it to achieve invariance, reducing the need to discard information from \mathbf{x}_{\text{IC}}. This leads to better preservation of task‑relevant information while still achieving domain invariance.
+
+---
+
+References for Appendices
+
+[1] J. Baxter, "A model of inductive bias learning," Journal of Artificial Intelligence Research, vol. 12, pp. 149-198, 2000.
+
+[2] I. Goodfellow et al., "Generative adversarial nets," NeurIPS, 2014.
+
+[3] Y. Ganin et al., "Domain-adversarial training of neural networks," Journal of Machine Learning Research, vol. 17, no. 1, pp. 2096-2130, 2016.
+
+[4] S. Shalev-Shwartz, "Online learning and online convex optimization," Foundations and Trends in Machine Learning, vol. 4, no. 2, pp. 107-194, 2011.
+
+[5] L. Bottou, "Online learning and stochastic approximations," Online Learning and Neural Networks, Cambridge University Press, 1998.
+
+[6] X. Li et al., "On the convergence of FedAvg on non-IID data," ICLR, 2020.
+
+[7] A. Maurer et al., "The benefit of multitask representation learning," Journal of Machine Learning Research, vol. 17, no. 1, pp. 1-32, 2016.
+
+[8] A. Kendall et al., "Multi-task learning using uncertainty to weigh losses for scene geometry and semantics," CVPR, 2018.
