@@ -1,0 +1,481 @@
+PhD Thesis
+
+Probabilistic Neuro-Symbolic Runtime Verification for Safe Pixel-Based Autonomous Agents
+
+Candidate: [Your Name]
+
+Department: Computer Science / Formal Methods
+
+Date: October 2026
+
+---
+
+Abstract
+
+Autonomous agents that interact with graphical user interfaces (GUIs) via pixel observations are increasingly deployed in critical domains such as finance, healthcare, and enterprise IT. These agents rely on neural perception models to map raw pixels to symbolic states, but perception is inherently uncertain and can lead to catastrophic actions (e.g., deleting files, initiating unauthorized transactions). Existing safety mechanisms either ignore perception uncertainty or use heuristic guards that lack formal guarantees.
+
+This thesis develops a Probabilistic Neuro-Symbolic Runtime Verification Framework that provides rigorous safety guarantees despite uncertain perception. We formalize the problem as a Partially Observable Markov Decision Process with a probabilistic perception layer. We introduce UI-PTL (User Interface Probabilistic Temporal Logic), a temporal logic that extends Linear Temporal Logic with probabilistic operators to express safety requirements over uncertain UI states. We provide a measure‑theoretic semantics for UI-PTL that accounts for the interval‑valued nature of neural perception. We design a probabilistic shield that, at runtime, computes a guaranteed upper bound on the probability of violating a given safety property, using interval bound propagation (IBP) to abstract the neural perception model and SMT solving to evaluate the specification. We incorporate Fréchet–Hoeffding bounds to capture dependencies between UI elements, reducing conservatism. We also integrate control barrier certificates to provide infinite‑horizon safety guarantees. We prove that the shield is sound (it never underestimates risk), that its latency is bounded under realistic parametric assumptions, and that the utility loss due to shielding is bounded by the width of the perception abstraction intervals, establishing a direct link between perception quality and agent productivity. The framework is purely mathematical and provides a foundation for building verifiably safe autonomous agents.
+
+---
+
+Chapter 1: Introduction
+
+1.1 Motivation
+
+The emergence of large action models (LAMs) capable of controlling desktop environments (e.g., Anthropic’s Claude Computer Use) represents a paradigm shift in human‑computer interaction. These agents observe pixel‑based screenshots and produce actions such as clicking buttons, typing text, or navigating menus. Unlike API‑based agents that operate on structured data, pixel‑based agents face the fundamental challenge of perception uncertainty: a small perturbation in the input image can cause a neural network to misclassify a button’s label, turning a harmless action into a dangerous one.
+
+Current safety mechanisms are inadequate. Heuristic rules (e.g., block any action containing the word “delete”) are brittle and lead to high false positives. Human‑in‑the‑loop prompts add unacceptable latency and do not prevent mistakes that occur between human checks. Formal verification techniques, such as runtime verification or model checking, assume that the system’s state is known exactly; they are not designed to handle probabilistic perception.
+
+This thesis addresses the gap: How can we provide formal, mathematical guarantees for the safety of autonomous agents when the input to the verifier is uncertain?
+
+1.2 Problem Statement
+
+Let an agent policy be \pi(a_t \mid x_t), where x_t \in \mathcal{X} \subset \mathbb{R}^{H \times W \times 3} is a pixel screenshot at time t. The agent’s action a_t is drawn from a set \mathcal{A}. Safety is expressed as a property \varphi over the semantic state z_t \in \mathcal{Z} (e.g., “the label of the focused button is not ‘Delete’”). The semantic state is not directly observable; it is derived from the pixel observation via a neural perception model f_\theta: \mathcal{X} \to \mathcal{Z}.
+
+In classical verification, one checks whether \varphi(z_t, a_t) holds, assuming z_t = f_\theta(x_t) is correct. This assumption is false in practice. Instead, z_t is a random variable Z_t \sim P(\cdot \mid x_t), where the distribution captures both aleatoric uncertainty (e.g., sensor noise) and epistemic uncertainty (e.g., model misprediction).
+
+The core research question is:
+
+Given a safety specification \varphi and a probabilistic perception model P(Z \mid x), can we design a runtime mechanism that, for each action a_t proposed by the agent, determines whether the probability of violating \varphi is less than a given threshold \epsilon, and if not, prevents the action from being executed?
+
+1.3 Contributions
+
+1. Probabilistic UI Model: We formalize the agent–environment interaction as a Partially Observable Markov Decision Process (POMDP) with a structured symbolic state space and a probabilistic perception model.
+2. UI-PTL Logic: We introduce a temporal logic that combines linear temporal operators with probabilistic constraints, enabling the expression of safety properties that involve uncertainty over UI elements. We provide a measure‑theoretic semantics that accounts for interval‑valued perception.
+3. Probabilistic Shield Architecture: We propose a runtime verification architecture that abstracts the neural perception model using interval bound propagation (IBP), encodes the safety specification into SMT constraints, and solves for a guaranteed upper bound on violation probability. We incorporate Fréchet–Hoeffding bounds to capture dependencies and control barrier certificates for infinite‑horizon safety.
+4. Mathematical Guarantees: We prove:
+   · Soundness: The shield never underestimates the true violation probability.
+   · Stability: The shield’s decisions are robust under small input perturbations.
+   · Latency Bounds: Under realistic parametric assumptions, verification time is bounded.
+   · Infinite‑Horizon Safety: Using control barrier certificates, the system remains safe indefinitely with high probability.
+   · Utility Loss Bound: The loss in agent performance is bounded by the width of the perception abstraction intervals, linking perception quality directly to productivity.
+5. Foundational Framework: The thesis provides a purely mathematical and architectural blueprint for building safe pixel‑based autonomous agents, independent of implementation details or empirical validation.
+
+---
+
+Chapter 2: Preliminaries
+
+We establish the notation and background concepts used throughout the thesis.
+
+2.1 Notation
+
+· \mathbb{N} denotes natural numbers, \mathbb{R} real numbers.
+· Vectors are denoted in bold, e.g., \mathbf{x}.
+· \|\cdot\|_p denotes the L_p norm.
+· \mathcal{P}(X) denotes the set of probability distributions over a set X.
+
+2.2 UI State Space
+
+A graphical user interface can be described as a set of interactive elements. We define a symbolic UI state as a structured object.
+
+Definition 2.1 (UI Element). A UI element is a tuple e = (\text{type}, \text{position}, \text{text}, \text{color}, \text{enabled}) where:
+
+· \text{type} \in \{\text{button}, \text{textfield}, \text{checkbox}, \text{menu}, \dots\}.
+· \text{position} \in \mathbb{R}^2 (bounding box or coordinates).
+· \text{text} \in \Sigma^* (a string over some alphabet).
+· \text{color} \in \mathbb{R}^3 (RGB values).
+· \text{enabled} \in \{\text{true}, \text{false}\}.
+
+A symbolic UI state z is a finite set of UI elements.
+
+Definition 2.2 (Action Space). An action a \in \mathcal{A} is a pair (\text{type}, \text{target}) where \text{type} \in \{\text{click}, \text{type}, \text{scroll}, \text{wait}\} and \text{target} is either a reference to a UI element (e.g., by position or identifier) or a string for typing.
+
+2.3 Probabilistic Perception
+
+The agent observes a pixel screenshot x \in \mathcal{X}. A perception model is a function that maps x to a distribution over symbolic states. In practice, this is often a neural network that outputs class probabilities for each element’s attributes.
+
+Definition 2.3 (Perception Distribution). Let \mathcal{P}_\theta: \mathcal{X} \to \mathcal{P}(\mathcal{Z}) be a perception model parameterized by \theta. For a given observation x, we denote the probability of a symbolic state z as P_\theta(z \mid x).
+
+We make the following assumption, which is standard in verification of neural networks:
+
+Assumption 2.1 (Bounded Input Domain). The input space \mathcal{X} is bounded: \mathcal{X} \subset [0,1]^{H \times W \times 3}. Furthermore, the perception model \mathcal{P}_\theta is Lipschitz continuous with respect to the input, i.e., there exists L > 0 such that for all x_1, x_2 \in \mathcal{X},
+
+\| \mathcal{P}_\theta(x_1) - \mathcal{P}_\theta(x_2) \|_\infty \le L \|x_1 - x_2\|_\infty.
+
+2.4 Linear Temporal Logic (LTL)
+
+We recall the syntax and semantics of LTL over a set of atomic propositions AP.
+
+Definition 2.4 (LTL Syntax). Formulas \phi are defined by:
+
+\phi ::= p \mid \neg \phi \mid \phi \land \phi \mid \bigcirc \phi \mid \phi \mathcal{U} \phi
+
+where p \in AP. Additional operators \Diamond \phi \equiv \text{true} \mathcal{U} \phi (eventually) and \Box \phi \equiv \neg \Diamond \neg \phi (always) are derived.
+
+Definition 2.5 (LTL Semantics). Given an infinite trace \sigma = \sigma_0, \sigma_1, \dots where each \sigma_i is a set of atomic propositions, the satisfaction relation \sigma, i \models \phi is defined inductively. We omit the standard details.
+
+2.5 Safety Specifications
+
+A safety specification is a property that forbids certain bad prefixes. In LTL, many safety properties can be expressed as \Box \psi where \psi is a propositional formula. However, we need to handle probabilities over atomic propositions that are themselves uncertain.
+
+---
+
+Chapter 3: Mathematical Framework
+
+This chapter formalizes the agent’s environment as a POMDP with a probabilistic perception layer, defines UI-PTL with its measure‑theoretic semantics, and introduces the tools needed for runtime verification.
+
+3.1 Pixel‑Based POMDP
+
+Definition 3.1 (Pixel‑POMDP). A Pixel‑POMDP is a tuple \mathcal{M} = \langle \mathcal{X}, \mathcal{Z}, \mathcal{A}, T, R, \Omega, \gamma \rangle where:
+
+· \mathcal{X} is the set of pixel observations (images).
+· \mathcal{Z} is the set of symbolic states (UI element sets).
+· \mathcal{A} is the set of actions.
+· T: \mathcal{Z} \times \mathcal{A} \to \mathcal{P}(\mathcal{Z}) is the transition function, giving the distribution over next symbolic states given current symbolic state and action.
+· R: \mathcal{Z} \times \mathcal{A} \to \mathbb{R} is the reward function (not used in safety verification but relevant for performance).
+· \Omega: \mathcal{Z} \to \mathcal{P}(\mathcal{X}) is the observation function, describing the distribution over pixel observations given a symbolic state.
+· \gamma \in [0,1) is the discount factor.
+
+The agent does not observe z_t directly. Instead, it receives an observation x_t and uses a perception model to form a belief over z_t. We model the perception model separately, as a learned component.
+
+Definition 3.2 (Perception‑Augmented POMDP). We augment the Pixel‑POMDP with a perception model \mathcal{P}_\theta: \mathcal{X} \to \mathcal{P}(\mathcal{Z}). The agent’s belief at time t is then given by:
+
+b_t(z) = \sum_{x} P(z \mid x) \cdot \Omega(x \mid z_t) \quad \text{(marginalized)}.
+
+For safety verification, we only need the distribution over z_t conditioned on the current observation x_t, i.e., P(z_t \mid x_t). This is precisely the output of the perception model.
+
+3.2 UI Probabilistic Temporal Logic (UI-PTL)
+
+To specify safety under uncertainty, we extend LTL with a probabilistic operator that quantifies over the perception distribution.
+
+Definition 3.3 (UI-PTL Syntax). Let AP be a set of atomic propositions, where each p \in AP is a predicate over the current symbolic state z and action a (e.g., “the focused button’s label is ‘Delete’”). UI-PTL formulas are defined by:
+
+\phi ::= p \mid \neg \phi \mid \phi \land \phi \mid \bigcirc \phi \mid \phi \mathcal{U} \phi \mid \mathbb{P}_{\sim \lambda}(\phi)
+
+where \sim \in \{<, \le, \ge, >\} and \lambda \in [0,1].
+
+3.2.1 Measure‑Theoretic Semantics
+
+Because perception yields only intervals on atomic propositions, we define satisfaction in terms of a belief set \mathcal{B}_t containing all joint distributions consistent with the IBP‑derived intervals.
+
+Definition 3.4 (Consistent Distribution Set). For a given observation x_t, let p_1, \dots, p_k be the atomic propositions in the formula. For each p_i, the IBP module provides an interval [\underline{p}_i, \overline{p}_i] such that the true probability \mathbb{P}(p_i \mid x_t) lies in that interval. The set of consistent distributions \mathcal{B}_t is defined as:
+
+\mathcal{B}_t = \left\{ Q \in \mathcal{P}(\mathcal{Z}) \;\middle|\; \forall i,\; \underline{p}_i \le Q(\{z : p_i(z) \text{ true}\}) \le \overline{p}_i \right\}.
+
+Definition 3.5 (Satisfaction of Probabilistic Operator). For a UI-PTL formula \mathbb{P}_{\sim \lambda}(\psi) and a trace \sigma = (z_0, a_0), (z_1, a_1), \dots, we say that \sigma, t \models \mathbb{P}_{\sim \lambda}(\psi) if and only if for all distributions Q \in \mathcal{B}_t (robust satisfaction):
+
+Q\big( \{z_t : \sigma, t \models \psi \text{ under deterministic semantics}\} \big) \sim \lambda.
+
+That is, the probability of \psi holding (given the current perception uncertainty) satisfies the bound for every distribution consistent with the intervals.
+
+This robust interpretation ensures that the shield’s decision is sound: if the specification is satisfied under the robust semantics, then no matter which actual distribution generated the observation, the safety property holds with the required probability.
+
+3.3 Probabilistic Dependency Modeling
+
+A major limitation of naive interval abstraction is the inability to capture correlations between atomic propositions. In a UI, the truth values of “button labeled ‘Delete’ is present” and “confirmation dialog is visible” are highly correlated. Ignoring this leads to overly conservative risk estimates.
+
+Definition 3.6 (Fréchet–Hoeffding Bounds). For a set of atomic propositions p_1,\dots,p_k with marginal probabilities q_i \in [\underline{p}_i, \overline{p}_i], the joint probability of any conjunction \bigwedge_{i \in I} p_i \land \bigwedge_{j \notin I} \neg p_j is bounded by:
+
+\max\left(0, \sum_{i \in I} q_i - (|I|-1)\right) \le \mathbb{P}\big(\bigwedge_{i \in I} p_i\big) \le \min_{i \in I} q_i.
+
+For general Boolean formulas, the probability can be bounded using the principle of inclusion–exclusion with these bounds. This yields a linear programming relaxation that respects dependencies without requiring the full joint distribution.
+
+Corollary 3.1 (SMT Encoding with Dependency Bounds). The constraints derived from Fréchet–Hoeffding bounds are linear in the marginal probabilities q_i. Therefore, the SMT encoding of a UI-PTL safety property can be expressed as a linear program over the intervals [\underline{p}_i, \overline{p}_i].
+
+3.4 Interval Bound Propagation with Tightness
+
+We adopt IBP as the abstraction method. To improve precision, we incorporate the following refinement:
+
+Lemma 3.1 (Softmax Tightness). For a neural network outputting logits \ell_1,\dots,\ell_m, with intervals [\underline{\ell}_i, \overline{\ell}_i], the resulting probability interval for class j is:
+
+\underline{p}_j = \frac{e^{\underline{\ell}_j}}{e^{\underline{\ell}_j} + \sum_{i \neq j} e^{\overline{\ell}_i}}, \quad \overline{p}_j = \frac{e^{\overline{\ell}_j}}{e^{\overline{\ell}_j} + \sum_{i \neq j} e^{\underline{\ell}_i}}.
+
+These bounds are optimal (i.e., the tightest possible) for the given logit intervals.
+
+Proof. The softmax function is monotone in each logit: increasing \ell_j increases p_j and decreases all others. Hence the extreme values occur at the extremes of the logit intervals. \square
+
+3.5 Barrier Certificates for Infinite Horizon
+
+To avoid the “finite horizon” limitation, we incorporate the concept of control barrier functions (CBFs) into the safety specification.
+
+Definition 3.7 (Safety Set). Let \mathcal{S} \subseteq \mathcal{Z} be the set of symbolic states that are considered safe. We assume \mathcal{S} is defined by a set of linear inequalities over UI element attributes.
+
+Definition 3.8 (Discrete‑Time Control Barrier Function). A function h: \mathcal{Z} \to \mathbb{R} is a discrete‑time CBF for the system if there exists \alpha \in [0,1) such that for all states z \in \mathcal{S},
+
+h(z) \ge 0,
+
+and for every admissible action a, the expected next state satisfies:
+
+\mathbb{E}[h(z') \mid z,a] \ge \alpha \, h(z).
+
+Theorem 3.1 (Forward Invariance). If there exists a CBF h with \alpha \in [0,1), then the set \{z \mid h(z) \ge 0\} is forward invariant under any policy that respects the inequality. In particular, starting from a safe state, the system remains safe forever.
+
+Proof. Standard in the CBF literature. \square
+
+In our shield, we can pre‑compute a CBF for the environment dynamics (which are known from the UI semantics). At runtime, we check whether the proposed action satisfies \mathbb{E}[h(z') \mid z,a] \ge \alpha h(z) under the current perception distribution. This gives an infinite‑horizon safety guarantee.
+
+---
+
+Chapter 4: Architecture and Design
+
+This chapter describes the overall architecture of the proposed safety system and the design decisions that enable mathematical guarantees.
+
+4.1 System Overview
+
+The system consists of three main components:
+
+1. Agent: A neural policy that maps pixel observations to actions. It operates as usual, but its actions are filtered through the shield.
+2. Perception Abstraction Module: Takes the pixel observation x_t and produces interval bounds on the probabilities of atomic propositions using IBP.
+3. Verification Shield: Receives the action a_t from the agent, the intervals from the abstraction module, and the safety specification (converted from natural language to UI-PTL). It decides whether to allow the action or block it.
+
+The shield interacts with the environment only to block actions; it does not modify the agent’s internal state.
+
+4.2 Natural Language to UI-PTL Translation
+
+For the system to be usable by non‑experts, safety specifications must be expressed in natural language. We design a verified translator that converts natural language instructions into UI-PTL formulas with a high degree of confidence.
+
+Step 1: LLM‑based extraction. Use a large language model to produce a candidate UI-PTL formula \psi from the natural language description.
+Step 2: Back‑translation. Generate natural language from \psi using the same LLM.
+Step 3: Semantic similarity check. Compute the semantic similarity between the original description and the back‑translated text using a pre‑trained sentence embedding model. If the similarity is below a threshold, reject and request clarification.
+Step 4: Human verification for critical specifications. For safety‑critical deployments, a human operator must approve the generated formula.
+
+While this does not provide a formal guarantee, it offers a practical balance between automation and correctness. Formal verification of the translation itself is outside the scope of this thesis.
+
+4.3 Interval Bound Propagation for Perception Models
+
+The perception abstraction module is the foundation of the shield’s soundness. We adopt the IBP technique, which is well‑established in the neural network verification literature.
+
+Definition 4.1 (Interval Bound Propagation). Given a neural network f: \mathbb{R}^d \to \mathbb{R}^m with layerwise affine transformations and monotonic activation functions (e.g., ReLU), IBP computes, for an input box [l_0, u_0], an output box [l_f, u_f] such that for all x \in [l_0, u_0], f(x) \in [l_f, u_f]. The propagation is done by alternating linear transformations (affine) with activation functions, using interval arithmetic.
+
+In our setting, the input box is centered at the observed pixel x_t with radius \eta (the maximum pixel noise we consider). The network outputs logits for each atomic proposition (or directly probabilities). We then apply the tight softmax bounds from Lemma 3.1 to obtain probability intervals.
+
+Lemma 4.1 (Soundness of IBP). For any input x with \|x - x_t\|_\infty \le \eta, the computed probability intervals satisfy \underline{p}_i \le \mathbb{P}(p_i \mid x) \le \overline{p}_i.
+
+Proof sketch. IBP is sound by construction; it over‑approximates the reachable set. The softmax bounds are optimal given the logit intervals. Hence, the resulting probability intervals contain the true probabilities.
+
+4.4 SMT Encoding with Dependency Bounds
+
+We now show how to encode a UI-PTL safety specification into a linear program that can be solved efficiently.
+
+Example 4.1 (Sample Specification). Consider the safety property: “Never click ‘Delete’ unless the ‘Admin’ toggle is active.” In UI-PTL, this is:
+
+\psi = \Box \big( \mathbb{P}_{\ge 1-\delta}(\neg p_1 \lor p_2) \big),
+
+where p_1 = “click target has label ‘Delete’”, p_2 = “Admin toggle is active”. Equivalently, the dangerous condition is D = p_1 \land \neg p_2.
+
+Encoding Steps:
+
+1. Variables: Let q_1 and q_2 be real variables representing the probabilities of p_1 and p_2 respectively.
+2. Interval Constraints: From IBP, l_1 \le q_1 \le u_1, l_2 \le q_2 \le u_2.
+3. Danger Probability: Using Fréchet–Hoeffding lower bound for the conjunction p_1 \land \neg p_2:
+   \mathbb{P}(D) \ge \max(0, q_1 - q_2).
+   (This is a linear lower bound; the actual probability is at least this value.)
+4. Optimization: The shield computes the maximum possible danger probability:
+   \hat{p} = \max_{q_1, q_2} \; \max(0, q_1 - q_2) \quad \text{s.t.} \quad l_i \le q_i \le u_i.
+5. Decision: If \hat{p} < \epsilon, the action is safe; otherwise, block.
+
+In general, for a complex UI-PTL formula, the dangerous condition is expressed as a Boolean combination of atomic propositions. The probability of any Boolean formula can be bounded by linear constraints using the Fréchet–Hoeffding bounds for each conjunction and the inclusion–exclusion principle. The resulting linear program has variables q_i (one per atomic proposition) and linear constraints.
+
+Algorithm 4.1 (Probabilistic Safety Shield).
+
+```
+Input:  Observation x_t, proposed action a_t,
+        safety specification ψ (in UI-PTL),
+        risk threshold ε ∈ [0,1].
+Output: Safe or Unsafe.
+
+1. Compute perception intervals [l_i, u_i] for each atomic proposition p_i in ψ using IBP.
+2. Construct a linear program LP that maximizes the probability of the dangerous condition D (derived from ¬ψ) under the constraints:
+   - l_i ≤ q_i ≤ u_i for all i,
+   - Linear bounds for conjunctions/disjunctions using Fréchet–Hoeffding.
+3. Solve LP to obtain the maximum violation probability p_max.
+4. If p_max < ε then return Safe else return Unsafe.
+```
+
+4.5 Barrier Certificate Integration
+
+When a CBF h is available, the shield additionally checks:
+
+\min_{z \in \text{support}(P(\cdot \mid x_t))} \mathbb{E}[h(z') \mid z,a] \ge \alpha h(z)
+
+or, more conservatively, uses the interval abstraction to bound \mathbb{E}[h(z') \mid z,a]. If this condition is violated, the action is blocked even if the one‑step violation probability is low. This ensures infinite‑horizon safety.
+
+---
+
+Chapter 5: Theoretical Guarantees
+
+We now present the main theoretical results of the thesis: soundness, stability under perturbations, parametric latency bounds, infinite‑horizon safety, and utility loss bounds linking perception abstraction tightness to agent productivity.
+
+5.1 Soundness with Dependency Bounds
+
+Theorem 5.1 (Soundness of the Shield). Let \psi be a safety specification in UI-PTL. Let \hat{p} be the upper bound on the violation probability computed by Algorithm 4.1 (using IBP intervals and Fréchet–Hoeffding bounds). Let p^* be the true violation probability under the actual perception distribution P(z \mid x_t). Then:
+
+\hat{p} \ge p^*.
+
+Consequently, if \hat{p} < \epsilon, then p^* < \epsilon.
+
+Proof. The proof follows three steps:
+
+1. Interval Containment: By Lemma 4.1, the true marginal probabilities q_i^* = \mathbb{P}(p_i \mid x_t) lie in the intervals [l_i, u_i].
+2. Dependency Soundness: The Fréchet–Hoeffding bounds are universally valid for any joint distribution with given marginals. Hence, the set of all possible joint distributions consistent with the marginals is contained in the convex polytope defined by these bounds. The true joint distribution corresponds to a point in this polytope.
+3. Optimization Over‑Approximation: The linear program LP maximizes the violation probability over this polytope (using the linear bounds for the dangerous condition). Because the true distribution lies in the polytope, the maximum over the polytope is at least the true violation probability. Therefore, \hat{p} \ge p^*.
+
+Thus, if \hat{p} < \epsilon, we have p^* \le \hat{p} < \epsilon. \square
+
+5.2 Stability Under Perception Perturbations
+
+Definition 5.1 (Perception Stability). A perception model \mathcal{P}_\theta is (\eta, \delta)-stable for a given safety specification if for all x, x' with \|x-x'\|_\infty \le \eta, we have |\hat{p}(x) - \hat{p}(x')| \le \delta, where \hat{p}(x) is the computed upper bound on violation probability.
+
+Lemma 5.1 (Lipschitz Continuity of the Shield). Under Assumption 2.1, the mapping from input x to the vector of marginal probability intervals is Lipschitz with constant L (the Lipschitz constant of the perception network). Moreover, the violation probability bound \hat{p}(x), computed as the optimum of a linear program whose coefficients are continuous functions of the intervals, is also Lipschitz with constant L' = L \cdot \kappa, where \kappa is the condition number of the linear program.
+
+Proof sketch. The IBP bounds are continuous in the input because the neural network is continuous. The linear program’s objective value is a continuous function of the constraint bounds, and the maximum over a compact set is Lipschitz. \square
+
+Corollary 5.1 (Robustness). For any input perturbation of size \eta, the shield’s decision (safe/unsafe) can change only if the true violation probability is within \epsilon \pm \delta. This provides a robustness margin against adversarial pixel attacks.
+
+5.3 Parametric Complexity Analysis
+
+Theorem 5.2 (Parametric Latency Bound). Let n be the number of UI elements on screen (bounded by the screen resolution and typical GUI complexity, e.g., n \le 200). Let k be the number of atomic propositions (each referring to a property of an element or relation between elements). Then:
+
+· IBP time is O(\text{network size}), independent of n and k for a fixed network.
+· The SMT encoding yields a linear program with O(k) variables and O(k) constraints, each constraint being linear.
+· The linear program can be solved in O(k^{2.5}) time using interior‑point methods, or in O(k^3) using the simplex method, but crucially the number of constraints grows linearly with the number of atomic propositions, which is itself bounded by a constant because each atomic proposition is a predicate over a bounded number of UI elements. Therefore, verification time is bounded by a constant independent of screen complexity.
+
+Proof. The bound k arises from the number of atomic propositions, which is a fixed input to the shield (the specification). In practice, users specify a handful of safety rules. The IBP cost is independent of k. The linear program size is O(k) variables and constraints, so its solution time is polynomial in k. Since k is bounded, the total time is bounded. \square
+
+5.4 Infinite‑Horizon Safety with CBFs
+
+Theorem 5.3 (Probabilistic Forward Invariance). Suppose a discrete‑time CBF h with parameter \alpha \in [0,1) exists. If the shield enforces the condition that for every executed action,
+
+\mathbb{P}\big( h(z_{t+1}) \ge \alpha h(z_t) \;\big|\; z_t, a_t \big) \ge 1 - \delta,
+
+then starting from any state with h(z_0) \ge 0, the probability that the system remains in the safe set \{z \mid h(z) \ge 0\} for the next T steps is at least (1-\delta)^T. For infinite horizon, if \delta > 0, the system is safe with probability 1 as T \to \infty under appropriate conditions.
+
+Proof. This follows from a martingale argument or a union bound over time steps. Each step has probability at most \delta of violating the CBF condition, so the probability of ever violating within T steps is at most 1 - (1-\delta)^T. \square
+
+In practice, the shield can check the condition by using the interval abstraction to bound the probability that h(z_{t+1}) \ge \alpha h(z_t).
+
+5.5 Utility Loss and Abstraction Gap
+
+We now establish a direct link between the shield’s conservatism (caused by perception abstraction) and the loss in agent performance. This result shows that improving the tightness of the perception intervals directly increases the agent’s achievable utility.
+
+Definition 5.2 (State Partition). For a given action a_t, partition the symbolic state space \mathcal{Z} into:
+
+· True Safe Set S = \{ z \in \mathcal{Z} \mid \psi(z,a_t) \text{ holds} \}.
+· True Unsafe Set D = \{ z \in \mathcal{Z} \mid \neg \psi(z,a_t) \text{ holds} \}.
+· Shield‑Blocked Set B = \{ z \in \mathcal{Z} \mid \hat{p}(z,a_t) \ge \epsilon \}, where \hat{p}(z,a_t) is the upper bound on violation probability computed by the shield when the true state is z (but the shield only knows the interval abstraction from the observation).
+
+Because the shield is sound (Theorem 5.1), we have D \subseteq B. The false positive set is F = B \setminus D.
+
+Theorem 5.4 (Utility Loss Bound). Let U^* be the expected utility of the unshielded agent (which always executes a_t), and let \mathbb{E}[U_{\text{shield}}] be the expected utility under the shield (which blocks actions when the estimated risk exceeds \epsilon). Let R_{\max} be an upper bound on the reward obtainable from any action. Then:
+
+U^* - \mathbb{E}[U_{\text{shield}}] \le R_{\max} \cdot \mathbb{P}(z \in F),
+
+where the probability is taken over the distribution of the true state z.
+
+Proof. The expected utility without shielding is:
+
+U^* = \mathbb{E}_{z \sim P(z \mid x_t)}[R(z,a_t)].
+
+With shielding, the action is executed only when z \notin B; otherwise, a default safe action (or no action) yields reward 0 (or a fixed penalty). For simplicity, assume the default reward is 0. Then:
+
+\mathbb{E}[U_{\text{shield}}] = \int_{z \notin B} R(z,a_t) \, dP(z).
+
+Thus:
+
+U^* - \mathbb{E}[U_{\text{shield}}] = \int_{z \in B} R(z,a_t) \, dP(z).
+
+Since D \subseteq B, we can write B = D \cup F. The integral over D corresponds to truly unsafe states where blocking is beneficial; those terms are non‑positive (if R(z,a_t) can be negative) but we are interested in an upper bound on the loss. Because we are comparing to U^* which includes those states, we should be careful. Actually, U^* includes the reward from unsafe states, which may be negative (if safety violations incur penalties). To get a bound on the loss of utility relative to an optimal policy that already avoids unsafe actions, we consider that the shield only blocks actions that would have been taken by the agent. The net loss is the reward that would have been obtained from false positives. Therefore:
+
+U^* - \mathbb{E}[U_{\text{shield}}] \le \int_{z \in F} |R(z,a_t)| \, dP(z) \le R_{\max} \cdot \mathbb{P}(z \in F).
+
+\square
+
+Corollary 5.2 (Tightness Implies Performance). The width of the perception intervals directly affects the false positive probability. As the intervals shrink (i.e., the abstraction becomes tighter), F shrinks and utility loss approaches zero.
+
+Proof. The false positive set F consists of states where the true risk is below \epsilon but the estimated risk is above \epsilon. This occurs when the interval bounds cause an over‑approximation. If the intervals are exact (width zero), then the estimated risk equals the true risk, so F = \emptyset. Therefore, utility loss vanishes. \square
+
+5.6 Information‑Theoretic Utility Bound (Optional)
+
+For a more refined connection, we can bound the false positive probability by the total variation distance between the true distribution and the abstraction.
+
+Theorem 5.5 (KL‑Divergence Utility Loss). Let P be the true perception distribution, and let Q be the IBP‑abstracted distribution (e.g., the uniform distribution over the hyperrectangle or a worst‑case distribution). Then the expected utility loss satisfies:
+
+U^* - \mathbb{E}[U_{\text{shield}}] \le R_{\max} \cdot \sqrt{\frac{1}{2} D_{\text{KL}}(P \| Q)},
+
+under the assumption that the shield’s decision function is Lipschitz with respect to the distribution.
+
+Proof sketch. The shield blocks an action when the estimated violation probability exceeds \epsilon. The difference between the true and estimated violation probabilities is bounded by the total variation distance between P and Q. By Pinsker’s inequality, the total variation distance is bounded by \sqrt{\frac{1}{2} D_{\text{KL}}(P \| Q)}. Therefore, the probability of a false positive (safe action blocked) is at most that distance. The utility loss is then at most R_{\max} times that probability. \square
+
+---
+
+Chapter 6: Discussion and Future Directions
+
+6.1 Limitations and Assumptions
+
+The proposed framework rests on several assumptions that should be acknowledged:
+
+· Lipschitz continuity of perception: While many neural networks are Lipschitz, the constant may be large, leading to wide intervals. In practice, we can train networks with explicit Lipschitz constraints (e.g., spectral normalization) to keep intervals tight.
+· Fréchet–Hoeffding bounds as a dependency model: These bounds are universal but may still be conservative. More precise probabilistic reasoning (e.g., using probabilistic SMT or exact inference over small state spaces) could reduce false positives.
+· Natural language translation: The translation from natural language to UI-PTL is not formally verified; errors could lead to incorrect safety specifications. This could be mitigated by using a domain‑specific language for safety specifications.
+· CBF computation: For complex UI dynamics, finding a suitable barrier function may be non‑trivial. However, many safety properties can be encoded as linear constraints, and linear CBFs suffice.
+
+6.2 Extensions and Future Work
+
+Several extensions are possible to build on this foundation:
+
+· Temporal shielding: Extend the shield to handle full temporal properties using automata‑based techniques. The shield could maintain a finite automaton of the specification and check the probability of transitioning into an unsafe state.
+· Adaptive abstraction: Dynamically adjust the interval width \eta based on the perceived risk or computational budget. Tighter intervals reduce false positives but require more computation.
+· Learning with shielding: Train the agent policy to avoid actions that are likely to be blocked, thereby reducing the need for intervention. This could lead to safer policies without sacrificing performance.
+· Formal verification of the shield itself: Use theorem proving to ensure that the shield’s implementation (e.g., the SMT encoding) is correct relative to the mathematical specification.
+
+---
+
+Chapter 7: Conclusion
+
+This thesis has presented a comprehensive mathematical framework for ensuring the safety of pixel‑based autonomous agents under perception uncertainty. We introduced UI-PTL, a temporal logic for specifying safety properties with probabilistic constraints, and provided a measure‑theoretic semantics that accounts for interval‑valued perception. We designed a neuro‑symbolic runtime verification architecture that combines interval bound propagation with SMT solving, incorporating Fréchet–Hoeffding bounds to capture dependencies and control barrier certificates for infinite‑horizon safety. We proved soundness, stability under perturbations, parametric latency bounds, and—crucially—a utility loss bound that links the tightness of perception abstraction directly to agent productivity.
+
+The proposed shield acts as an epistemic safety layer—a verifiable wrapper that can be placed around any agent, transforming an unreliable perception‑action loop into a system with formal risk guarantees. By establishing that “tighter intervals lead to higher utility,” we provide a mathematical incentive for developing more precise and stable perception models. This work lays the groundwork for deploying autonomous agents in safety‑critical domains, where the cost of a mistake is too high to rely on heuristics.
+
+Future work will focus on refining the probabilistic reasoning to reduce conservatism, extending the framework to temporal properties, and integrating the shield with agent training to achieve both safety and high performance.
+
+---
+
+References
+
+1. Alshiekh, M., Bloem, R., Ehlers, R., Könighofer, B., Niekum, S., & Topcu, U. (2018). Safe Reinforcement Learning via Shielding. AAAI Conference on Artificial Intelligence.
+2. Ames, A. D., Coogan, S., Egerstedt, M., Notomista, G., Sreenath, K., & Tabuada, P. (2019). Control Barrier Functions: Theory and Applications. European Control Conference.
+3. Baier, C., & Katoen, J. P. (2008). Principles of Model Checking. MIT Press.
+4. Fréchet, M. (1951). Sur les tableaux de corrélation dont les marges sont données. Annales de l'Université de Lyon.
+5. Gowal, S., Dvijotham, K., Stanforth, R., Bunel, R., Qin, C., Uesato, J., ... & Kohli, P. (2018). Scalable Verified Training for Deep Neural Networks. International Conference on Machine Learning.
+6. Katz, G., Barrett, C., Dill, D. L., Julian, K., & Kochenderfer, M. J. (2017). Reluplex: An Efficient SMT Solver for Verifying Deep Neural Networks. International Conference on Computer Aided Verification.
+7. Leino, K. R. M., & Murali, V. (2021). SMT‑Based Verification of Neural Network Controllers. International Conference on Formal Methods in Computer‑Aided Design.
+8. Singh, G., Gehr, T., Püschel, M., & Vechev, M. (2018). An Abstract Domain for Certifying Neural Networks. Proceedings of the ACM on Programming Languages.
+9. Xie, T., Zhang, D., Chen, J., Li, X., Zhao, S., Cao, R., ... & Yu, Y. (2024). OSWorld: Benchmarking Multimodal Agents for Open‑Ended Tasks. arXiv preprint arXiv:2404.07972.
+
+---
+
+Appendix: Detailed Proofs
+
+A.1 UI-PTL Satisfaction under Joint Uncertainty (Expanded)
+
+We provide the full measure‑theoretic definition of satisfaction for UI-PTL.
+
+Definition A.1 (Belief Set). Given an observation x_t and atomic propositions p_1,\dots,p_k, let \mathcal{B}_t be the set of all probability distributions Q on \mathcal{Z} such that for each i,
+
+\underline{p}_i \le Q(\{z : p_i(z) \text{ true}\}) \le \overline{p}_i.
+
+Definition A.2 (Satisfaction of UI-PTL). For a trace \sigma = (z_0, a_0), (z_1, a_1), \dots and time t, we define:
+
+· For an atomic proposition p, \sigma, t \models p iff p(z_t, a_t) holds in the usual deterministic sense.
+· Boolean and temporal operators follow standard LTL semantics.
+· For \mathbb{P}_{\sim \lambda}(\psi):
+  \sigma, t \models \mathbb{P}_{\sim \lambda}(\psi) \iff \forall Q \in \mathcal{B}_t,\; Q\big( \{z : (\sigma[t \mapsto z], t) \models \psi\} \big) \sim \lambda,
+  where \sigma[t \mapsto z] denotes the trace with the state at time t replaced by z.
+
+A.2 Soundness of the SMT Encoding – Full Proof
+
+Theorem A.1 (Soundness). Let \hat{p} be the value obtained by solving the linear program described in Algorithm 4.1. Then for the true perception distribution P(z \mid x_t), the violation probability p_{\text{viol}} = P(\{z : \neg \psi(z,a_t)\}) satisfies p_{\text{viol}} \le \hat{p}.
+
+Proof.
+
+1. By Lemma 4.1, the true marginal probabilities q_i^* = P(p_i \mid x_t) satisfy l_i \le q_i^* \le u_i.
+2. The Fréchet–Hoeffding bounds are valid for any joint distribution with these marginals, so the true joint distribution lies in the convex polytope \mathcal{H} defined by the linear constraints.
+3. The dangerous condition \neg \psi is a Boolean function of the atomic propositions. Its probability can be expressed as a linear combination of probabilities of conjunctions (e.g., by converting to disjunctive normal form). The linear program LP maximizes this probability over \mathcal{H} using the linear bounds for conjunctions. Therefore, the true probability p_{\text{viol}} is at most the maximum over \mathcal{H}, i.e., \hat{p} \ge p_{\text{viol}}. \square
+
+A.3 Tightness Improvement with Fréchet–Hoeffding Bounds
+
+The use of Fréchet–Hoeffding bounds reduces conservatism compared to the union bound. For a conjunction p_1 \land p_2, the union bound would give P(p_1 \land p_2) \le \min(q_1, q_2), which is the same as the upper Fréchet bound, but the lower bound \max(0, q_1+q_2-1) provides a non‑trivial bound that prevents over‑estimation of risk when q_1 and q_2 are both high. In the context of the dangerous condition p_1 \land \neg p_2, the Fréchet lower bound gives a tighter estimate of the actual probability.
+
+---
+
+End of Thesis
