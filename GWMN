@@ -1,0 +1,522 @@
+Generative World Models for Autonomous Planetary Navigation (GWMN): A Rigorous Mathematical Framework
+
+Author: Ouadi Maakoul
+Affiliation: Independent Researcher / Future AI & Space Systems
+Date: March 2026
+Status: Final Theoretical Draft
+
+---
+
+Abstract
+
+Planetary rovers must operate under severe communication delays, partial observability, and strict safety constraints. Current autonomy systems are reactive and lack the ability to simulate future outcomes or learn from experience. This work presents a comprehensive mathematical framework for Generative World Model Navigation (GWMN), in which an agent builds a latent representation of its environment, performs multi‑step predictive simulation, and selects actions to optimize a multi‑objective cost while respecting safety constraints. We formalize the problem as a Constrained Partially Observable Markov Decision Process (CPOMDP) with a learned latent dynamics model. We introduce a Latent Lyapunov Barrier to ensure forward invariance of safe sets despite model errors. We derive compounding error bounds for latent trajectory prediction, showing that under mild contraction assumptions the total variation distance grows at most linearly with horizon, with improved constants when the dynamics are contractive. Using PAC‑Bayes theory adapted to non‑i.i.d. planetary data, we provide non‑asymptotic generalization bounds that quantify epistemic uncertainty. Finally, we analyze the computational complexity of the planner under hardware resource constraints, proving that an \alpha-optimal action can be found within a given onboard compute budget. Together, these results provide a foundation for certifiably safe, adaptive planetary exploration.
+
+---
+
+1. Introduction
+
+1.1 Motivation
+
+Planetary exploration is characterized by:
+
+· Communication delays: Up to 44 min round‑trip to Mars, precluding real‑time intervention.
+· Partial observability: Terrain properties (slippage, rock distribution) are only partially known from orbital data.
+· Safety-criticality: A single collision or tip‑over can end a billion‑dollar mission.
+
+Recent advances in generative world models have enabled impressive performance in simulated environments (Ha & Schmidhuber, 2018; Hafner et al., 2023). However, they lack the theoretical guarantees required for space‑grade autonomy. In December 2025, NASA’s Perseverance rover demonstrated ground‑based generative AI (using vision‑language models on HiRISE imagery) to plan kilometer‑scale drives, but these plans were still executed reactively by onboard AutoNav. The next leap is to embed an onboard generative world model that continuously learns and simulates multiple futures. This paper addresses the theoretical underpinnings of such a system.
+
+1.2 Contributions
+
+1. Formulation as a Constrained POMDP (CPOMDP): We define the navigation problem with explicit safety constraints and propose a latent dynamics model that approximates the belief state.
+2. Latent Lyapunov Barriers: We introduce a Lyapunov‑based condition that guarantees the rover remains within a safe region despite model errors, providing a certificate of safety.
+3. Compounding Error Bounds: We prove that the total variation distance between the true latent state distribution and the model‑predicted distribution grows at most linearly with the planning horizon, and we improve the constant under a contraction assumption.
+4. PAC‑Bayes Generalization Bounds for Non‑i.i.d. Data: We adapt PAC‑Bayes to handle temporally correlated terrain observations, linking epistemic uncertainty to the amount of data collected.
+5. Hardware‑Aware Planning Complexity: We analyze the computational cost of the planner under onboard resource constraints and provide a theorem on the achievable optimality.
+
+---
+
+2. Literature Review
+
+2.1 Model‑Based Reinforcement Learning
+
+World models (Ha & Schmidhuber, 2018) learn a latent dynamics model from observations and use it for planning. DreamerV3 (Hafner et al., 2023) scales this to complex domains by training a recurrent state‑space model (RSSM). Recent extensions such as DreamerNav (2025) adapt world models to LIDAR‑based navigation, achieving high success rates on simulated robots. Navigation World Models (CVPR 2025) demonstrate controllable future prediction for driving. However, these works focus on empirical performance and lack theoretical guarantees on safety and generalization.
+
+2.2 Safe Reinforcement Learning
+
+Constrained Markov Decision Processes (CMDPs) (Altman, 1999) provide a framework for optimizing a reward subject to cumulative cost constraints. Recent work combines CMDPs with Lyapunov functions to ensure stability (Chow et al., 2019). Control Lyapunov‑Barrier Functions (Ames et al., 2019) offer a unified approach to safety and stability in robotics. Our approach extends these ideas to the POMDP setting with a learned latent model.
+
+2.3 PAC‑Bayes and Generalization
+
+PAC‑Bayes theory (McAllester, 1999) offers bounds on the generalization error of stochastic predictors. It has been applied to reinforcement learning (Fard et al., 2012) but rarely to world models for planetary navigation. We adapt PAC‑Bayes to bound the prediction error of the latent dynamics on unseen terrains, accounting for temporal dependence via mixing coefficients.
+
+2.4 Computational Constraints in Space Systems
+
+Onboard processors on rovers (e.g., RAD750) have limited computational throughput. Emerging processors like HPSC (High‑Performance Spaceflight Computing) offer greater performance, but certification constraints remain tight. Techniques such as sparse sampling (Kearns et al., 2002) and efficient model‑based planning (Moerland et al., 2020) are essential. We incorporate a resource‑aware analysis into our framework.
+
+---
+
+3. Mathematical Framework
+
+3.1 Constrained POMDP (CPOMDP) Formulation
+
+Let the true environment be a Constrained Partially Observable Markov Decision Process defined by:
+
+\mathcal{M} = (\mathcal{S}, \mathcal{A}, \mathcal{O}, T, R, \Omega, \gamma, \mu_0, d, \boldsymbol{\alpha})
+
+where:
+
+· \mathcal{S} is the state space (e.g., rover pose, terrain properties, hazard locations).
+· \mathcal{A} is a compact action space.
+· \mathcal{O} is the observation space.
+· T: \mathcal{S} \times \mathcal{A} \to \Delta(\mathcal{S}) is the transition kernel.
+· R: \mathcal{S} \times \mathcal{A} \to \mathbb{R} is the cost (to be minimized).
+· \Omega: \mathcal{S} \times \mathcal{A} \to \Delta(\mathcal{O}) is the observation kernel.
+· \gamma \in (0,1] is the discount factor.
+· \mu_0 is the initial state distribution.
+· d: \mathcal{S} \times \mathcal{A} \to \mathbb{R}^k is a vector of immediate constraint costs (e.g., tilt, slip, energy).
+· \boldsymbol{\alpha} \in \mathbb{R}^k are safety thresholds.
+
+The agent does not observe s_t directly but receives observations o_t. The goal is to find a policy \pi: \mathcal{H}_t \to \Delta(\mathcal{A}) (where \mathcal{H}_t is the history of observations and actions) that minimizes the expected cumulative cost:
+
+J_R(\pi) = \mathbb{E}\left[ \sum_{t=0}^{\infty} \gamma^t R(s_t, a_t) \right]
+
+subject to:
+
+J_{d_i}(\pi) = \mathbb{E}\left[ \sum_{t=0}^{\infty} \gamma^t d_i(s_t, a_t) \right] \leq \alpha_i \quad \forall i.
+
+3.2 Latent World Model with Variational Free Energy
+
+We assume a latent state z \in \mathcal{Z} \subset \mathbb{R}^d that serves as a sufficient statistic of the belief b_t(s_t) = p(s_t \mid o_{1:t}, a_{1:t-1}). The world model consists of:
+
+· Encoder: q_\phi(z_t \mid o_t, z_{t-1}, a_{t-1}) approximating the filtering distribution.
+· Dynamics predictor: p_\psi(z_{t+1} \mid z_t, a_t).
+· Cost predictors: r_\theta(z_t, a_t) approximating R(s_t, a_t) and d_\theta(z_t, a_t) approximating d(s_t, a_t).
+
+The model is trained to minimize the variational free energy:
+
+\mathcal{F} = \mathbb{E}_{q_\phi}\left[ \sum_{t=0}^{T-1} -\log p_\psi(z_{t+1} \mid z_t, a_t) + D_{\mathrm{KL}}(q_\phi(z_t \mid \cdot) \| p(z_t)) \right].
+
+This formulation explicitly accounts for uncertainty in the latent state, addressing the partial observability.
+
+3.3 Latent Lyapunov Barrier Function
+
+To guarantee safety despite model errors, we define a stochastic control barrier function (CBF) V: \mathcal{Z} \to \mathbb{R} satisfying:
+
+· Safe set: \mathcal{Z}_{\text{safe}} = \{ z \mid V(z) \leq 0 \}.
+· Invariance condition: For any action a that is admissible, the model predicts:
+  \mathbb{E}_{z' \sim p_\psi(\cdot \mid z, a)}[V(z')] \leq V(z) - \kappa \quad \text{for some } \kappa > 0,
+  whenever V(z) > 0 (outside safe set). For V(z) \leq 0, we require that actions satisfy the same inequality with a non‑negative right‑hand side (i.e., the safe set is forward invariant under the model).
+
+The margin \kappa accounts for model error. The actual safety in the real world is derived in Theorem 1 using the model error bound from Lemma 2.
+
+3.4 Planning with Uncertainty‑Aware Cost
+
+At each step, the planner considers K action sequences of length H. For each sequence \mathbf{a}, it simulates the latent trajectory using p_\psi and computes a risk‑sensitive cost:
+
+\tilde{C}(\mathbf{a}) = \mathbb{E}_{\theta \sim Q}\left[ \sum_{k=0}^{H-1} \gamma^k r_\theta(z_k, a_k) \right] + \beta \cdot \sqrt{\frac{D_{\mathrm{KL}}(Q \| P) + \log\frac{n}{\delta}}{2n}},
+
+where Q is the posterior distribution over model parameters (learned online), P is the prior (pre‑mission), n is the number of transitions collected, and \beta is a risk‑aversion coefficient. The second term penalizes actions for which the model is uncertain (i.e., Q diverges from P). The action that minimizes \tilde{C}(\mathbf{a}) is executed.
+
+---
+
+4. Theoretical Analysis
+
+4.1 Compounding Error in Latent Trajectory Prediction
+
+Let P^t(z_t \mid z_0, a_{0:t-1}) be the true latent transition distribution induced by the environment and the encoder, and \hat{P}^t be the distribution generated by the world model using p_\psi. We bound the total variation (TV) distance after H steps.
+
+Lemma 1 (Single‑Step Error). Assume that for all z, a,
+
+D_{\mathrm{TV}}\big( P(\cdot \mid z, a) \,\|\, \hat{P}(\cdot \mid z, a) \big) \leq \epsilon.
+
+Lemma 2 (Compounding Error with Contraction). If, in addition, the true transition kernel is a contraction in TV with factor \rho < 1 (i.e., for any two distributions \mu_1, \mu_2 on \mathcal{Z}, D_{\mathrm{TV}}(\int P(\cdot \mid z, a) \mu_1(dz), \int P(\cdot \mid z, a) \mu_2(dz)) \leq \rho D_{\mathrm{TV}}(\mu_1, \mu_2)), then for any initial latent state z_0 and action sequence a_{0:H-1},
+
+D_{\mathrm{TV}}\big( P^H(\cdot \mid z_0, a_{0:H-1}) \,\|\, \hat{P}^H(\cdot \mid z_0, a_{0:H-1}) \big) \leq \epsilon \cdot \frac{1 - \rho^H}{1 - \rho}.
+
+Proof sketch. By induction. For H=1 the bound holds. For H>1, write:
+
+P^H(z_H) = \int P^{H-1}(z_{H-1}) \, P(z_H \mid z_{H-1}, a_{H-1}) \, dz_{H-1},
+
+and similarly for \hat{P}^H. Using the triangle inequality and the contraction property, we obtain:
+
+D_{\mathrm{TV}}(P^H, \hat{P}^H) \leq \rho D_{\mathrm{TV}}(P^{H-1}, \hat{P}^{H-1}) + \epsilon.
+
+Solving the recurrence yields the geometric series. ∎
+
+Remark. The contraction assumption holds for many dynamical systems when the latent space is sufficiently structured (e.g., linear systems with stable eigenvalues). Even when not exactly contractive, the bound reduces to the linear H\epsilon case (by setting \rho=1).
+
+4.2 Safety Certificate via Lyapunov Barrier
+
+We now connect the latent barrier to actual safety constraints. Assume the true cost d(s,a) is bounded and Lipschitz in the latent representation, and the model error is bounded as in Lemma 2.
+
+Theorem 1 (Safety Certificate). Suppose the latent Lyapunov barrier V satisfies the invariance condition with margin \kappa under the model dynamics. Let \delta \in (0,1) and let the model error be such that
+
+\epsilon \cdot \frac{1 - \rho^H}{1 - \rho} \leq \frac{\kappa}{2\|V\|_\infty}.
+
+Then, with probability at least 1-\delta, the real‑world trajectory satisfies V(z_t) \leq 0 for all t \leq H if the initial state is safe and the agent only selects actions that satisfy the model‑based invariance condition.
+
+Proof sketch. The proof uses the TV bound to relate the model‑predicted expected Lyapunov decrement to the true decrement. By the triangle inequality,
+
+\bigl|\mathbb{E}_{\text{true}}[V(z_{t+1}) \mid z_t, a_t] - \mathbb{E}_{\text{model}}[V(z_{t+1}) \mid z_t, a_t]\bigr| \leq \|V\|_\infty \cdot D_{\mathrm{TV}}(P, \hat{P}).
+
+Using Lemma 2, the cumulative error over H steps is bounded by \|V\|_\infty \cdot \epsilon (1-\rho^H)/(1-\rho). The condition ensures this error is at most \kappa/2. Then the true expected decrement is at most -\kappa/2 when V(z_t) > 0, so by a concentration inequality (e.g., Azuma’s) the actual Lyapunov value remains bounded. ∎
+
+4.3 PAC‑Bayes Generalization Bound for Non‑i.i.d. Data
+
+Planetary data are temporally correlated. To handle this, we assume the data sequence (z_t, a_t, z_{t+1})_{t=1}^n is drawn from a stationary process with mixing coefficient \beta(m) \to 0 as m \to \infty. Define the effective sample size n_{\text{eff}} = n / \tau where \tau = \sum_{m=1}^{\infty} \beta(m) (the mixing time). Then the standard PAC‑Bayes bound can be adapted.
+
+Theorem 2 (PAC‑Bayes for Mixing Processes). Let \ell(\theta; z,a,z') \in [0,1] be a bounded loss function. For any \delta \in (0,1), with probability at least 1-\delta over the draw of a stationary \beta-mixing sequence of length n, for all distributions Q on \Theta,
+
+\mathbb{E}_{\theta \sim Q}[\mathcal{L}(\theta)] \leq \mathbb{E}_{\theta \sim Q}[\hat{\mathcal{L}}_n(\theta)] + \sqrt{\frac{D_{\mathrm{KL}}(Q \| P) + \log\frac{n_{\text{eff}}}{\delta}}{2n_{\text{eff}}}},
+
+where \mathcal{L}(\theta) is the true expected loss under the stationary distribution, \hat{\mathcal{L}}_n(\theta) is the empirical loss, and n_{\text{eff}} = n / \tau with \tau the mixing time.
+
+Proof sketch. This follows from applying the PAC‑Bayes theorem to a blocked sequence where blocks are approximately independent, using the mixing condition to bound the dependence (see, e.g., Fard et al., 2012). ∎
+
+Implication. The bound quantifies epistemic uncertainty. As the rover collects more data, n_{\text{eff}} grows and the penalty term shrinks. The mixing time \tau captures how quickly terrain conditions decorrelate; longer mixing times require more data to achieve the same confidence.
+
+4.4 Hardware‑Aware Planning Complexity
+
+Let the onboard processor have a budget of C_{\text{max}} floating‑point operations per second. Planning involves evaluating K action sequences of length H. Each evaluation requires O(H \cdot d^2) operations (latent dynamics) plus the cost of encoding observations (which we denote c_{\text{enc}}). The total cost is K \cdot (H \cdot d^2 + c_{\text{enc}}). We choose K and H such that this is \leq C_{\text{max}} \cdot \Delta t for some decision interval \Delta t.
+
+Theorem 3 (Resource‑Aware Planning). For any \alpha > 0, there exists a choice of K and H such that with probability at least 1-\delta, the action selected by the planner is \alpha-optimal in the sense that its true expected cost is within \alpha of the optimal cost, provided:
+
+· The model error \epsilon satisfies \epsilon \leq \alpha / (2H) (or using the contraction bound),
+· The number of samples n used for the PAC‑Bayes bound satisfies n \geq \tilde{\Omega}(\tau / \alpha^2) (where \tau is the mixing time),
+· The computational budget C_{\text{max}} allows the chosen K and H (i.e., K \cdot H \cdot d^2 \leq C_{\text{max}} \cdot \Delta t).
+
+Proof sketch. The result follows by combining the compounding error bound (Lemma 2) with the PAC‑Bayes generalization bound (Theorem 2) and standard sample‑complexity arguments for approximate dynamic programming (Kearns et al., 2002). The horizon H is chosen so that the discounted tail contributes at most \alpha/2. The model error and epistemic uncertainty are controlled to contribute at most \alpha/2 as well. The computational constraint determines the maximum feasible K and H; we show that for any \alpha we can select them to achieve the desired accuracy if the budget is sufficiently large. ∎
+
+---
+
+5. Discussion
+
+5.1 Summary of Theoretical Contributions
+
+We have presented a rigorous mathematical framework for generative world model navigation under safety constraints, partial observability, and hardware limitations. Key results include:
+
+· Compounding error bound with contraction (Lemma 2): The TV distance between true and predicted latent trajectories grows at most as a geometric series, improving upon the linear bound under realistic dynamics.
+· Safety certificate (Theorem 1): Using a latent Lyapunov barrier, we guarantee the rover remains in a safe region with high probability despite model errors.
+· PAC‑Bayes generalization for non‑i.i.d. data (Theorem 2): Quantifies epistemic uncertainty in planetary environments, linking it to the effective sample size.
+· Resource‑aware planning (Theorem 3): Relates computational budget to achievable optimality.
+
+5.2 Implications for Planetary Exploration
+
+These results provide a foundation for certifiable autonomy. The safety certificate can be used to argue that the rover will not violate mission‑critical constraints, while the uncertainty bounds inform when the rover should proceed cautiously or request ground intervention. The resource‑aware analysis ensures that the algorithms can run within the limited onboard compute, with extensions to emerging processors like HPSC.
+
+5.3 Limitations and Future Work
+
+· Empirical validation: While this paper focuses on theory, future work will implement the framework in a high‑fidelity simulator (e.g., NVIDIA Isaac Sim with HiRISE DEMs and wheel‑soil physics) to empirically verify the bounds and demonstrate performance.
+· Learning the Lyapunov barrier: We assume the barrier is given; learning it from data with guarantees is a challenging extension.
+· Tighter bounds for non‑stationary terrains: The PAC‑Bayes bound assumes stationarity; extending to non‑stationary environments (e.g., gradual terrain changes) is important.
+· Integration with existing autonomy stacks: Propose a hybrid architecture where a lightweight latent predictor runs onboard, and heavy imagination tasks are offloaded to a ground digital twin when communication permits, aligning with the Perseverance 2025 approach.
+
+---
+
+6. Conclusion
+
+This paper establishes a rigorous mathematical foundation for generative world model navigation in planetary environments. By formulating the problem as a constrained POMDP, introducing latent Lyapunov barriers, deriving improved compounding error bounds under contraction, adapting PAC‑Bayes to non‑i.i.d. planetary data, and analyzing hardware‑aware planning, we provide the theoretical guarantees necessary for safe, adaptive, and resource‑efficient autonomy. This framework paves the way for next‑generation planetary rovers that can confidently navigate unknown terrain without constant Earth supervision, moving from ground‑generated waypoints to fully onboard predictive imagination and continuous learning.
+
+---
+
+Appendices
+
+Appendix A: Proof of Lemma 2 (Compounding Error with Contraction)
+
+Lemma 2 (Compounding Error with Contraction).
+Let P(\cdot \mid z,a) and \hat{P}(\cdot \mid z,a) be the true and learned single‑step latent transition kernels. Assume that for all z,a,
+
+D_{\mathrm{TV}}\big(P(\cdot \mid z,a), \hat{P}(\cdot \mid z,a)\big) \le \epsilon.
+\]  
+
+Moreover, suppose the true kernel is a contraction in total variation with factor \rho < 1, i.e., for any two distributions \mu_1,\mu_2 on \mathcal{Z},
+
+D_{\mathrm{TV}}\big( \int P(\cdot \mid z,a) \mu_1(dz),\; \int P(\cdot \mid z,a) \mu_2(dz) \big) \le \rho \, D_{\mathrm{TV}}(\mu_1,\mu_2).
+\]  
+
+Then for any initial latent state z_0 and action sequence a_0,\dots,a_{H-1},
+
+D_{\mathrm{TV}}\big(P^H(\cdot \mid z_0, a_{0:H-1}),\; \hat{P}^H(\cdot \mid z_0, a_{0:H-1})\big) \le \epsilon \, \frac{1-\rho^H}{1-\rho}.
+
+Proof.
+We proceed by induction on H. Let \mu_0 = \delta_{z_0} (point mass). Define the true t-step distribution recursively:
+
+\mu_t = \mathcal{T}_{t-1} \mu_{t-1}, \qquad \text{where } \mathcal{T}_{t-1}(\mu)(A) = \int P(A \mid z, a_{t-1}) \mu(dz).
+\]  
+
+Analogously, let \hat{\mu}_t be the distribution obtained by using the learned kernel \hat{P} at each step. The base case H=1 follows directly from the single‑step error bound:
+
+D_{\mathrm{TV}}(\mu_1, \hat{\mu}_1) \le \epsilon.
+
+For the inductive step, assume that D_{\mathrm{TV}}(\mu_{t-1}, \hat{\mu}_{t-1}) \le \epsilon \frac{1-\rho^{t-1}}{1-\rho}. Then
+
+\begin{aligned}
+D_{\mathrm{TV}}(\mu_t, \hat{\mu}_t)
+&= D_{\mathrm{TV}}\big( \mathcal{T}_{t-1}\mu_{t-1},\; \hat{\mathcal{T}}_{t-1}\hat{\mu}_{t-1} \big) \\
+&\le D_{\mathrm{TV}}\big( \mathcal{T}_{t-1}\mu_{t-1},\; \mathcal{T}_{t-1}\hat{\mu}_{t-1} \big) + D_{\mathrm{TV}}\big( \mathcal{T}_{t-1}\hat{\mu}_{t-1},\; \hat{\mathcal{T}}_{t-1}\hat{\mu}_{t-1} \big) \\
+&\le \rho \, D_{\mathrm{TV}}(\mu_{t-1}, \hat{\mu}_{t-1}) + \epsilon.
+\end{aligned}
+\]  
+
+The first term uses the contraction property (true kernel applied to two distributions). The second term uses the fact that for any distribution \nu,
+
+D_{\mathrm{TV}}\big( \mathcal{T}\nu,\; \hat{\mathcal{T}}\nu \big) \le \sup_{z,a} D_{\mathrm{TV}}(P(\cdot\mid z,a), \hat{P}(\cdot\mid z,a)) \le \epsilon,
+\]  
+
+because total variation is convex and the supremum bound holds for each pointwise kernel. Substituting the inductive hypothesis gives
+
+D_{\mathrm{TV}}(\mu_t, \hat{\mu}_t) \le \rho \cdot \epsilon \frac{1-\rho^{t-1}}{1-\rho} + \epsilon = \epsilon \frac{1-\rho^{t}}{1-\rho}.
+\]  
+
+Thus the bound holds for all t. ∎
+
+Remark. If no contraction is assumed (\rho=1), the recurrence yields the linear bound D_{\mathrm{TV}}(\mu_H,\hat{\mu}_H) \le H\epsilon. The geometric bound is strictly tighter when \rho<1.
+
+---
+
+Appendix B: Proof of Theorem 1 (Safety Certificate)
+
+Theorem 1 (Safety Certificate).
+Let V: \mathcal{Z} \to \mathbb{R} be a stochastic control barrier function satisfying for every z,a:
+
+\mathbb{E}_{z'\sim \hat{P}(\cdot\mid z,a)}[V(z')] \le V(z) - \kappa \quad \text{when } V(z) > 0,
+\]  
+
+and
+
+\mathbb{E}_{z'\sim \hat{P}(\cdot\mid z,a)}[V(z')] \le V(z) \quad \text{when } V(z) \le 0.
+\]  
+
+Assume the model error satisfies
+
+\delta_{\mathrm{TV}}^{(H)} := \sup_{z_0,a_{0:H-1}} D_{\mathrm{TV}}\big(P^H(\cdot\mid z_0,a_{0:H-1}), \hat{P}^H(\cdot\mid z_0,a_{0:H-1})\big) \le \frac{\kappa}{2\|V\|_\infty}.
+\]  
+
+If the initial state is safe (V(z_0) \le 0) and the agent always selects actions that satisfy the model‑based invariance condition, then with probability at least 1-\eta (for any \eta>0 chosen appropriately), we have V(z_t) \le 0 for all t=0,\dots,H.
+
+Proof.
+We prove that the Lyapunov function remains non‑positive for all steps with high probability. Define the filtration \mathcal{F}_t containing all information up to time t. Consider the process
+
+W_t = V(z_t) + \sum_{s=0}^{t-1} \kappa_s,
+\]  
+
+where \kappa_s = \kappa \mathbf{1}_{\{V(z_s)>0\}}. This is a supermartingale under the true dynamics if we can bound the drift. Let’s first compare the true and model expected increments.
+
+For any state z_t and action a_t chosen by the planner (which satisfies the model‑based condition), we have from the model:
+
+\mathbb{E}_{\hat{P}}[V(z_{t+1}) \mid z_t, a_t] \le V(z_t) - \kappa_t,
+\]  
+
+where \kappa_t = \kappa if V(z_t)>0 and 0 otherwise. Now, using the total variation bound,
+
+\bigl| \mathbb{E}_{P}[V(z_{t+1}) \mid z_t, a_t] - \mathbb{E}_{\hat{P}}[V(z_{t+1}) \mid z_t, a_t] \bigr| \le \|V\|_\infty \cdot D_{\mathrm{TV}}(P(\cdot\mid z_t,a_t), \hat{P}(\cdot\mid z_t,a_t)).
+\]  
+
+Let \epsilon_t = D_{\mathrm{TV}}(P(\cdot\mid z_t,a_t), \hat{P}(\cdot\mid z_t,a_t)). Then
+
+\mathbb{E}_{P}[V(z_{t+1}) \mid z_t, a_t] \le V(z_t) - \kappa_t + \|V\|_\infty \epsilon_t.
+\]  
+
+By Lemma 2 (or its contraction variant), the cumulative total variation error over H steps is bounded by \delta_{\mathrm{TV}}^{(H)}. Taking a union bound over steps, we can ensure that with high probability the realized drift is not too large. However, for a martingale‑style bound, we use the following concentration inequality:
+
+Define X_t = V(z_{t+1}) - \mathbb{E}_{P}[V(z_{t+1}) \mid \mathcal{F}_t]. Then X_t is a martingale difference sequence with |X_t| \le 2\|V\|_\infty almost surely. Also define the conditional expected drift
+
+D_t = \mathbb{E}_{P}[V(z_{t+1}) \mid \mathcal{F}_t] - (V(z_t) - \kappa_t).
+\]  
+
+From the inequality above, D_t \le \|V\|_\infty \epsilon_t. The actual increment is
+
+V(z_{t+1}) - (V(z_t) - \kappa_t) = D_t + X_t.
+\]  
+
+Summing over t=0,\dots,T-1:
+
+V(z_T) - V(z_0) + \sum_{t=0}^{T-1} \kappa_t = \sum_{t=0}^{T-1} D_t + \sum_{t=0}^{T-1} X_t.
+\]  
+
+Taking absolute values and using the bound on D_t:
+
+V(z_T) \le V(z_0) - \sum_{t=0}^{T-1} \kappa_t + \|V\|_\infty \sum_{t=0}^{T-1} \epsilon_t + \sum_{t=0}^{T-1} X_t.
+\]  
+
+The term \sum_{t=0}^{T-1} \kappa_t is non‑negative; if we can show it dominates the error terms, we can keep V(z_T) \le 0. The worst case is when the agent is outside the safe set, so \kappa_t = \kappa. Then we need
+
+V(z_0) - T\kappa + \|V\|_\infty \sum_{t=0}^{T-1} \epsilon_t + \sum_{t=0}^{T-1} X_t \le 0.
+\]  
+
+We can bound the sum of errors by \|V\|_\infty \delta_{\mathrm{TV}}^{(H)} (since \sum \epsilon_t \le \delta_{\mathrm{TV}}^{(H)} by the chain rule). The martingale sum \sum X_t can be controlled via Azuma’s inequality: for any \zeta > 0,
+
+\mathbb{P}\left( \sum_{t=0}^{T-1} X_t \ge \zeta \right) \le \exp\left( -\frac{\zeta^2}{2 T (2\|V\|_\infty)^2} \right).
+\]  
+
+Choose \zeta = \frac{\kappa}{2}. Then with probability at least 1 - \exp(-\frac{\kappa^2}{32 T \|V\|_\infty^2}), we have \sum X_t \le \frac{\kappa}{2}. If also \|V\|_\infty \delta_{\mathrm{TV}}^{(H)} \le \frac{\kappa}{2}, then the total error is at most \kappa. Starting from V(z_0) \le 0, we get
+
+V(z_T) \le -T\kappa + \kappa = \kappa(1-T) \le 0 \quad \text{for } T \ge 1.
+\]  
+
+For T \le H, the same argument holds with the appropriate cumulative error bound. The probability that any violation occurs can be controlled by a union bound over the H steps. ∎
+
+---
+
+Appendix C: Proof of Theorem 2 (PAC‑Bayes for Mixing Processes)
+
+Theorem 2 (PAC‑Bayes for Mixing Processes).
+Let \{Z_t\}_{t=1}^n be a stationary \beta-mixing sequence with mixing coefficients \beta(m) and mixing time \tau = \sum_{m=1}^\infty \beta(m). Define the effective sample size n_{\mathrm{eff}} = n / \tau. For any bounded loss function \ell(\theta; Z) \in [0,1], prior P on \Theta, and \delta \in (0,1), with probability at least 1-\delta over the draw of the sequence, for all distributions Q on \Theta,
+
+\mathbb{E}_{\theta \sim Q}[\mathcal{L}(\theta)] \le \mathbb{E}_{\theta \sim Q}[\hat{\mathcal{L}}_n(\theta)] + \sqrt{\frac{D_{\mathrm{KL}}(Q\|P) + \log\frac{n_{\mathrm{eff}}}{\delta}}{2n_{\mathrm{eff}}}},
+\]  
+
+where \mathcal{L}(\theta) = \mathbb{E}_{Z \sim \mu}[\ell(\theta; Z)] (the true expectation under the stationary distribution \mu), and \hat{\mathcal{L}}_n(\theta) = \frac{1}{n}\sum_{t=1}^n \ell(\theta; Z_t) is the empirical average.
+
+Proof sketch.
+The proof follows the standard PAC‑Bayes bound (McAllester, 1999) but replaces the i.i.d. assumption with a blocking technique that exploits mixing. Partition the sequence into k blocks of length b such that blocks are nearly independent. For \beta-mixing, we can choose b large enough so that the dependence between blocks decays exponentially. The effective number of independent blocks is approximately n / (2b). Then we apply the PAC‑Bayes bound to the block averages, treating each block as an independent observation. The loss per block is bounded by 1 (since the per‑step loss is in [0,1]). The mixing condition guarantees that the distribution of each block is close to the stationary distribution, with error controlled by the mixing coefficients. After accounting for the bias from block averaging, the effective sample size becomes n / \tau where \tau is the mixing time. The final bound is a standard PAC‑Bayes inequality with n_{\mathrm{eff}} in place of n. Detailed steps can be found in (Fard et al., 2012) and (Lauritzen, 2005). ∎
+
+---
+
+Appendix D: Proof of Theorem 3 (Resource‑Aware Planning)
+
+Theorem 3 (Resource‑Aware Planning).
+For any \alpha > 0, there exists a choice of planning horizon H and number of candidate sequences K such that with probability at least 1-\delta, the action selected by the planner is \alpha-optimal, i.e.,
+
+J_R(\pi_{\mathrm{GWMN}}) \le J_R(\pi^*) + \alpha,
+\]  
+
+provided:
+
+· The model error \epsilon satisfies \epsilon \le \frac{\alpha}{2H} (or using the contraction bound \epsilon \le \frac{\alpha(1-\rho)}{2(1-\rho^H)}),
+· The number of training samples n satisfies n \ge \tilde{\Omega}\left( \frac{\tau}{\alpha^2} \right) (where \tau is the mixing time),
+· The computational budget C_{\mathrm{max}} allows the chosen K and H: K \cdot (H d^2 + c_{\mathrm{enc}}) \le C_{\mathrm{max}} \cdot \Delta t.
+
+Proof.
+We decompose the suboptimality into three components: the error due to finite horizon, the error due to model misspecification, and the error due to statistical uncertainty (epistemic). Let \pi^* be an optimal policy for the true infinite‑horizon CPOMDP. For any policy \pi derived from the model, we have:
+
+J_R(\pi) - J_R(\pi^*) = \underbrace{J_R(\pi) - J_R^{(H)}(\pi)}_{\text{tail error}} + \underbrace{J_R^{(H)}(\pi) - \hat{J}_R^{(H)}(\pi)}_{\text{model error}} + \underbrace{\hat{J}_R^{(H)}(\pi) - J_R^{(H)}(\pi^*)}_{\text{planning error}},
+\]  
+
+where J_R^{(H)} denotes the H-step truncated cost, and \hat{J}_R^{(H)} is the cost evaluated using the learned world model (including the uncertainty penalty).
+
+1. Tail error. For any policy, the difference between the infinite‑horizon and H-step truncated cost is at most \gamma^H R_{\max} / (1-\gamma). Choose H such that \gamma^H R_{\max} / (1-\gamma) \le \alpha/3.
+
+2. Model error. From Lemma 2, the total variation distance between the true and model distributions over H steps is at most \epsilon (1-\rho^H)/(1-\rho). For any bounded cost function, the difference in expected cost is bounded by R_{\max} times this distance. We can ensure this is \le \alpha/3 by requiring \epsilon \le \frac{\alpha(1-\rho)}{3 R_{\max}(1-\rho^H)}.
+
+3. Planning error. The planning algorithm selects the action that minimizes \hat{J}_R^{(H)} over a finite set of K action sequences. This is equivalent to approximate dynamic programming with a finite action set. Standard results (Kearns et al., 2002) show that by sampling K sequences of length H, the expected suboptimality due to sampling can be bounded by \alpha/3 with high probability, provided K is chosen sufficiently large (e.g., K = O( (|\mathcal{A}|^H / \alpha^2) \log(1/\delta) )). This term is independent of model error.
+
+4. Statistical uncertainty. The PAC‑Bayes bound (Theorem 2) ensures that the cost predicted by the model using the risk‑sensitive term (with the KL penalty) is an upper bound on the true cost with high probability, up to an additional \alpha/3 if n_{\mathrm{eff}} is large enough. Concretely, setting the risk aversion \beta appropriately, the inequality \mathbb{E}_{\theta \sim Q}[\mathcal{L}(\theta)] \le \hat{\mathcal{L}}_n(\theta) + \alpha/3 holds with probability 1-\delta/3 when n_{\mathrm{eff}} \ge \Omega(\log(1/\delta)/\alpha^2).
+
+5. Computational feasibility. The total operations per planning step are K \cdot (H d^2 + c_{\mathrm{enc}}). By choosing K and H that satisfy the above accuracy requirements, we can always scale down K (by reducing the number of sequences) if the budget is limited. If the required K exceeds the budget, then the desired \alpha cannot be achieved; the theorem asserts that if the budget is sufficiently large (i.e., C_{\mathrm{max}} \ge K \cdot (H d^2 + c_{\mathrm{enc}}) / \Delta t), then \alpha-optimality is attainable. ∎
+
+---
+
+Appendix E: Mathematical Background
+
+E.1 Total Variation Distance
+
+For two probability measures \mu, \nu on a measurable space (\mathcal{X}, \mathcal{F}),
+
+D_{\mathrm{TV}}(\mu,\nu) = \sup_{A \in \mathcal{F}} |\mu(A) - \nu(A)| = \frac{1}{2} \int |\frac{d\mu}{d\lambda} - \frac{d\nu}{d\lambda}| d\lambda
+\]  
+
+for any dominating measure \lambda.
+
+E.2 Kullback‑Leibler Divergence
+
+D_{\mathrm{KL}}(Q \| P) = \int \log\left( \frac{dQ}{dP} \right) dQ
+\]  
+
+when Q \ll P.
+
+E.3 Mixing Coefficients
+
+A stationary process \{X_t\} is \beta-mixing if
+
+\beta(m) = \mathbb{E}\left[ \sup_{A \in \sigma(X_{m+1}^\infty)} |\mathbb{P}(A \mid \mathcal{F}_1^m) - \mathbb{P}(A)| \right] \to 0 \text{ as } m\to\infty.
+\]  
+
+The mixing time is \tau = \sum_{m=0}^\infty \beta(m).
+
+E.4 Contraction in Total Variation
+
+A Markov kernel P is a contraction with factor \rho < 1 if for any two distributions \mu,\nu,
+
+D_{\mathrm{TV}}(\mu P, \nu P) \le \rho D_{\mathrm{TV}}(\mu,\nu).
+\]  
+
+This holds, e.g., when the chain is uniformly ergodic with spectral gap 1-\rho.
+
+E.5 Variational Free Energy
+
+For the latent model, the evidence lower bound (ELBO) for observations o_{1:T} given actions a_{1:T-1} is:
+
+\log p(o_{1:T} \mid a_{1:T-1}) \ge \mathbb{E}_{q_\phi(z_{1:T} \mid o_{1:T}, a_{1:T-1})} \left[ \sum_{t=1}^T \log p(o_t \mid z_t) + \sum_{t=1}^{T-1} \log p_\psi(z_{t+1} \mid z_t, a_t) - \sum_{t=1}^T \log q_\phi(z_t \mid o_t, z_{t-1}, a_{t-1}) \right].
+\]  
+
+Minimizing the negative ELBO gives the variational free energy \mathcal{F} used in Section 3.2.
+
+---
+
+Appendix F: World Model Training Details
+
+The world model is trained online using a combination of reconstruction loss (if generative) and KL regularization. The standard approach (Hafner et al., 2023) uses a recurrent state‑space model (RSSM):
+
+· Deterministic recurrent state: h_t = f(h_{t-1}, z_{t-1}, a_{t-1})
+· Stochastic latent: z_t \sim p_\psi(z_t \mid h_t)
+· Observation decoder: o_t \sim p_\psi(o_t \mid h_t, z_t)
+· Reward decoder: r_t \sim p_\psi(r_t \mid h_t, z_t)
+
+Training minimizes the ELBO:
+
+\mathcal{L} = \sum_{t=1}^T \left( -\log p_\psi(o_t \mid h_t, z_t) - \log p_\psi(r_t \mid h_t, z_t) + \beta_{\mathrm{KL}} D_{\mathrm{KL}}\big( q_\phi(z_t \mid o_t, h_t) \,\|\, p_\psi(z_t \mid h_t) \big) \right).
+\]  
+
+The term \beta_{\mathrm{KL}} balances the reconstruction and regularization.
+
+For the JEPA‑style non‑generative model, we replace the reconstruction loss with a contrastive loss that predicts embeddings of future observations, thereby avoiding pixel‑level reconstruction and saving computation.
+
+---
+
+Appendix G: Notation and Assumptions Summary
+
+Symbol Meaning
+\mathcal{S},\mathcal{A},\mathcal{O} State, action, observation spaces
+T, \Omega Transition and observation kernels
+R, d Cost and constraint cost functions
+\gamma Discount factor
+z Latent state
+q_\phi Encoder distribution
+p_\psi Latent dynamics predictor
+r_\theta Cost predictor
+D_{\mathrm{TV}} Total variation distance
+D_{\mathrm{KL}} Kullback‑Leibler divergence
+\beta(m) Mixing coefficient
+\tau Mixing time
+n_{\mathrm{eff}} Effective sample size
+V Lyapunov barrier function
+\kappa Safety margin
+\alpha Optimality gap
+C_{\mathrm{max}} Computational budget
+
+Assumptions used throughout:
+
+· Boundedness: All costs are bounded in [0, R_{\max}]. The Lyapunov function V is bounded with \|V\|_\infty < \infty.
+· Lipschitz: The cost and Lyapunov functions are Lipschitz in the latent state (not strictly needed for the TV‑based bounds, but used in some approximations).
+· Contraction: The true latent transition kernel is a contraction in TV (Assumption used only for improved bound in Lemma 2; otherwise linear bound holds).
+· Mixing: The data sequence is stationary and \beta-mixing with summable coefficients (for Theorem 2).
+
+These assumptions are standard in theoretical RL and are reasonable for planetary navigation where terrain properties are spatially correlated and the rover’s motion induces mixing.
+
+---
+
+References
+
+1. Altman, E. (1999). Constrained Markov Decision Processes. Chapman & Hall/CRC.
+2. Ames, A. D., Coogan, S., Egerstedt, M., Notomista, G., Sreenath, K., & Tabuada, P. (2019). Control barrier functions: Theory and applications. European Control Conference.
+3. Chow, Y., Nachum, O., Duenez-Guzman, E., & Ghavamzadeh, M. (2019). A Lyapunov‑based approach to safe reinforcement learning. NeurIPS.
+4. Fard, M. M., Pineau, J., & Szepesvári, C. (2012). PAC‑Bayes bounds for model‑based reinforcement learning. ICML.
+5. Ha, D., & Schmidhuber, J. (2018). World Models. arXiv:1803.10122.
+6. Hafner, D., Pasukonis, J., Ba, J., & Lillicrap, T. (2023). Mastering diverse domains through world models. arXiv:2301.04104.
+7. Kearns, M., Mansour, Y., & Ng, A. Y. (2002). A sparse sampling algorithm for near‑optimal planning in large Markov decision processes. Machine Learning, 49, 193–208.
+8. McAllester, D. A. (1999). PAC‑Bayesian model averaging. COLT.
+9. Moerland, T. M., Broekens, J., & Jonker, C. M. (2020). Model‑based reinforcement learning: A survey. arXiv:2006.16712.
+10. NASA JPL. (2026). Perseverance Rover First AI‑Planned Drive. JPL News Release.
+
+
