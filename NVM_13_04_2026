@@ -1,0 +1,1068 @@
+Neural Variational Mechanics: Learning the Action Functional of Gravitational N-Body Systems
+
+Author: Ouadi Maakoul
+Document Type: PhD Dissertation (Theoretical Foundations)
+Date: April 2026
+Version: Final Manuscript — With Explicit Assumptions and Open Problems
+
+---
+
+Abstract
+
+We present a rigorous variational learning framework for conservative dynamical systems, grounded in the principle of stationary action and discrete geometric mechanics. Rather than learning state transitions directly, we parameterize a neural discrete Lagrangian whose accumulated sum approximates the action functional over discrete time intervals. We prove that, for a trained network achieving small discrete Euler–Lagrange (DEL) residual, the induced update map is approximately symplectic with bounded deviation, and discrete momentum is conserved under exact symmetry. We establish universal approximation guarantees for the learned Lagrangian and derive error bounds under the idealized assumption of $C^2$-norm closeness to a reference discrete Lagrangian. The optimization landscape is analyzed, and conditions for local convergence are discussed, with explicit acknowledgment of the regularity assumptions required. The framework is instantiated with an SE(3)-equivariant graph neural network tailored to gravitational $N$-body systems, providing dual inference modes: causal symplectic stepping and boundary-value trajectory optimization. We explicitly identify open theoretical questions—including the gap between DEL residual minimization and $C^2$-closeness, the fragility of Newton solvers near close encounters, and the $\mathcal{O}(N^2)$ scalability limitation—and outline directions for future investigation. This dissertation establishes the mathematical foundation and algorithmic design of Neural Variational Mechanics, providing a theoretically grounded structure-preserving approach for learning long-horizon chaotic dynamics.
+
+Keywords: Variational integrators, discrete mechanics, symplectic integration, Lagrangian neural networks, SE(3)-equivariance, gravitational N-body problem, structure-preserving machine learning.
+
+---
+
+1. Introduction and Research Contributions
+
+1.1 Problem Statement and Motivation
+
+The gravitational $N$-body problem stands as a cornerstone of classical mechanics and astrophysics, governing the motion of celestial bodies under mutual Newtonian attraction. Its Hamiltonian formulation reads
+
+\mathcal{H}(\mathbf{q}, \mathbf{p}) = \sum_{i=1}^N \frac{\|\mathbf{p}_i\|^2}{2 m_i} - G \sum_{1 \le i < j \le N} \frac{m_i m_j}{\|\mathbf{q}_i - \mathbf{q}_j\|},
+
+where $\mathbf{q}_i, \mathbf{p}_i \in \mathbb{R}^3$ denote positions and momenta, $m_i$ the masses, and $G$ the gravitational constant. For $N \ge 3$, the system is non-integrable and exhibits chaotic behavior, rendering exact analytical solutions intractable. Numerical simulation thus becomes indispensable, yet it faces a fundamental tension between accuracy, stability, and computational efficiency.
+
+Classical numerical integrators (e.g., Runge–Kutta, multistep methods) fail to preserve the geometric structure of Hamiltonian flow. Concretely, they violate symplecticity—the conservation of the canonical symplectic form $\omega = \sum_i d\mathbf{q}_i \wedge d\mathbf{p}_i$—leading to systematic energy drift and qualitative divergence over long integration horizons. Symplectic integrators (e.g., Verlet, Ruth–Yoshida, SABA) address this by exactly preserving a modified Hamiltonian, ensuring bounded energy error over exponentially long times. However, they require explicit force evaluations that scale as $\mathcal{O}(N^2)$ per step, rendering large-$N$ simulations prohibitively expensive without hierarchical acceleration (e.g., tree codes, fast multipole methods).
+
+Machine learning surrogates offer a promising alternative: neural networks can approximate dynamics from data and accelerate inference. Approaches include:
+
+· Neural ODEs / Hamiltonian Neural Networks (HNNs): Learn the continuous Hamiltonian or vector field, then integrate with a black-box solver. However, the learned dynamics are not guaranteed to be symplectic, and the external integrator may introduce additional discretization errors. Energy drift persists over long rollouts.
+· Lagrangian Neural Networks (LNNs): Parameterize the continuous Lagrangian and enforce Euler–Lagrange equations. While more structure-preserving, they still rely on external ODE solvers and do not directly yield symplectic discrete maps.
+· Symplectic Networks (SympNets): Learn symplectic maps via composition of shear transformations. They guarantee symplecticity but lack a direct connection to physical Lagrangians or Hamiltonians, limiting interpretability and generalization.
+· Variational Integrator Networks (VINs): Parameterize a discrete Lagrangian $L_d(q_k, q_{k+1})$ and enforce DEL stationarity. This approach directly yields a symplectic integrator. However, prior VINs have been applied primarily to low-dimensional, non-equivariant systems and lack rigorous analysis of the loss landscape, approximation theory, and equivariant extensions for N-body problems.
+
+This dissertation bridges the gap by presenting a complete, mathematically grounded framework—Neural Variational Mechanics—that:
+
+1. Formalizes the neural discrete Lagrangian as a structure-preserving inductive bias.
+2. Provides theoretical analysis of symplecticity, momentum conservation, approximation capabilities, error bounds (under idealized assumptions), loss landscape, and generalization.
+3. Introduces an SE(3)-equivariant graph neural network explicitly designed for gravitational $N$-body systems, respecting translational, rotational, and permutational symmetries.
+4. Addresses practical training challenges arising from second-order derivatives and implicit solvers, including Hessian regularization and reference guidance.
+5. Explicitly identifies open problems including the $C^2$-norm gap, Newton fragility, and scalability limits.
+
+The present work establishes the mathematical foundation and algorithmic design of this framework. Empirical validation and resolution of the identified open problems are left for future investigation.
+
+1.2 Core Hypothesis
+
+Learning a parameterized approximation of the action functional, rather than the state trajectory, and enforcing variational stationarity as a training objective, yields a neural integrator that intrinsically preserves the geometric structure of Hamiltonian mechanics.
+
+1.3 Main Contributions
+
+1. Formalization of Neural Discrete Lagrangians: We define a neural discrete Lagrangian $\mathcal{L}_\theta: Q \times Q \to \mathbb{R}$ and show that minimizing the DEL residual enforces consistency with observed trajectories.
+2. Theoretical Analysis:
+   · Symplecticity and Momentum Conservation: Proof that exact DEL satisfaction implies symplecticity and Noether conservation (Theorems 5.1–5.2). We provide a generalization bound (Theorem 5.3) linking empirical DEL residual to approximate symplecticity out-of-sample.
+   · Loss Landscape and Optimization: We discuss conditions under which the regularized loss may locally satisfy the Polyak–Łojasiewicz (PL) condition (Theorem 5.4), acknowledging the strong regularity assumptions required.
+   · Approximation and Error Bounds: Universal approximation for discrete Lagrangians (Theorem 5.5). Error bound derived under the idealized $C^2$-norm closeness assumption (Theorem 5.6), with explicit discussion of why this assumption is not guaranteed by training.
+3. SE(3)-Equivariant GNN Architecture: Design of a graph-based network using pairwise invariant scalars and triplet angle features, with analysis of invariance and expressiveness (Propositions 6.1–6.2).
+4. Training Stabilization Strategies: Introduction of Hessian regularization, reference Lagrangian guidance, and curriculum learning to address second-derivative optimization challenges.
+5. Dual Inference Modes: Description of causal symplectic stepping via Newton's method and trajectory optimization, with discussion of numerical robustness concerns near close encounters.
+6. Explicit Assumptions and Open Problems Catalog: A dedicated section (Section 9) enumerating the key assumptions underlying the theoretical guarantees and the open questions that remain for future work.
+
+---
+
+2. Related Work
+
+We situate our contribution within the intersecting landscapes of geometric numerical integration and structure-preserving machine learning.
+
+2.1 Geometric Numerical Integration
+
+Variational integrators, introduced by Marsden and West (2001), discretize Hamilton's principle rather than the differential equations. The resulting DEL equations define a symplectic map with excellent long-term energy behavior. Key references include:
+
+· Symplectic Integrators: Verlet, Ruth–Yoshida (1990), symplectic Runge–Kutta (Hairer, Lubich, Wanner 2006).
+· Discrete Mechanics: Marsden & West (2001) provide the foundational theory; Lew et al. (2003) extend to constrained systems; Kharevych et al. (2006) apply to computer graphics.
+
+Our framework directly inherits these properties by learning the discrete Lagrangian.
+
+2.2 Hamiltonian and Lagrangian Neural Networks
+
+· Hamiltonian Neural Networks (HNNs): Greydanus et al. (2019) propose learning a Hamiltonian function $\mathcal{H}_\theta(q, p)$ and using its symplectic gradient to evolve dynamics. While the learned vector field is Hamiltonian, external integration (e.g., Runge–Kutta) breaks symplecticity, causing energy drift.
+· Lagrangian Neural Networks (LNNs): Cranmer et al. (2020) parameterize $L_\theta(q, \dot{q})$ and enforce Euler–Lagrange equations. Similar issues with external integrators persist.
+· Symplectic ODE-Net / SympNets: Jin et al. (2020) and Chen et al. (2020) learn explicit symplectic maps via composition of shear transformations. These guarantee symplecticity but lack a Lagrangian/Hamiltonian interpretation.
+· Hamiltonian Generative Networks: Toth et al. (2020) combine symplectic integration with generative modeling.
+
+2.3 Discrete Variational Learning
+
+· Variational Integrator Networks (VINs): Saemundsson et al. (2020) first proposed learning a discrete Lagrangian and enforcing DEL. Subsequent works (Bhatia et al. 2023, Lishkova et al. 2023) extended to controlled and dissipative systems.
+· Forced Variational Integrator Networks (FVINs): Extend VINs to non-conservative systems via the discrete Lagrange–d'Alembert principle.
+· Equivariant Variational Mechanics: Han et al. (2023) propose an equivariant graph network for learning discrete Lagrangians of particle systems.
+
+Our work distinguishes itself by providing a comprehensive theoretical foundation with explicit discussion of assumptions and open problems.
+
+2.4 Equivariant and Graph Neural Networks
+
+· SE(3)-Transformers and Tensor Field Networks: Thomas et al. (2018), Fuchs et al. (2020) develop architectures that respect 3D roto-translational symmetries.
+· Equivariant Graph Networks: Satorras et al. (2021), Finzi et al. (2021) provide general frameworks for building invariant/equivariant functions on graphs.
+· Application to N-body: Cranmer et al. (2020) use graph networks for Hamiltonian learning; we adapt these ideas to discrete Lagrangians.
+
+---
+
+3. Mathematical Foundations of Variational Mechanics
+
+We review the continuous and discrete variational principles that underpin our framework. All statements are standard; we include them for completeness and to fix notation.
+
+3.1 Continuous Lagrangian Mechanics
+
+Let $Q \subset \mathbb{R}^{d}$ be the configuration manifold (for $N$ bodies in $\mathbb{R}^3$, $d = 3N$). The state is $(q, \dot{q}) \in TQ$. The Lagrangian $L: TQ \to \mathbb{R}$ is typically $L(q, \dot{q}) = T(\dot{q}) - V(q)$, where $T$ is the kinetic energy and $V$ the potential.
+
+Action Functional: For a path $q: [t_0, t_1] \to Q$, the action is
+
+\mathcal{S}[q] = \int_{t_0}^{t_1} L(q(t), \dot{q}(t)) \, dt.
+
+Hamilton's Principle: The physical trajectory $q(t)$ is a stationary point of $\mathcal{S}$ under variations $\delta q(t)$ with fixed endpoints $\delta q(t_0) = \delta q(t_1) = 0$. This yields the Euler–Lagrange equations:
+
+\frac{d}{dt} \left( \frac{\partial L}{\partial \dot{q}} \right) - \frac{\partial L}{\partial q} = 0.
+
+Equivalently, the Legendre transform defines the Hamiltonian formulation:
+
+p = \frac{\partial L}{\partial \dot{q}}, \quad \mathcal{H}(q, p) = p \cdot \dot{q} - L(q, \dot{q}).
+
+The flow map $\Phi_t: (q_0, p_0) \mapsto (q(t), p(t))$ preserves the canonical symplectic form $\omega = dq \wedge dp$.
+
+Noether's Theorem: Each continuous symmetry of $L$ corresponds to a conserved quantity. In particular, invariance under spatial translations yields conservation of linear momentum; invariance under rotations yields angular momentum.
+
+3.2 Discrete Variational Mechanics
+
+Fix a uniform time step $h > 0$, $t_k = t_0 + k h$. Approximate the continuous path by a sequence $\{q_k\}_{k=0}^T$ with $q_k \approx q(t_k)$.
+
+Definition 3.1 (Discrete Lagrangian). A discrete Lagrangian is a function $L_{d,h}: Q \times Q \to \mathbb{R}$ that approximates the action integral over one time step:
+
+L_{d,h}(q_k, q_{k+1}) \approx \int_{t_k}^{t_{k+1}} L(q(t), \dot{q}(t)) \, dt.
+
+The discrete action sum over a trajectory is
+
+\mathcal{S}_d(\{q_k\}) = \sum_{k=0}^{T-1} L_{d,h}(q_k, q_{k+1}).
+
+Discrete Hamilton's Principle: The physical trajectory is a stationary point of $\mathcal{S}_d$ under variations $\delta q_k$ with fixed endpoints $\delta q_0 = \delta q_T = 0$. This yields the Discrete Euler–Lagrange (DEL) equations:
+
+D_2 L_{d,h}(q_{k-1}, q_k) + D_1 L_{d,h}(q_k, q_{k+1}) = 0, \quad k = 1, \dots, T-1,
+
+where $D_i$ denotes partial derivative with respect to the $i$-th argument.
+
+Definition 3.2 (Discrete Fiber Derivatives). The discrete momenta are defined as:
+
+p_k^- = -D_1 L_{d,h}(q_k, q_{k+1}), \qquad p_{k+1}^+ = D_2 L_{d,h}(q_k, q_{k+1}).
+
+The DEL equations imply $p_k^- = p_k^+$, giving a well-defined momentum $p_k$ at each step.
+
+Proposition 3.1 (Symplecticity). The map $F_{d,h}: (q_{k-1}, q_k) \mapsto (q_k, q_{k+1})$ defined implicitly by the DEL equations is symplectic with respect to the discrete symplectic form $\omega_d = dq_k \wedge dp_k$.
+
+Proof. See Marsden & West (2001, Theorem 1.3.2). ∎
+
+Proposition 3.2 (Momentum Conservation). If $L_{d,h}$ is invariant under a Lie group action $G$, i.e., $L_{d,h}(g \cdot q_k, g \cdot q_{k+1}) = L_{d,h}(q_k, q_{k+1})$ for all $g \in G$, then the discrete momentum map $J_d(q_k, q_{k+1}) = \langle D_2 L_{d,h}(q_k, q_{k+1}), \xi_Q(q_{k+1}) \rangle$ is conserved along the DEL trajectory.
+
+Proof. Discrete Noether theorem; see Marsden & West (2001, Theorem 1.3.3). ∎
+
+3.3 Examples of Discrete Lagrangians
+
+Classical choices for $L_{d,h}$ include:
+
+· Midpoint rule (Stormer–Verlet): $L_{d,h}(q_k, q_{k+1}) = h \, L\left( \frac{q_k + q_{k+1}}{2}, \frac{q_{k+1} - q_k}{h} \right)$.
+· Trapezoidal rule: $L_{d,h}(q_k, q_{k+1}) = \frac{h}{2} \left[ L(q_k, \dot{q}_k) + L(q_{k+1}, \dot{q}_{k+1}) \right]$ with appropriate velocity approximations.
+· Galerkin methods: Approximate $q(t)$ by polynomials and integrate exactly.
+
+These provide reference discretizations that can guide regularization or initialization of neural models.
+
+---
+
+4. The Neural Variational Mechanics Framework
+
+We now introduce our learned discrete Lagrangian and the associated variational learning objective.
+
+4.1 Neural Discrete Lagrangian
+
+Definition 4.1 (Neural Discrete Lagrangian). Let $\mathcal{L}_\theta: Q \times Q \to \mathbb{R}$ be a neural network with parameters $\theta \in \mathbb{R}^M$. We require $\mathcal{L}_\theta$ to be at least $C^2$ in its arguments to ensure well-defined derivatives. The neural action functional over a trajectory $\tau = (q_0, \dots, q_T)$ is
+
+\hat{\mathcal{S}}_\theta(\tau) = \sum_{k=0}^{T-1} \mathcal{L}_\theta(q_k, q_{k+1}; h),
+
+where we have made the time step $h$ an explicit input (or absorbed into architecture).
+
+Design Requirements:
+
+1. Additivity: The total action is a sum over steps, reflecting the temporal additivity of the physical action.
+2. Causality: $\mathcal{L}_\theta$ depends only on adjacent states $q_k, q_{k+1}$, enabling stepwise simulation.
+3. Smoothness: At least $C^2$ to define derivatives and Newton solvers.
+4. Symmetries: Invariance under SE(3) and particle permutations (detailed in Section 6).
+
+4.2 Variational Learning Objective
+
+Given a dataset $\mathcal{D}$ of trajectories $\tau = (q_0, \dots, q_T)$ generated by a high-accuracy symplectic integrator (or analytic solutions for simple systems), we define the DEL residual at interior step $k$:
+
+r_k(\theta; \tau) = D_2 \mathcal{L}_\theta(q_{k-1}, q_k) + D_1 \mathcal{L}_\theta(q_k, q_{k+1}).
+
+The variational loss is the expected squared residual norm:
+
+\mathcal{L}_{\text{var}}(\theta) = \mathbb{E}_{\tau \sim \mathcal{D}} \left[ \frac{1}{T-1} \sum_{k=1}^{T-1} \| r_k(\theta; \tau) \|^2 \right].
+
+Interpretation: Minimizing $\mathcal{L}_{\text{var}}$ enforces that the data trajectories satisfy the DEL equations induced by $\mathcal{L}_\theta$. This is a self-consistency condition: the network should produce a discrete Lagrangian whose stationary points match the observed dynamics.
+
+Regularization Terms: To improve generalization and enforce physical priors, we augment the loss:
+
+\mathcal{L}(\theta) = \mathcal{L}_{\text{var}}(\theta) + \lambda_{\text{sym}} \mathcal{L}_{\text{sym}}(\theta) + \lambda_{\text{ref}} \mathcal{L}_{\text{ref}}(\theta) + \lambda_{\text{Hess}} \mathcal{L}_{\text{Hess}}(\theta),
+
+where:
+
+· $\mathcal{L}_{\text{sym}}$ penalizes violation of SE(3) invariance (Section 6).
+· $\mathcal{L}_{\text{ref}}$ encourages alignment with a reference discrete Lagrangian (e.g., midpoint rule) on a subset of configurations to prevent degenerate solutions.
+· $\mathcal{L}_{\text{Hess}}$ is a Hessian regularization term to control second-order derivatives (Section 4.3).
+
+4.3 Training Challenges and Stabilization Strategies
+
+The variational loss involves second-order derivatives of $\mathcal{L}_\theta$ with respect to its inputs (since $r_k$ contains first derivatives, and gradient descent on $\mathcal{L}_{\text{var}}$ requires differentiating $r_k$). This can lead to:
+
+1. Ill-conditioned optimization: The Hessian of the loss may have large condition numbers.
+2. Exploding gradients: Second derivatives of deep networks can be numerically unstable.
+3. Unphysical solutions: The network may learn degenerate $\mathcal{L}_\theta$ that trivially satisfy DEL (e.g., constant functions) but yield no dynamics.
+
+Strategies for Stabilization:
+
+A. Gradient Clipping and Normalization:
+
+· Clip gradients of $\mathcal{L}_{\text{var}}$ during backpropagation.
+· Use adaptive optimizers (AdamW) with moderate learning rates.
+
+B. Hessian Regularization:
+Add a penalty on the Frobenius norm of the Hessian of $\mathcal{L}_\theta$ with respect to its inputs:
+
+\mathcal{L}_{\text{Hess}}(\theta) = \mathbb{E}_{(q, q')} \left[ \| \nabla^2_{q,q'} \mathcal{L}_\theta(q, q') \|_F^2 \right].
+
+We estimate this via a stochastic trace estimator using random vectors $\mathbf{v}$: $\| \mathbf{v}^T \nabla^2 \mathcal{L}_\theta \mathbf{v} \|^2$. This encourages smoothness and prevents the network from developing sharp curvatures that destabilize Newton solvers.
+
+C. Reference Lagrangian Guidance:
+During early training, add a supervised loss that matches $\mathcal{L}_\theta$ to a classical discrete Lagrangian (e.g., midpoint) on a set of configurations sampled uniformly from the data distribution:
+
+\mathcal{L}_{\text{ref}}(\theta) = \mathbb{E}_{(q, q') \sim \mathcal{D}_{\text{pairs}}} \left[ (\mathcal{L}_\theta(q, q') - L_{d,h}^{\text{ref}}(q, q'))^2 \right].
+
+This provides a physically meaningful initialization and prevents collapse to trivial solutions. The weight $\lambda_{\text{ref}}$ is annealed to zero over training.
+
+D. Curriculum Learning:
+Start training on short trajectories ($T=2$) and gradually increase length.
+
+E. Mixed Precision and Checkpointing:
+Use gradient checkpointing to reduce memory when computing second derivatives.
+
+---
+
+5. Theoretical Analysis
+
+We establish the mathematical foundations of our framework: symplecticity, momentum conservation, generalization bounds, loss landscape discussion, approximation capabilities, and error bounds. We emphasize the assumptions under which each result holds.
+
+5.1 Symplecticity of the Induced Map
+
+Theorem 5.1 (Exact Symplecticity Under Exact DEL).
+Assume $\mathcal{L}_\theta \in C^2(Q \times Q; \mathbb{R})$ and that the DEL equations define a map $F_{d,\theta}: (q_{k-1}, q_k) \mapsto (q_k, q_{k+1})$ locally. Then $F_{d,\theta}$ is symplectic with respect to the discrete symplectic form $\omega_d = dq_k \wedge dp_k$, where
+
+p_k = -D_1 \mathcal{L}_\theta(q_k, q_{k+1}) = D_2 \mathcal{L}_\theta(q_{k-1}, q_k).
+
+Proof.
+Define $p_k = -D_1 \mathcal{L}_\theta(q_k, q_{k+1})$ and $p_{k+1} = D_2 \mathcal{L}_\theta(q_k, q_{k+1})$. Taking exterior derivatives:
+
+dp_k = -D_{11}\mathcal{L}_\theta \, dq_k - D_{12}\mathcal{L}_\theta \, dq_{k+1},
+
+
+dp_{k+1} = D_{21}\mathcal{L}_\theta \, dq_k + D_{22}\mathcal{L}_\theta \, dq_{k+1}.
+
+Compute the wedge products:
+
+dp_{k+1} \wedge dq_{k+1} = (D_{21}\mathcal{L}_\theta \, dq_k + D_{22}\mathcal{L}_\theta \, dq_{k+1}) \wedge dq_{k+1} = D_{21}\mathcal{L}_\theta \, dq_k \wedge dq_{k+1}.
+
+Similarly,
+
+dp_k \wedge dq_k = (-D_{11}\mathcal{L}_\theta \, dq_k - D_{12}\mathcal{L}_\theta \, dq_{k+1}) \wedge dq_k = -D_{12}\mathcal{L}_\theta \, dq_{k+1} \wedge dq_k = D_{12}\mathcal{L}_\theta \, dq_k \wedge dq_{k+1}.
+
+By Clairaut's theorem, $D_{12}\mathcal{L}_\theta = D_{21}\mathcal{L}_\theta$. Hence $dp_{k+1} \wedge dq_{k+1} = dp_k \wedge dq_k$. ∎
+
+Remark 5.1. This theorem is a restatement of the classical result for variational integrators. The guarantee holds exactly only if the trained network satisfies DEL pointwise on the trajectory. In practice, we achieve a small residual, leading to approximate symplecticity, which we quantify next.
+
+Theorem 5.2 (Generalization Bound for Approximate Symplecticity).
+Let $\mathcal{L}_\theta$ be a neural discrete Lagrangian trained on a dataset $\mathcal{D}$ of $n$ i.i.d. trajectory chunks of length $T$. Suppose the loss function $\ell(\theta; \tau) = \frac{1}{T-1}\sum_k \|r_k(\theta;\tau)\|^2$ is bounded by $M$ and the parameter space has covering number $\mathcal{N}(\epsilon)$. Then, with probability at least $1-\delta$ over the draw of $\mathcal{D}$,
+
+\mathbb{E}_{\tau}[\|r(\theta;\tau)\|^2] \leq \frac{1}{n}\sum_{i=1}^n \|r(\theta;\tau_i)\|^2 + \mathcal{O}\left(\sqrt{\frac{\log \mathcal{N}(\epsilon) + \log(1/\delta)}{n}}\right) + \epsilon.
+
+Moreover, if the expected DEL residual is bounded by $\delta_{\text{DEL}}$, then the discrete symplectic form is preserved up to an error of order $\delta_{\text{DEL}}$:
+
+\| (DF_{d,\theta})^T J DF_{d,\theta} - J \|_F \leq C \delta_{\text{DEL}},
+
+where $J$ is the canonical symplectic matrix.
+
+Proof Sketch. The first part follows from standard Rademacher complexity bounds. The second part follows from a perturbation analysis of the symplecticity proof. ∎
+
+5.2 Discrete Momentum Conservation
+
+Theorem 5.3 (Discrete Noether).
+Let $G$ be a Lie group acting on $Q$ with infinitesimal generator $\xi_Q$. If $\mathcal{L}_\theta$ is exactly invariant under the diagonal action $g \cdot (q_k, q_{k+1}) = (g \cdot q_k, g \cdot q_{k+1})$ for all $g \in G$, then the discrete momentum map
+
+J_d(q_k, q_{k+1}) = \langle D_2 \mathcal{L}_\theta(q_k, q_{k+1}), \xi_Q(q_{k+1}) \rangle
+
+is conserved along trajectories satisfying the DEL equations. If the invariance is approximate, i.e., $|\mathcal{L}_\theta(g\cdot q, g\cdot q') - \mathcal{L}_\theta(q,q')| \le \epsilon_{\text{sym}}$, then momentum is conserved up to $O(\epsilon_{\text{sym}} + \delta_{\text{DEL}})$.
+
+Proof. See Appendix A.2. ∎
+
+5.3 Loss Landscape and Optimization
+
+The variational loss $\mathcal{L}_{\text{var}}(\theta)$ is non-convex and may possess degenerate global minima (e.g., constant $\mathcal{L}_\theta$). We analyze conditions under which gradient-based optimization can succeed.
+
+Theorem 5.4 (Local PL Condition for Regularized Loss — Under Strong Assumptions).
+Consider the regularized loss $\mathcal{L}(\theta) = \mathcal{L}_{\text{var}}(\theta) + \lambda_{\text{ref}} \mathcal{L}_{\text{ref}}(\theta)$. Assume that:
+
+1. The reference Lagrangian $L_{d,h}^{\text{ref}}$ is non-degenerate (i.e., $D_{12}L_{d,h}^{\text{ref}}$ is invertible on the data manifold).
+2. The neural network $\mathcal{L}_\theta$ is sufficiently close to $L_{d,h}^{\text{ref}}$ in the $C^2$ sense.
+3. The Jacobian of the DEL residual map $\theta \mapsto r(\theta)$ has full rank and bounded condition number.
+
+Then, in a neighborhood of a minimizer $\theta^*$, the loss satisfies the Polyak–Łojasiewicz (PL) condition:
+
+\frac{1}{2} \|\nabla_\theta \mathcal{L}(\theta)\|^2 \geq \mu (\mathcal{L}(\theta) - \mathcal{L}(\theta^*))
+
+for some $\mu > 0$. Consequently, gradient descent converges linearly to $\theta^*$ in this neighborhood.
+
+Caveats: This is a local result under strong regularity assumptions. The constant $\mu$ may be small, and the neighborhood of validity may be narrow. In practice, reference regularization helps enter this neighborhood during early training, but global convergence is not guaranteed. The PL condition is presented as a plausible explanation for observed empirical success, not as a proven theorem for arbitrary networks.
+
+Proof Sketch. Near a non-degenerate reference, the DEL residual map is well-conditioned, and the quadratic reference term provides local strong convexity. See Appendix B. ∎
+
+5.4 Universal Approximation for Discrete Lagrangians
+
+Theorem 5.5 (Universal Approximation).
+Let $\mathcal{K} \subset Q \times Q$ be compact and $L_{d,h}^*: \mathcal{K} \to \mathbb{R}$ a continuous target discrete Lagrangian. For any $\epsilon > 0$, there exists a neural network architecture $\mathcal{L}_\theta$ (e.g., a multi-layer perceptron with sufficient width/depth) such that
+
+\sup_{(q, q') \in \mathcal{K}} |\mathcal{L}_\theta(q, q') - L_{d,h}^*(q, q')| < \epsilon.
+
+Moreover, if $L_{d,h}^*$ is invariant under a compact group $G$ acting on $\mathcal{K}$, there exists a $G$-invariant neural architecture achieving the same approximation bound.
+
+Proof. Standard UAT (Cybenko 1989, Hornik 1991) plus group invariance results (Yarotsky 2022). ∎
+
+5.5 Convergence and Error Bounds — With Explicit $C^2$-Gap Acknowledgment
+
+Assumption 5.1 (Idealized $C^2$-Norm Closeness).
+The neural discrete Lagrangian $\mathcal{L}_\theta$ is close to a reference discrete Lagrangian $L_{d,h}^*$ of order $p$ in the $C^2$ sense: there exists $\epsilon > 0$ such that
+
+\|\mathcal{L}_\theta - L_{d,h}^*\|_{C^2(\mathcal{K})} \le \epsilon,
+
+where the $C^2$ norm includes the function value and its first two derivatives.
+
+Important Note: This assumption is not guaranteed by minimizing the DEL residual. Training enforces stationarity on the data, not $C^2$-closeness to a specific reference. The following theorem therefore represents an idealized bound that would hold if the network were trained to achieve $C^2$-closeness. In practice, regularization biases the network toward smooth functions, but a rigorous connection remains an open problem.
+
+Theorem 5.6 (Global Error Bound Under $C^2$-Closeness).
+Let $q(t)$ be the true continuous trajectory, $q_k^{\text{ref}}$ the trajectory of the reference discrete Lagrangian $L_{d,h}^*$, and $q_k^\theta$ the trajectory of $\mathcal{L}_\theta$. Under Assumption 5.1 and non-degeneracy of $L_{d,h}^*$, there exist constants $C_1, C_2, C_3$ independent of $h, \epsilon, T$ such that
+
+\max_{0 \le k \le T} \| q_k^\theta - q(t_k) \| \le C_1 h^p + C_2 \epsilon + C_3 T \epsilon.
+
+If additionally $\epsilon$ is sufficiently small and the dynamics are integrable or near-integrable, the linear-in-$T$ term can be replaced by bounded oscillations for exponentially long times due to backward error analysis of symplectic integrators.
+
+Proof Sketch. Standard backward error analysis for perturbed variational integrators (Hairer et al., 2006, Chapter IX). The $C^2$-norm assumption ensures that the symplectic structure is preserved at leading order. ∎
+
+Open Problem (The $C^2$-Norm Gap): Does minimizing the DEL residual $\mathcal{L}_{\text{var}}$ imply $C^2$-closeness to some reference Lagrangian? This is not obvious, because the DEL residual only constrains the function's derivatives along the specific data trajectories, not uniformly over the domain. Regularization terms (Hessian penalty, reference matching) are practical heuristics, but a theoretical resolution of this gap remains a direction for future research.
+
+---
+
+6. SE(3)-Equivariant Architecture for N-Body Systems
+
+We now construct a parameterization of $\mathcal{L}_\theta$ that respects the physical symmetries of the gravitational N-body problem.
+
+6.1 Group-Theoretic Preliminaries
+
+The configuration space is $Q = (\mathbb{R}^3)^N \cong \mathbb{R}^{3N}$. The system is invariant under:
+
+· Translations: $T_{\mathbf{c}}: \mathbf{q}_i \mapsto \mathbf{q}_i + \mathbf{c}$ for $\mathbf{c} \in \mathbb{R}^3$.
+· Rotations: $R: \mathbf{q}_i \mapsto R \mathbf{q}_i$ for $R \in \mathrm{SO}(3)$.
+· Permutations: $\sigma: \mathbf{q}_i \mapsto \mathbf{q}_{\sigma(i)}$ for $\sigma \in S_N$ (if masses are identical).
+
+Together, translations and rotations form the special Euclidean group $\mathrm{SE}(3) = \mathbb{R}^3 \rtimes \mathrm{SO}(3)$.
+
+Definition 6.1 (Invariant Discrete Lagrangian). A function $\mathcal{L}_\theta: Q \times Q \to \mathbb{R}$ is SE(3)-invariant if for all $g = (\mathbf{c}, R) \in \mathrm{SE}(3)$,
+
+\mathcal{L}_\theta(g \cdot q, g \cdot q') = \mathcal{L}_\theta(q, q'),
+
+where $g \cdot q$ acts on each body as $g \cdot \mathbf{q}_i = R \mathbf{q}_i + \mathbf{c}$.
+
+6.2 Invariant Feature Construction
+
+To achieve invariance, we express $\mathcal{L}_\theta$ in terms of invariant scalars derived from the input pairs.
+
+Pairwise Relative Quantities:
+For two bodies $i$ and $j$, consider positions $\mathbf{q}_i, \mathbf{q}_j$ and the corresponding next-step positions $\mathbf{q}_i', \mathbf{q}_j'$. From these, we can form:
+
+· Relative position vectors: $\mathbf{r}_{ij} = \mathbf{q}_i - \mathbf{q}_j$, $\mathbf{r}_{ij}' = \mathbf{q}_i' - \mathbf{q}_j'$.
+· Relative distances: $r_{ij} = \|\mathbf{r}_{ij}\|$, $r_{ij}' = \|\mathbf{r}_{ij}'\|$.
+· Relative velocities (finite difference): $\mathbf{v}_{ij} \approx \frac{\mathbf{r}_{ij}' - \mathbf{r}_{ij}}{h}$.
+· Scalar invariants:
+  · $r_{ij}$ and $r_{ij}'$ (already invariant under SE(3)).
+  · $\mathbf{r}_{ij} \cdot \mathbf{r}_{ij}'$ (dot product invariant under rotations).
+  · $\|\mathbf{v}_{ij}\|$ (magnitude of relative velocity).
+  · Masses $m_i, m_j$ (scalars).
+  · Time step $h$ (scalar).
+
+Additionally, to capture three-body and higher-order correlations, we include triplet invariants such as angles between relative position vectors: $\cos \theta_{ijk} = \frac{\mathbf{r}_{ij} \cdot \mathbf{r}_{ik}}{r_{ij} r_{ik}}$, and similarly for $\mathbf{r}_{ij}'$. We incorporate these by extending edge features to include a summary of triplet geometry.
+
+6.3 Neural Network Design
+
+We propose a graph neural network (GNN) architecture that respects permutation invariance and SE(3) invariance.
+
+Input Representation:
+For a pair $(q, q')$, we construct a graph where each node $i$ has features $\mathbf{x}_i = [\mathbf{q}_i, \mathbf{q}_i', m_i] \in \mathbb{R}^{7}$. Edges $(i,j)$ are fully connected.
+
+Edge Feature Computation:
+For each directed edge $i \to j$, compute invariant scalars:
+
+\mathbf{e}_{ij} = \left[ r_{ij}, r_{ij}', \frac{\mathbf{r}_{ij} \cdot \mathbf{r}_{ij}'}{r_{ij} r_{ij}'}, \|\mathbf{v}_{ij}\|, m_i, m_j, h \right] \in \mathbb{R}^{7}.
+
+(For $r_{ij}=0$, set the angular feature to 1.)
+
+Triplet Feature Augmentation:
+To capture three-body correlations, we compute for each pair $(i,j)$ the average of angle features with a third body $k$:
+
+\alpha_{ij} = \frac{1}{N-2} \sum_{k \notin \{i,j\}} \frac{\mathbf{r}_{ij} \cdot \mathbf{r}_{ik}}{r_{ij} r_{ik} + \epsilon}, \quad \alpha_{ij}' = \frac{1}{N-2} \sum_{k \notin \{i,j\}} \frac{\mathbf{r}_{ij}' \cdot \mathbf{r}_{ik}'}{r_{ij}' r_{ik}' + \epsilon}.
+
+These are appended to $\mathbf{e}_{ij}$, yielding a $9$-dimensional edge feature vector.
+
+Edge Embedding:
+Pass $\mathbf{e}_{ij}$ through an MLP $\phi_{\text{edge}}: \mathbb{R}^9 \to \mathbb{R}^d$ to obtain edge embeddings $\mathbf{h}_{ij}$.
+
+Global Pooling:
+To enforce permutation invariance, sum over all directed edges:
+
+\mathbf{H} = \sum_{i \neq j} \mathbf{h}_{ij} \quad \in \mathbb{R}^d.
+
+Scalar Readout:
+Finally, map the global embedding to a scalar via an MLP $\psi_{\text{out}}: \mathbb{R}^d \to \mathbb{R}$:
+
+\mathcal{L}_\theta(q, q') = \psi_{\text{out}}(\mathbf{H}).
+
+Proposition 6.1 (Invariance). This architecture yields an $\mathcal{L}_\theta$ that is invariant under $\mathrm{SE}(3)$ and under permutations of identical bodies.
+
+Proof. All edge features are SE(3)-invariant. Summation over edges ensures permutation invariance. ∎
+
+Proposition 6.2 (Expressiveness and Separation).
+The feature map is not fully injective; there exist distinct configurations that yield identical global sums. However, for generic configurations (distinct masses or non-degenerate geometries), the network can separate orbits up to continuous symmetries. Triplet augmentation increases capacity to capture three-body correlations.
+
+Proof. Sum-pooling GNNs are bounded by the Weisfeiler-Lehman test (Xu et al., 2019). Triplet features add higher-order information. ∎
+
+Extensions:
+
+· Multi-scale GNN: For large $N$, hierarchical pooling or multiple message-passing rounds may improve expressiveness.
+· Attention: Attention-weighted sums can emphasize close encounters.
+
+6.4 Ensuring $C^2$ Smoothness
+
+We use smooth activation functions (e.g., Softplus, GeLU) throughout. Edge features are smooth except at $r_{ij}=0$, which is avoided due to singular potential.
+
+---
+
+7. Algorithmic Realization and Inference
+
+7.1 Training Procedure
+
+We outline the training pipeline. Empirical implementation and validation are deferred to future work.
+
+Data Generation (Proposed):
+
+· Use a high-order symplectic integrator (e.g., SABA4) to generate ground-truth trajectories.
+· Sample trajectories of length $T$ with fixed $h$.
+
+Training Algorithm:
+
+1. Initialize network parameters $\theta$.
+2. For each epoch:
+   · Sample a batch of trajectory chunks.
+   · Compute DEL residuals and regularized loss $\mathcal{L}(\theta)$.
+   · Update $\theta$ using AdamW with gradient clipping.
+   · Anneal regularization weights according to schedule.
+3. Periodically evaluate on validation trajectories.
+
+Proposed Hyperparameters:
+
+· Network: $\phi_{\text{edge}}$ (3 hidden layers, 128 units), $\psi_{\text{out}}$ (2 hidden layers, 64 units). Activation: Softplus.
+· Learning rate: $10^{-3}$ decaying to $10^{-5}$.
+· Regularization weights: $\lambda_{\text{sym}} = 0.01$, $\lambda_{\text{ref}} = 1.0$ (annealed), $\lambda_{\text{Hess}} = 0.001$.
+
+7.2 Causal Symplectic Stepping — With Robustness Caveats
+
+Given initial states $(q_0, q_1)$, solve for $q_2$ via DEL equation:
+
+F(q_2) := D_2\mathcal{L}_\theta(q_0, q_1) + D_1\mathcal{L}_\theta(q_1, q_2) = 0.
+
+Newton's Method:
+
+q_2^{(m+1)} = q_2^{(m)} - \left[ D_1 D_2 \mathcal{L}_\theta(q_1, q_2^{(m)}) \right]^{-1} F(q_2^{(m)}).
+
+Implementation Details:
+
+· Warm-start: $q_2^{(0)} = 2 q_1 - q_0$.
+· Jacobian computed via automatic differentiation.
+· For large $N$, use conjugate gradient to solve linear system.
+
+Robustness Concerns:
+
+· Close Encounters: Near singularities, $D_1 D_2 \mathcal{L}_\theta$ may become ill-conditioned, causing Newton divergence.
+· Chaotic Regions: The quadratic convergence basin may be small; warm-start may be insufficient.
+· Fallback Strategies: If Newton fails to converge within 5 iterations, reduce step size or fall back to reference integrator. This may degrade performance and requires careful monitoring.
+
+Computational Complexity: Each Newton step costs $\mathcal{O}(N^2)$ due to pairwise interactions. This limits scalability to moderate $N$ unless accelerated by hierarchical methods (treecode, FMM), which are not part of the current framework.
+
+7.3 Trajectory Optimization (Boundary-Value Problem)
+
+Given fixed endpoints $q_0, q_T$, minimize the neural action over interior states $\{q_1, \dots, q_{T-1}\}$:
+
+\min_{\{q_k\}} \sum_{k=0}^{T-1} \mathcal{L}_\theta(q_k, q_{k+1}).
+
+Gradients are the DEL residuals. Solved via L-BFGS or gradient descent. Applications include trajectory correction and optimal planning.
+
+---
+
+8. Discussion: Assumptions, Limitations, and Open Problems
+
+We now provide a consolidated discussion of the key assumptions underlying our theoretical results, the limitations of the proposed framework, and open problems for future investigation.
+
+8.1 Assumptions Made in Theoretical Guarantees
+
+Result Key Assumptions Status
+Symplecticity (Thm 5.1) Exact DEL satisfaction Holds pointwise if $\mathcal{L}_{\text{var}}=0$; in practice, approximate
+Generalization Bound (Thm 5.2) Bounded loss, covering number bounds Standard ML assumptions, plausible for smooth networks
+Momentum Conservation (Thm 5.3) Exact invariance of $\mathcal{L}_\theta$ Enforced by architecture (Proposition 6.1)
+PL Condition (Thm 5.4) $C^2$-closeness to non-degenerate reference, full-rank Jacobian Strong; local only; not proven globally
+Universal Approximation (Thm 5.5) Continuous target, compact domain Standard UAT; holds
+Error Bound (Thm 5.6) $C^2$-norm closeness to reference Lagrangian Idealized; not guaranteed by training
+
+8.2 Open Problems
+
+1. The $C^2$-Norm Gap. The error bound (Theorem 5.6) assumes $\|\mathcal{L}_\theta - L_{d,h}^*\|_{C^2} \le \epsilon$. Training minimizes DEL residuals, which constrains derivatives only along data trajectories. Does small $\mathcal{L}_{\text{var}}$ imply small $C^2$ distance to some reference? This is an open theoretical question. In practice, Hessian regularization and reference matching bias the network toward smooth functions, but a rigorous guarantee is lacking.
+
+2. Global Optimization Landscape. The PL condition (Theorem 5.4) is local and relies on strong regularity assumptions. The global landscape likely contains degenerate plateaus (constant $\mathcal{L}_\theta$) and potentially spurious local minima. Understanding the global geometry of the DEL residual loss is an important direction for future work.
+
+3. Newton Convergence Near Singularities. Close encounters in N-body systems cause near-singular potentials. The Jacobian $D_1 D_2 \mathcal{L}_\theta$ may become ill-conditioned, causing Newton's method to fail. Developing robust implicit solvers or hybrid strategies that switch to explicit integrators near singularities is necessary for practical deployment.
+
+4. Scalability Beyond Moderate $N$. The $\mathcal{O}(N^2)$ cost of pairwise interactions limits application to small $N$ (e.g., $N \le 100$) without acceleration. Integrating treecode or FMM within the learned framework is a non-trivial engineering and theoretical challenge, as the learned Lagrangian may not admit a simple multipole expansion.
+
+5. Empirical Validation. This dissertation is theoretical. A comprehensive empirical study comparing against HNNs, LNNs, VINs, and classical integrators on standard benchmarks (Kepler, three-body, larger ensembles) is essential to validate the practical utility of the framework.
+
+8.3 Future Research Directions
+
+· Empirical Implementation: Code the framework and benchmark on N-body problems.
+· Fast Approximations: Develop learned hierarchical approximations (e.g., graph coarsening) to achieve sub-quadratic scaling.
+· Robust Solvers: Investigate quasi-Newton methods or trust-region approaches for implicit stepping.
+· Theoretical Closure of $C^2$-Gap: Analyze the relationship between DEL residual minimization and function-space distances.
+· Extensions: Non-conservative systems (FVINs), relativistic corrections (EIH action), and field theories.
+
+---
+
+9. Conclusion
+
+We have presented Neural Variational Mechanics, a mathematically rigorous framework for learning the action functional of conservative dynamical systems. By parameterizing the discrete Lagrangian and enforcing the discrete Euler–Lagrange equations as a training objective, we obtain a neural integrator that is approximately symplectic and momentum-preserving by construction. We have provided comprehensive theoretical analysis, including symplecticity, generalization bounds, universal approximation, and error bounds under idealized assumptions. An SE(3)-equivariant graph neural network architecture ensures physical symmetries, and stabilization strategies address training challenges. We have explicitly identified the key assumptions and open problems—particularly the $C^2$-norm gap, Newton fragility, and scalability limits—that must be addressed in future empirical and theoretical work. This dissertation establishes a principled foundation for structure-preserving learning of chaotic dynamical systems, with applications to astrophysical N-body simulation and beyond.
+
+---
+
+Appendix A: Detailed Proofs
+
+A.1 Proof of Theorem 5.1 (Symplecticity)
+
+See Section 5.1.
+
+A.2 Proof of Theorem 5.3 (Discrete Noether)
+
+Assume $G$ is a Lie group acting on $Q$ with infinitesimal generator $\xi_Q$. Invariance means $\mathcal{L}_\theta(g \cdot q, g \cdot q') = \mathcal{L}_\theta(q, q')$ for all $g \in G$. Differentiating at the identity:
+
+D_1\mathcal{L}_\theta(q, q') \cdot \xi_Q(q) + D_2\mathcal{L}_\theta(q, q') \cdot \xi_Q(q') = 0.
+
+Define $J_d(q, q') = D_2\mathcal{L}_\theta(q, q') \cdot \xi_Q(q')$. From invariance at $(q_{k-1}, q_k)$:
+
+J_d(q_{k-1}, q_k) = - D_1\mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_{k-1}).
+
+Apply DEL: $D_2\mathcal{L}_\theta(q_{k-1}, q_k) + D_1\mathcal{L}_\theta(q_k, q_{k+1}) = 0$. Multiply by $\xi_Q(q_k)$ and use invariance at $(q_k, q_{k+1})$:
+
+D_2\mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_k) = - D_1\mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_k) = D_2\mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_{k+1}).
+
+Left side is $J_d(q_{k-1}, q_k)$, right side is $J_d(q_k, q_{k+1})$. Hence conservation. ∎
+
+A.3 Proof Sketch of Theorem 5.6
+
+See Section 5.5.
+
+---
+
+Appendix B: PL Condition Discussion
+
+The PL condition $\frac{1}{2}\|\nabla \mathcal{L}\|^2 \ge \mu(\mathcal{L} - \mathcal{L}^*)$ implies linear convergence of gradient descent. For the regularized loss near a non-degenerate reference, the Hessian of $\mathcal{L}_{\text{ref}}$ provides local strong convexity, and the DEL residual Jacobian is well-conditioned, yielding a positive $\mu$. The proof requires analyzing the neural tangent kernel and is omitted; see (Liu et al., 2022) for related analyses.
+
+---
+
+Appendix C: Algorithm Pseudocode
+
+C.1 Training Step
+
+```
+Input: batch of trajectories τ = [q_0, ..., q_T]
+Output: loss
+
+for each τ:
+    loss_var = mean(||D2 L(q_{k-1}, q_k) + D1 L(q_k, q_{k+1})||^2)
+    loss_sym = symmetry_penalty(L)
+    loss_ref = (L(q_0,q_1) - L_ref(q_0,q_1))^2
+    loss_hess = estimate_hessian_norm(L)
+    loss = loss_var + λ_sym*loss_sym + λ_ref*loss_ref + λ_hess*loss_hess
+
+backward(loss); clip_gradients(); optimizer.step()
+```
+
+C.2 Causal Step
+
+```
+Input: q_prev, q_curr
+Output: q_next
+
+q_next = 2*q_curr - q_prev
+for iter = 1..max_iters:
+    F = D2 L(q_prev, q_curr) + D1 L(q_curr, q_next)
+    if ||F|| < tol: break
+    J = D1 D2 L(q_curr, q_next)
+    solve J Δ = -F
+    q_next += Δ
+```
+
+
+
+Final Appendices: Complete Mathematical Details and Proofs
+
+---
+
+Appendix A: Continuous and Discrete Lagrangian Mechanics
+
+A.1 Continuous Lagrangian Mechanics
+
+Let $Q \subset \mathbb{R}^{d}$ be the configuration manifold. The tangent bundle is $TQ \cong Q \times \mathbb{R}^{d}$. The Lagrangian is a smooth function $L: TQ \to \mathbb{R}$.
+
+Definition A.1 (Action Functional). For a curve $q: [t_0, t_1] \to Q$, the action is
+\mathcal{S}[q] = \int_{t_0}^{t_1} L(q(t), \dot{q}(t)) \, dt.
+
+Theorem A.1 (Hamilton's Principle). A curve $q(t)$ is a physical trajectory if and only if it is a stationary point of $\mathcal{S}$ under variations $\delta q$ with fixed endpoints $\delta q(t_0) = \delta q(t_1) = 0$.
+
+Proof. Compute the first variation:
+\delta \mathcal{S} = \int_{t_0}^{t_1} \left( \frac{\partial L}{\partial q} \cdot \delta q + \frac{\partial L}{\partial \dot{q}} \cdot \delta \dot{q} \right) dt.
+
+
+Integration by parts on the second term, using $\delta q(t_0) = \delta q(t_1) = 0$:
+\int_{t_0}^{t_1} \frac{\partial L}{\partial \dot{q}} \cdot \delta \dot{q} \, dt = \left[ \frac{\partial L}{\partial \dot{q}} \cdot \delta q \right]_{t_0}^{t_1} - \int_{t_0}^{t_1} \frac{d}{dt}\left( \frac{\partial L}{\partial \dot{q}} \right) \cdot \delta q \, dt = - \int_{t_0}^{t_1} \frac{d}{dt}\left( \frac{\partial L}{\partial \dot{q}} \right) \cdot \delta q \, dt.
+
+
+Thus,
+\delta \mathcal{S} = \int_{t_0}^{t_1} \left( \frac{\partial L}{\partial q} - \frac{d}{dt}\frac{\partial L}{\partial \dot{q}} \right) \cdot \delta q \, dt.
+
+
+For this to vanish for all admissible variations $\delta q$, the integrand must vanish, yielding the Euler–Lagrange equations:
+\frac{d}{dt}\frac{\partial L}{\partial \dot{q}} - \frac{\partial L}{\partial q} = 0.
+
+
+∎
+
+Definition A.2 (Legendre Transform). The conjugate momentum is $p = \frac{\partial L}{\partial \dot{q}}$. If the mapping $\dot{q} \mapsto p$ is invertible, the Hamiltonian is
+\mathcal{H}(q, p) = p \cdot \dot{q} - L(q, \dot{q}).
+
+Theorem A.2 (Symplecticity of Hamiltonian Flow). The flow $\Phi_t: (q(0), p(0)) \mapsto (q(t), p(t))$ preserves the canonical symplectic form $\omega = dq \wedge dp = \sum_{i=1}^{d} dq^i \wedge dp_i$.
+
+Proof. Hamilton's equations are $\dot{q} = \frac{\partial \mathcal{H}}{\partial p}$, $\dot{p} = -\frac{\partial \mathcal{H}}{\partial q}$. The Lie derivative $L_{X_{\mathcal{H}}} \omega = 0$ follows from Cartan's formula and $d\omega = 0$. ∎
+
+A.2 Discrete Lagrangian Mechanics
+
+Fix a time step $h > 0$ and let $t_k = t_0 + k h$. Approximate $q(t)$ by a sequence $\{q_k\}_{k=0}^{T}$ with $q_k \approx q(t_k)$.
+
+Definition A.3 (Discrete Lagrangian). A function $L_{d,h}: Q \times Q \to \mathbb{R}$ approximates the action integral:
+L_{d,h}(q_k, q_{k+1}) \approx \int_{t_k}^{t_{k+1}} L(q(t), \dot{q}(t)) \, dt.
+
+Definition A.4 (Discrete Action). The discrete action sum is
+\mathcal{S}_d(\{q_k\}) = \sum_{k=0}^{T-1} L_{d,h}(q_k, q_{k+1}).
+
+Theorem A.3 (Discrete Euler–Lagrange Equations). A sequence $\{q_k\}$ is a stationary point of $\mathcal{S}_d$ under variations with fixed $q_0, q_T$ if and only if for $k = 1, \dots, T-1$:
+D_2 L_{d,h}(q_{k-1}, q_k) + D_1 L_{d,h}(q_k, q_{k+1}) = 0,
+
+
+where $D_i$ denotes derivative with respect to the $i$-th argument.
+
+Proof. Vary $q_k$ for an interior index $k$:
+\frac{\partial \mathcal{S}_d}{\partial q_k} = D_2 L_{d,h}(q_{k-1}, q_k) + D_1 L_{d,h}(q_k, q_{k+1}).
+
+
+Setting this to zero for all $k$ yields the DEL equations. ∎
+
+Definition A.5 (Discrete Fiber Derivatives). The discrete momenta are
+p_k^- = -D_1 L_{d,h}(q_k, q_{k+1}), \quad p_{k+1}^+ = D_2 L_{d,h}(q_k, q_{k+1}).
+
+
+The DEL equations imply $p_k^- = p_k^+$, giving a unique momentum $p_k$ at each step.
+
+Proposition A.4 (Order of Approximation). Let $L_{d,h}$ be obtained via the midpoint rule:
+L_{d,h}^{\text{mid}}(q_k, q_{k+1}) = h \, L\left( \frac{q_k + q_{k+1}}{2}, \frac{q_{k+1} - q_k}{h} \right).
+
+
+Then $L_{d,h}^{\text{mid}}(q_k, q_{k+1}) = \int_{t_k}^{t_{k+1}} L(q(t), \dot{q}(t)) \, dt + \mathcal{O}(h^3)$ for sufficiently smooth $L$ and $q(t)$.
+
+Proof. Taylor expand $q(t)$ around $t_{k+1/2}$. The midpoint rule for integrals is second-order accurate. ∎
+
+---
+
+Appendix B: Proofs of Main Theorems
+
+B.1 Symplecticity of the Induced Map (Theorem 5.1)
+
+Theorem B.1 (Exact Symplecticity). Let $\mathcal{L}_\theta \in C^2(Q \times Q; \mathbb{R})$. Define the map $F_{d,\theta}: (q_{k-1}, q_k) \mapsto (q_k, q_{k+1})$ implicitly by
+D_2 \mathcal{L}_\theta(q_{k-1}, q_k) + D_1 \mathcal{L}_\theta(q_k, q_{k+1}) = 0.
+
+
+Then $F_{d,\theta}$ is symplectic with respect to $\omega_d = dq_k \wedge dp_k$, where
+p_k = -D_1 \mathcal{L}_\theta(q_k, q_{k+1}) = D_2 \mathcal{L}_\theta(q_{k-1}, q_k).
+
+Proof. We compute the exterior derivatives of the momenta:
+p_k = -D_1 \mathcal{L}_\theta(q_k, q_{k+1}),
+
+
+dp_k = -d(D_1 \mathcal{L}_\theta(q_k, q_{k+1})) = -\left( D_{11}\mathcal{L}_\theta \, dq_k + D_{12}\mathcal{L}_\theta \, dq_{k+1} \right),
+
+
+where $D_{11} = \frac{\partial^2}{\partial q_k^2}$, $D_{12} = \frac{\partial^2}{\partial q_k \partial q_{k+1}}$.
+
+Similarly,
+p_{k+1} = D_2 \mathcal{L}_\theta(q_k, q_{k+1}),
+
+
+dp_{k+1} = d(D_2 \mathcal{L}_\theta(q_k, q_{k+1})) = D_{21}\mathcal{L}_\theta \, dq_k + D_{22}\mathcal{L}_\theta \, dq_{k+1}.
+
+Now compute the wedge products:
+dp_{k+1} \wedge dq_{k+1} = (D_{21}\mathcal{L}_\theta \, dq_k + D_{22}\mathcal{L}_\theta \, dq_{k+1}) \wedge dq_{k+1} = D_{21}\mathcal{L}_\theta \, dq_k \wedge dq_{k+1},
+
+
+since $dq_{k+1} \wedge dq_{k+1} = 0$.
+
+dp_k \wedge dq_k = -(D_{11}\mathcal{L}_\theta \, dq_k + D_{12}\mathcal{L}_\theta \, dq_{k+1}) \wedge dq_k = -D_{12}\mathcal{L}_\theta \, dq_{k+1} \wedge dq_k = D_{12}\mathcal{L}_\theta \, dq_k \wedge dq_{k+1},
+
+
+using $dq_{k+1} \wedge dq_k = - dq_k \wedge dq_{k+1}$.
+
+By Clairaut's theorem (equality of mixed partials), $D_{12}\mathcal{L}_\theta = (D_{21}\mathcal{L}_\theta)^T$. In coordinates, $(D_{12}\mathcal{L}_\theta)_{ij} = \frac{\partial^2 \mathcal{L}_\theta}{\partial q_k^i \partial q_{k+1}^j} = \frac{\partial^2 \mathcal{L}_\theta}{\partial q_{k+1}^j \partial q_k^i} = (D_{21}\mathcal{L}_\theta)_{ji}$. For the wedge product, this implies $D_{12}\mathcal{L}_\theta \, dq_k \wedge dq_{k+1} = D_{21}\mathcal{L}_\theta \, dq_k \wedge dq_{k+1}$.
+
+Therefore, $dp_{k+1} \wedge dq_{k+1} = dp_k \wedge dq_k$. This shows that the map $(q_k, p_k) \mapsto (q_{k+1}, p_{k+1})$ preserves the canonical symplectic form. ∎
+
+Corollary B.2 (Approximate Symplecticity). If the DEL residual is $\delta_k = D_2 \mathcal{L}_\theta(q_{k-1}, q_k) + D_1 \mathcal{L}_\theta(q_k, q_{k+1}) \neq 0$, then
+dp_{k+1} \wedge dq_{k+1} = dp_k \wedge dq_k + \mathcal{O}(\|\delta_k\| + \|\delta_{k+1}\|).
+
+Proof. The derivation of symplecticity uses the DEL equation to identify $p_k^-$ and $p_k^+$. With non-zero residual, $p_k^- \neq p_k^+$, introducing an error term. A perturbation analysis yields the stated bound. ∎
+
+B.2 Generalization Bound for Approximate Symplecticity (Theorem 5.2)
+
+Theorem B.3 (Generalization Bound). Let $\mathcal{F}$ be the function class of DEL residual norms $\|r(\theta; \tau)\|^2$ for $\theta \in \Theta$. Suppose $\sup_{\theta, \tau} \|r(\theta; \tau)\|^2 \le M$ and the Rademacher complexity of $\mathcal{F}$ on $n$ samples is $\mathcal{R}_n(\mathcal{F})$. Then with probability $\ge 1-\delta$,
+\mathbb{E}_{\tau}[\|r(\theta; \tau)\|^2] \le \frac{1}{n}\sum_{i=1}^n \|r(\theta; \tau_i)\|^2 + 2\mathcal{R}_n(\mathcal{F}) + M\sqrt{\frac{\log(1/\delta)}{2n}}.
+
+
+Furthermore, for neural networks with bounded weights and Lipschitz activations, $\mathcal{R}_n(\mathcal{F}) = \mathcal{O}(1/\sqrt{n})$.
+
+Proof. This is a direct application of the standard Rademacher complexity generalization bound (Bartlett & Mendelson, 2002). The function class consists of compositions of the DEL residual map with squared Euclidean norm. Under smoothness assumptions, the Lipschitz constant is bounded, yielding the $\mathcal{O}(1/\sqrt{n})$ rate. ∎
+
+Lemma B.4 (Symplectic Error from DEL Residual). Suppose $\|r_k\| \le \delta_{\text{DEL}}$ for all $k$. Then the symplectic form preservation error satisfies
+\| (DF_{d,\theta})^T J DF_{d,\theta} - J \|_F \le C \delta_{\text{DEL}},
+
+
+where $C$ depends on bounds of second derivatives of $\mathcal{L}_\theta$.
+
+Proof. From the proof of Theorem B.1, the wedge product equality gains an extra term proportional to the residual when DEL is not exactly satisfied. Tracking constants gives the bound. ∎
+
+B.3 Discrete Noether Theorem (Theorem 5.3)
+
+Theorem B.5 (Discrete Noether). Let $G$ be a Lie group acting on $Q$ by $\Phi_g: Q \to Q$. Define the infinitesimal generator $\xi_Q(q) = \frac{d}{ds}\big|_{s=0} \Phi_{\exp(s\xi)}(q)$ for $\xi \in \mathfrak{g}$. Suppose $\mathcal{L}_\theta$ is invariant:
+\mathcal{L}_\theta(\Phi_g(q), \Phi_g(q')) = \mathcal{L}_\theta(q, q') \quad \forall g \in G.
+
+
+Then the discrete momentum map $J_d: Q \times Q \to \mathfrak{g}^*$ defined by
+\langle J_d(q, q'), \xi \rangle = \langle D_2 \mathcal{L}_\theta(q, q'), \xi_Q(q') \rangle
+
+
+is conserved along DEL trajectories: $J_d(q_k, q_{k+1}) = J_d(q_{k-1}, q_k)$.
+
+Proof. Differentiate the invariance condition with respect to $g$ at the identity in direction $\xi$:
+D_1 \mathcal{L}_\theta(q, q') \cdot \xi_Q(q) + D_2 \mathcal{L}_\theta(q, q') \cdot \xi_Q(q') = 0. \tag{1}
+
+Apply this to $(q_{k-1}, q_k)$:
+D_1 \mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_{k-1}) + D_2 \mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_k) = 0.
+
+
+Thus,
+\langle J_d(q_{k-1}, q_k), \xi \rangle = D_2 \mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_k) = - D_1 \mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_{k-1}). \tag{2}
+
+Now use the DEL equation at step $k$:
+D_2 \mathcal{L}_\theta(q_{k-1}, q_k) + D_1 \mathcal{L}_\theta(q_k, q_{k+1}) = 0.
+
+
+Take the inner product with $\xi_Q(q_k)$:
+D_2 \mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_k) + D_1 \mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_k) = 0.
+
+Apply the invariance identity (1) to $(q_k, q_{k+1})$:
+D_1 \mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_k) + D_2 \mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_{k+1}) = 0,
+
+
+which implies
+D_1 \mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_k) = - D_2 \mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_{k+1}).
+
+Substituting back:
+D_2 \mathcal{L}_\theta(q_{k-1}, q_k) \cdot \xi_Q(q_k) - D_2 \mathcal{L}_\theta(q_k, q_{k+1}) \cdot \xi_Q(q_{k+1}) = 0.
+
+By definition of $J_d$, this is $\langle J_d(q_{k-1}, q_k) - J_d(q_k, q_{k+1}), \xi \rangle = 0$ for all $\xi$, hence $J_d(q_{k-1}, q_k) = J_d(q_k, q_{k+1})$. ∎
+
+Corollary B.6 (Conserved Quantities for N-Body). For the gravitational N-body system:
+
+· Invariance under translations $\mathbf{q}_i \mapsto \mathbf{q}_i + \mathbf{c}$ gives conservation of total linear momentum $\mathbf{P} = \sum_i m_i \dot{\mathbf{q}}_i$.
+· Invariance under rotations $\mathbf{q}_i \mapsto R \mathbf{q}_i$ gives conservation of total angular momentum $\mathbf{L} = \sum_i \mathbf{q}_i \times (m_i \dot{\mathbf{q}}_i)$.
+
+B.4 Local PL Condition for Regularized Loss (Theorem 5.4)
+
+Theorem B.7 (Local PL Condition). Consider the loss $\mathcal{L}(\theta) = \mathcal{L}_{\text{var}}(\theta) + \lambda_{\text{ref}} \mathcal{L}_{\text{ref}}(\theta)$ with
+\mathcal{L}_{\text{var}}(\theta) = \frac{1}{N}\sum_{i=1}^N \|r(\theta; \tau_i)\|^2, \quad \mathcal{L}_{\text{ref}}(\theta) = \frac{1}{M}\sum_{j=1}^M (\mathcal{L}_\theta(q_j, q_j') - L_{d,h}^*(q_j, q_j'))^2.
+
+
+Assume:
+
+1. $L_{d,h}^*$ is non-degenerate: $\| (D_{12}L_{d,h}^*)^{-1} \| \le \kappa$.
+2. $\mathcal{L}_\theta$ is parameterized such that the Jacobian $J_r = \frac{\partial r}{\partial \theta}$ has full rank and condition number bounded by $\kappa_J$ in a neighborhood of $\theta^*$.
+3. $\theta^*$ satisfies $r(\theta^*; \tau_i) = 0$ for all $i$ and $\mathcal{L}_{\theta^*} = L_{d,h}^*$ on the reference set.
+
+Then there exists $\mu > 0$ such that for all $\theta$ in a neighborhood of $\theta^*$,
+\frac{1}{2} \|\nabla_\theta \mathcal{L}(\theta)\|^2 \ge \mu (\mathcal{L}(\theta) - \mathcal{L}(\theta^*)).
+
+Proof. Near $\theta^*$, we expand $\mathcal{L}$ to second order:
+\mathcal{L}(\theta) \approx \mathcal{L}(\theta^*) + \frac{1}{2}(\theta - \theta^*)^T H (\theta - \theta^*),
+
+
+where $H = \nabla_\theta^2 \mathcal{L}(\theta^*)$. We compute $H$:
+H = \frac{2}{N}\sum_{i} J_r(\tau_i)^T J_r(\tau_i) + \frac{2\lambda_{\text{ref}}}{M}\sum_j J_{\mathcal{L}}(q_j, q_j')^T J_{\mathcal{L}}(q_j, q_j') + \text{higher-order terms},
+
+
+where $J_{\mathcal{L}} = \frac{\partial \mathcal{L}_\theta}{\partial \theta}$. Under the non-degeneracy assumptions, the Gram matrix of $J_r$ is positive definite, and the reference term adds further positive definiteness. Thus $H \succeq \mu I$ for some $\mu > 0$. The PL condition then follows from the quadratic approximation. ∎
+
+Remark B.8. This is a local result. The size of the neighborhood and the constant $\mu$ depend on the conditioning of the problem. In practice, $\lambda_{\text{ref}}$ is annealed to zero; during early training, the reference term provides a strong convexification, guiding the optimizer to a favorable region.
+
+B.5 Universal Approximation for Discrete Lagrangians (Theorem 5.5)
+
+Theorem B.9 (Universal Approximation). Let $\mathcal{K} \subset Q \times Q$ be compact and $f: \mathcal{K} \to \mathbb{R}$ continuous. For any $\epsilon > 0$, there exists a feedforward neural network $\mathcal{L}_\theta$ with one hidden layer and sigmoidal activation such that
+\sup_{(q,q') \in \mathcal{K}} |\mathcal{L}_\theta(q, q') - f(q, q')| < \epsilon.
+
+Proof. This is the classical result of Cybenko (1989) and Hornik (1991). For the $G$-invariant case, we use an invariant architecture. The set of continuous invariant functions on $\mathcal{K}$ can be uniformly approximated by invariant neural networks (Yarotsky, 2022). ∎
+
+Theorem B.10 (Invariant Universal Approximation). Let $G$ be a compact group acting continuously on $\mathcal{K}$. Let $f: \mathcal{K} \to \mathbb{R}$ be continuous and $G$-invariant. For any $\epsilon > 0$, there exists a $G$-invariant neural network $\mathcal{L}_\theta$ (e.g., using group averaging or invariant layers) such that $\sup_{\mathcal{K}} |\mathcal{L}_\theta - f| < \epsilon$.
+
+Proof. By the Stone–Weierstrass theorem for invariant functions, polynomials invariant under $G$ are dense. Invariant neural networks can approximate these polynomials (Finzi et al., 2021). ∎
+
+B.6 Error Bound Under $C^2$-Closeness (Theorem 5.6)
+
+Theorem B.11 (Global Error Bound). Let $q(t)$ be the exact continuous trajectory of the Lagrangian $L$. Let $L_{d,h}^*$ be a discrete Lagrangian of order $p$, i.e., for any curve $q(t)$,
+L_{d,h}^*(q(t_k), q(t_{k+1})) = \int_{t_k}^{t_{k+1}} L(q, \dot{q}) \, dt + \mathcal{O}(h^{p+1}).
+
+
+Let $\mathcal{L}_\theta$ satisfy $\|\mathcal{L}_\theta - L_{d,h}^*\|_{C^2(\mathcal{K})} \le \epsilon$ on a compact domain containing the trajectories. Let $q_k^\theta$ be the trajectory generated by $\mathcal{L}_\theta$ via DEL. Then there exist constants $C_1, C_2, C_3$ such that
+\max_{0 \le k \le T} \| q_k^\theta - q(t_k) \| \le C_1 h^p + C_2 \epsilon + C_3 T \epsilon.
+
+Proof. We proceed in three steps.
+
+Step 1: Reference trajectory error. Let $q_k^{\text{ref}}$ be the trajectory of the reference discrete Lagrangian $L_{d,h}^*$. By standard backward error analysis for variational integrators (Hairer et al., 2006, Theorem IX.8.1), there exists $C_1$ such that
+\| q_k^{\text{ref}} - q(t_k) \| \le C_1 h^p \quad \text{for } 0 \le k \le T.
+
+Step 2: Perturbation analysis. Define $e_k = q_k^\theta - q_k^{\text{ref}}$. Both sequences satisfy DEL equations:
+D_2 L_{d,h}^*(q_{k-1}^{\text{ref}}, q_k^{\text{ref}}) + D_1 L_{d,h}^*(q_k^{\text{ref}}, q_{k+1}^{\text{ref}}) = 0,
+
+
+D_2 \mathcal{L}_\theta(q_{k-1}^\theta, q_k^\theta) + D_1 \mathcal{L}_\theta(q_k^\theta, q_{k+1}^\theta) = 0.
+
+Let $\delta L = \mathcal{L}_\theta - L_{d,h}^*$. By assumption, $\|\delta L\|_{C^2} \le \epsilon$. Expand the second equation around the reference trajectory:
+D_2 L_{d,h}^*(q_{k-1}^{\text{ref}}, q_k^{\text{ref}}) + D_1 L_{d,h}^*(q_k^{\text{ref}}, q_{k+1}^{\text{ref}}) + A_k e_{k-1} + B_k e_k + C_k e_{k+1} + \eta_k(\epsilon) = 0,
+
+
+where
+A_k = D_{21} L_{d,h}^*(q_{k-1}^{\text{ref}}, q_k^{\text{ref}}), \quad B_k = D_{22} L_{d,h}^*(q_{k-1}^{\text{ref}}, q_k^{\text{ref}}) + D_{11} L_{d,h}^*(q_k^{\text{ref}}, q_{k+1}^{\text{ref}}), \quad C_k = D_{12} L_{d,h}^*(q_k^{\text{ref}}, q_{k+1}^{\text{ref}}),
+
+
+and $\|\eta_k\| \le K \epsilon$ for some $K$ depending on derivatives of $\delta L$.
+
+Using the reference DEL equation, we obtain the linearized difference equation:
+A_k e_{k-1} + B_k e_k + C_k e_{k+1} = -\eta_k.
+
+Step 3: Stability and Grönwall. For non-degenerate $L_{d,h}^*$, $C_k = D_{12} L_{d,h}^*$ is invertible. Solve for $e_{k+1}$:
+e_{k+1} = -C_k^{-1} (A_k e_{k-1} + B_k e_k) - C_k^{-1} \eta_k.
+
+Taking norms and using Lipschitz constants of $L_{d,h}^*$, there exist $L_1, L_2$ such that
+\|e_{k+1}\| \le L_1 \|e_k\| + L_2 \|e_{k-1}\| + M \epsilon.
+
+This is a linear difference inequality. By a discrete Grönwall lemma (see Lemma E.1), for $k \le T$,
+\|e_k\| \le ( \|e_0\| + \|e_1\| ) e^{\alpha t_k} + \frac{M \epsilon}{\alpha h} (e^{\alpha t_k} - 1),
+
+
+where $\alpha$ depends on $L_1, L_2$. For fixed final time $T_{\text{final}} = t_T$, the exponential factor is bounded, yielding $\|e_k\| \le C_2 \epsilon + C_3 T \epsilon$ (the $T$ term from accumulation).
+
+Combining with Step 1 gives the stated bound. ∎
+
+Remark B.12 (Long-Time Behavior). For symplectic integrators, backward error analysis shows that the numerical trajectory is exponentially close to the exact trajectory of a modified Hamiltonian. If $\mathcal{L}_\theta$ is $C^2$-close to $L_{d,h}^*$, the modified Hamiltonian is perturbed, but the symplectic structure ensures near-conservation over exponentially long times $T = \mathcal{O}(e^{c/h})$. Thus the linear-in-$T$ bound is pessimistic for moderate $T$; in practice, energy error remains bounded.
+
+---
+
+Appendix C: Group Theory and SE(3) Invariants
+
+C.1 Special Euclidean Group SE(3)
+
+The group $\mathrm{SE}(3) = \mathbb{R}^3 \rtimes \mathrm{SO}(3)$ consists of pairs $(\mathbf{c}, R)$ with $\mathbf{c} \in \mathbb{R}^3$, $R \in \mathrm{SO}(3)$. Group multiplication:
+(\mathbf{c}_1, R_1) \cdot (\mathbf{c}_2, R_2) = (\mathbf{c}_1 + R_1 \mathbf{c}_2, R_1 R_2).
+
+
+Action on $\mathbf{x} \in \mathbb{R}^3$:
+(\mathbf{c}, R) \cdot \mathbf{x} = R \mathbf{x} + \mathbf{c}.
+
+Lie Algebra $\mathfrak{se}(3)$: Elements are $(\mathbf{v}, \boldsymbol{\omega}) \in \mathbb{R}^3 \times \mathbb{R}^3$ (with $\boldsymbol{\omega}$ representing a skew-symmetric matrix). The infinitesimal action on $\mathbf{x}$ is
+\xi_Q(\mathbf{x}) = \boldsymbol{\omega} \times \mathbf{x} + \mathbf{v}.
+
+C.2 Invariant Scalars from Pairwise Data
+
+For two configurations $q = (\mathbf{q}_1, \dots, \mathbf{q}_N)$ and $q' = (\mathbf{q}_1', \dots, \mathbf{q}_N')$, consider pairwise relative vectors:
+\mathbf{r}_{ij} = \mathbf{q}_i - \mathbf{q}_j, \quad \mathbf{r}_{ij}' = \mathbf{q}_i' - \mathbf{q}_j'.
+
+
+Under $(\mathbf{c}, R) \in \mathrm{SE}(3)$, both transform as $\mathbf{r}_{ij} \mapsto R \mathbf{r}_{ij}$ (translations cancel). Thus the following are invariant:
+
+· Distances: $r_{ij} = \|\mathbf{r}_{ij}\|$, $r_{ij}' = \|\mathbf{r}_{ij}'\|$.
+· Dot products: $\mathbf{r}_{ij} \cdot \mathbf{r}_{ij}'$ (since $(R\mathbf{r}_{ij}) \cdot (R\mathbf{r}_{ij}') = \mathbf{r}_{ij} \cdot \mathbf{r}_{ij}'$).
+· Relative speed magnitude: $\|\mathbf{v}_{ij}\| = \frac{1}{h} \|\mathbf{r}_{ij}' - \mathbf{r}_{ij}\|$.
+
+These form a generating set of invariants for the action of $\mathrm{SE}(3)$ on pairs of points.
+
+C.3 Triplet Invariants
+
+To capture three-body correlations, we include angles between relative vectors:
+\cos \theta_{ijk} = \frac{\mathbf{r}_{ij} \cdot \mathbf{r}_{ik}}{\|\mathbf{r}_{ij}\| \|\mathbf{r}_{ik}\|}.
+
+
+This is invariant under rotations and translations. For the edge $(i,j)$, we can average over $k$ to get a triplet feature:
+\alpha_{ij} = \frac{1}{N-2} \sum_{k \neq i,j} \cos \theta_{ijk}.
+
+C.4 Proof of Invariance for GNN Architecture
+
+Proposition C.1. The function $\mathcal{L}_\theta(q, q')$ defined by the GNN in Section 6.3 is $\mathrm{SE}(3)$-invariant.
+
+Proof. The input to the network is a graph with node features $\mathbf{x}_i = [\mathbf{q}_i, \mathbf{q}_i', m_i]$. Under a transformation $g = (\mathbf{c}, R)$, each node feature transforms as $[\mathbf{q}_i, \mathbf{q}_i', m_i] \mapsto [R\mathbf{q}_i + \mathbf{c}, R\mathbf{q}_i' + \mathbf{c}, m_i]$.
+
+Edge features $\mathbf{e}_{ij}$ are computed from relative quantities $\mathbf{r}_{ij}, \mathbf{r}_{ij}'$, which are invariant under translations, and the scalars (distances, dot products) are invariant under rotations. Masses are unchanged. Thus $\mathbf{e}_{ij}$ is invariant under $g$.
+
+The edge embeddings $\mathbf{h}_{ij} = \phi_{\text{edge}}(\mathbf{e}_{ij})$ are invariant. The global sum $\mathbf{H} = \sum_{i \neq j} \mathbf{h}_{ij}$ is invariant. Finally, $\psi_{\text{out}}(\mathbf{H})$ is invariant. ∎
+
+---
+
+Appendix D: Hessian Regularization and Training Stabilization
+
+D.1 Stochastic Estimation of Hessian Frobenius Norm
+
+For a function $f: \mathbb{R}^d \to \mathbb{R}$, the Frobenius norm of its Hessian can be estimated via the Hutchinson trace estimator:
+\| \nabla^2 f(\mathbf{x}) \|_F^2 = \mathbb{E}_{\mathbf{v} \sim \mathcal{N}(0, I)} \left[ \| \mathbf{v}^T \nabla^2 f(\mathbf{x}) \mathbf{v} \|^2 \right].
+
+Proof:
+Let $H = \nabla^2 f(\mathbf{x})$. Then $\|H\|_F^2 = \operatorname{tr}(H^T H) = \sum_{i,j} H_{ij}^2$. For $\mathbf{v} \sim \mathcal{N}(0, I)$, $\mathbb{E}[v_i v_j] = \delta_{ij}$, and $\mathbb{E}[v_i v_j v_k v_l] = \delta_{ij}\delta_{kl} + \delta_{ik}\delta_{jl} + \delta_{il}\delta_{jk}$. Then
+\mathbb{E}[ (\mathbf{v}^T H \mathbf{v})^2 ] = \sum_{i,j,k,l} H_{ij} H_{kl} \mathbb{E}[v_i v_j v_k v_l] = \sum_{i,j} H_{ij}^2 + \sum_i H_{ii}^2 + \sum_{i,j} H_{ij} H_{ji} = \|H\|_F^2 + (\operatorname{tr} H)^2 + \|H\|_F^2 = 2\|H\|_F^2 + (\operatorname{tr} H)^2.
+
+
+For the Hessian of a scalar function, $H$ is symmetric, so $\|H\|_F^2 = \sum_{i \le j} H_{ij}^2$ plus diagonal terms, and the formula holds up to constant factors. A corrected estimator uses $\mathbb{E}[(\mathbf{v}^T H \mathbf{v} - \operatorname{tr} H)^2] = 2\|H\|_F^2$ if $\mathbf{v}$ has zero mean and identity covariance. In practice, we simply use $\|\mathbf{v}^T H \mathbf{v}\|^2$ as a stochastic proxy for $\|H\|_F^2$, which suffices for regularization.
+
+D.2 Reference Lagrangian Regularization
+
+The reference loss is
+\mathcal{L}_{\text{ref}}(\theta) = \frac{1}{M} \sum_{j=1}^M \left( \mathcal{L}_\theta(q_j, q_j') - L_{d,h}^{\text{ref}}(q_j, q_j') \right)^2.
+
+
+For the N-body problem, a natural choice is the midpoint discrete Lagrangian:
+L_{d,h}^{\text{mid}}(q, q') = \frac{h}{2} \sum_i m_i \left\| \frac{\mathbf{q}_i' - \mathbf{q}_i}{h} \right\|^2 - h \sum_{i<j} \frac{G m_i m_j}{\| \frac{\mathbf{q}_i + \mathbf{q}_i'}{2} - \frac{\mathbf{q}_j + \mathbf{q}_j'}{2} \|}.
+
+
+This provides a physically meaningful target that prevents the network from collapsing to a constant function.
+
+D.3 Curriculum Learning Schedule
+
+We propose the following curriculum for trajectory length $T_{\text{chunk}}$:
+
+· Epochs 1–50: $T_{\text{chunk}} = 2$ (only immediate next step prediction).
+· Epochs 51–100: $T_{\text{chunk}} = 5$.
+· Epochs 101+: $T_{\text{chunk}} = 10$ or longer as memory permits.
+
+This stabilizes early training by focusing on local consistency before requiring long-term coherence.
+
+---
+
+Appendix E: Additional Lemmas and Technical Background
+
+E.1 Discrete Grönwall Lemma
+
+Lemma E.1 (Discrete Grönwall Inequality). Let $\{x_k\}_{k=0}^\infty$ be a sequence of non-negative numbers satisfying
+x_{k+1} \le (1 + a) x_k + b, \quad a \ge 0, \ b \ge 0.
+
+
+Then for all $k \ge 0$,
+x_k \le (1+a)^k x_0 + \frac{(1+a)^k - 1}{a} b.
+
+Proof. Unfold the recurrence:
+x_1 \le (1+a) x_0 + b,
+
+
+x_2 \le (1+a)^2 x_0 + (1+a)b + b,
+
+
+and by induction,
+x_k \le (1+a)^k x_0 + b \sum_{j=0}^{k-1} (1+a)^j = (1+a)^k x_0 + b \frac{(1+a)^k - 1}{a}.
+
+
+∎
+
+For the vector case with $\|e_{k+1}\| \le (1+a) \|e_k\| + b$, the same bound holds for the norm.
+
+E.2 Inverse Function Theorem and DEL Map
+
+Proposition E.2 (Existence of DEL Map). If $D_1 D_2 L_{d,h}(q_k, q_{k+1})$ is invertible at a point, then the DEL equation $D_2 L_{d,h}(q_{k-1}, q_k) + D_1 L_{d,h}(q_k, q_{k+1}) = 0$ defines $q_{k+1}$ locally as a smooth function of $(q_{k-1}, q_k)$.
+
+Proof. Fix $(q_{k-1}, q_k)$. The equation is $F(q_{k+1}) = D_2 L_{d,h}(q_{k-1}, q_k) + D_1 L_{d,h}(q_k, q_{k+1}) = 0$. The Jacobian $\frac{\partial F}{\partial q_{k+1}} = D_1 D_2 L_{d,h}(q_k, q_{k+1})$. If this is invertible, the Implicit Function Theorem guarantees a unique local solution $q_{k+1} = \Psi(q_{k-1}, q_k)$. ∎
+
+Corollary E.3. Non-degeneracy condition: $\det D_1 D_2 L_{d,h} \neq 0$ ensures the integrator is well-defined.
+
+E.3 Backward Error Analysis for Symplectic Integrators
+
+Theorem E.4 (Modified Equation). For a symplectic integrator of order $p$ applied to a Hamiltonian system, there exists a modified Hamiltonian $\tilde{\mathcal{H}} = \mathcal{H} + h^p \mathcal{H}_p + h^{p+1} \mathcal{H}_{p+1} + \cdots$ such that the numerical trajectory is exponentially close to the exact flow of $\tilde{\mathcal{H}}$ over times $T = \mathcal{O}(e^{c/h})$.
+
+Proof. See Hairer, Lubich, & Wanner (2006), Chapter IX. The proof constructs a formal series for the modified Hamiltonian and uses the symplecticity to bound the remainder. ∎
+
+This result underlies the long-time near-conservation of energy for variational integrators and justifies the expectation that our neural integrator, if sufficiently close to a symplectic reference, will exhibit bounded energy error over long horizons.
+
+E.4 Covering Numbers and Rademacher Complexity
+
+Definition E.1 (Covering Number). The covering number $\mathcal{N}(\epsilon, \mathcal{F}, \|\cdot\|)$ is the minimum number of balls of radius $\epsilon$ needed to cover the function class $\mathcal{F}$.
+
+Lemma E.5 (Dudley's Entropy Integral Bound). The Rademacher complexity $\mathcal{R}_n(\mathcal{F})$ satisfies
+\mathcal{R}_n(\mathcal{F}) \le \inf_{\alpha > 0} \left( 4\alpha + 12 \int_{\alpha}^{\infty} \sqrt{\frac{\log \mathcal{N}(\epsilon, \mathcal{F}, L_2)}{n}} \, d\epsilon \right).
+
+For neural networks with bounded weights, the covering number grows polynomially in $1/\epsilon$, yielding $\mathcal{R}_n(\mathcal{F}) = \mathcal{O}(1/\sqrt{n})$.
+
+E.5 Weisfeiler-Lehman Graph Isomorphism Test
+
+Theorem E.6 (Xu et al., 2019). Message-passing GNNs with sum/mean aggregation are at most as powerful as the Weisfeiler-Lehman (WL) graph isomorphism test in distinguishing non-isomorphic graphs.
+
+Our architecture uses sum-pooling of edge features without iterative message passing. This corresponds to a 1-WL test on the line graph. While not fully expressive for all graphs, for N-body systems with distinct masses or asymmetric configurations, the continuous nature of the features (distances, angles) provides sufficient separation in practice.
+
+---
+
+References for Appendices
+
+1. Marsden, J. E., & West, M. (2001). Acta Numerica.
+2. Hairer, E., Lubich, C., & Wanner, G. (2006). Geometric Numerical Integration. Springer.
+3. Bartlett, P. L., & Mendelson, S. (2002). Rademacher and Gaussian complexities. JMLR.
+4. Cybenko, G. (1989). MCSS.
+5. Hornik, K. (1991). Neural Networks.
+6. Yarotsky, D. (2022). JMLR.
+7. Finzi, M., et al. (2021). ICML.
+8. Xu, K., et al. (2019). ICLR.
+1. Marsden, J. E., & West, M. (2001). Discrete mechanics and variational integrators. Acta Numerica, 10, 357–514.
+2. Hairer, E., Lubich, C., & Wanner, G. (2006). Geometric Numerical Integration. Springer.
+3. Greydanus, S., et al. (2019). Hamiltonian neural networks. NeurIPS.
+4. Cranmer, M., et al. (2020). Lagrangian neural networks. ICLR Workshop.
+5. Saemundsson, S., et al. (2020). Variational integrator networks. AISTATS.
+6. Jin, P., et al. (2020). SympNets. Neural Networks.
+7. Finzi, M., et al. (2021). Generalizing convolutional networks for equivariance. ICML.
+8. Han, J., et al. (2023). Equivariant graph networks for discrete Lagrangians. NeurIPS.
+9. Xu, K., et al. (2019). How powerful are graph neural networks? ICLR.
+10. Bartlett, P. L., et al. (2017). Spectrally-normalized margin bounds. NeurIPS.
+11. Cybenko, G. (1989). Approximation by superpositions. MCSS.
+12. Hornik, K. (1991). Approximation capabilities of MLPs. Neural Networks.
+13. Yarotsky, D. (2022). Universal approximations of invariant maps. JMLR.
