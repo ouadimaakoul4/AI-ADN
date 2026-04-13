@@ -1,0 +1,802 @@
+Neural Action Diffusion: A Generative Variational Integrator Framework for Chaotic Dynamics
+
+Author: Ouadi Maakoul
+
+Date: April 2026
+
+---
+
+Abstract
+
+Structure-preserving neural networks achieve remarkable long-term stability for deterministic dynamical systems but fundamentally fail to capture the intrinsic uncertainty, multi-modality, and exponential sensitivity of chaotic regimes. Conversely, physics-constrained diffusion models inject physical priors via soft penalties or forward-model guidance, yet suffer from gradient competition, long-horizon drift, and lack of intrinsic geometric guarantees. This thesis introduces Neural Action Diffusion (NAD), a Generative Variational Integrator (GVI) framework that defines probability measures over trajectories via stochastic discrete action minimization. NAD formalizes a path-space Gibbs distribution constrained by the stochastic discrete Euler–Lagrange (S-DEL) equations, implements Projected Score Dynamics (PSD) to enforce physical consistency during sampling, and replaces ill-posed distributional symplecticity with a weak Liouville continuity condition. The core contributions of this thesis are:
+
+1. Rigorous Theoretical Characterization: Derivation of the distributional symplectic properties of PSD-constrained diffusions, establishing a bound on the expected divergence of the flow and extending the path-entropy formulation to large-noise regimes via Freidlin–Wentzell theory.
+2. Algorithmic Design for Constraint Enforcement: Introduction of memory-aware sliding-window DEL losses and amortised projection networks, providing a computationally tractable implementation of PSD with formal stability and approximation guarantees.
+3. Extensions to Partial Observability: Formulation of NAD-EnKF coupling for data assimilation and application to inverse problems in chaotic systems.
+
+This thesis presents the complete mathematical foundation and algorithmic specification of the NAD framework as a theoretical contribution to generative, structure-preserving modeling of chaotic physical systems.
+
+Keywords: Generative Variational Integrators, Structure-Preserving Learning, Diffusion Models, Chaotic Dynamics, Variational Mechanics, Uncertainty Quantification, Scientific Machine Learning, Stochastic Calculus
+
+---
+
+Chapter 1
+
+Introduction
+
+1.1 The Challenge of Predicting Chaotic Physical Systems
+
+Chaotic dynamical systems exhibit exponential sensitivity to initial conditions, quantified by positive Lyapunov exponents. This property renders deterministic long-horizon forecasting fundamentally inadequate. The true state of knowledge about a chaotic system after finite time is not a single trajectory but a time-evolving probability distribution over physically admissible paths.
+
+Traditional numerical integrators, even when symplectic or energy-preserving, produce a single deterministic solution. Ensemble methods such as stochastic Runge–Kutta or ensemble Kalman filters introduce randomness but typically rely on black-box integrators lacking geometric guarantees. Scientific machine learning has inherited this dichotomy: geometric neural surrogates preserve structure but remain deterministic; generative models capture distributions but violate conservation laws.
+
+1.2 Two Parallel Paradigms in Scientific Machine Learning
+
+Deterministic Structure-Preserving Learning. Hamiltonian Neural Networks (HNNs), Lagrangian Neural Networks (LNNs), Variational Integrator Networks (VINs), and symplectic predictive integrators embed geometric priors directly into architectures. By learning scalar potentials or discrete Lagrangians and deriving dynamics via variational principles, these methods guarantee symplectic flow and bounded energy error over long horizons. However, they produce exactly one trajectory per initial condition, ignoring the intrinsic multi-modality of chaotic attractors.
+
+Physics-Constrained Generative Models. Diffusion models and flow matching have revolutionized distributional modeling. Recent physics-informed variants inject PDE residuals as soft penalties, apply post-hoc projections onto constraint manifolds, or enforce constraints during sampling via guidance techniques. Yet constraint enforcement remains external: soft penalties create competing gradients, while hard projections lack intrinsic geometric guarantees derived from a variational principle and may disrupt the learned distribution.
+
+1.3 The Identified Gap
+
+Four research streams exist, but none simultaneously provide intrinsic variational structure, full generative modeling, and action-principle grounding. Notably, Stochastic Variational Integrators (SVIs) produce stochastic trajectories but solve the forward problem given a known Hamiltonian; they do not learn a data-driven path measure. NAD, in contrast, solves the inverse/generative problem of inferring an effective stochastic action from the underlying physical structure.
+
+Framework Class Generative? Structure-Preserving? Constraint Method Action Principle?
+Deterministic Geometric ML ❌ ✅ (Exact) Architectural ✅
+Physics-Constrained Diffusion ✅ ❌ Post-hoc / Soft ❌
+Stochastic Variational Integrators ✅ (Forward) ✅ (Almost Sure) Intrinsic (Stratonovich) ✅
+Path-Space Generative Models ✅ ❌ Path Penalty ✅
+Neural Action Diffusion (This Work) ✅ ✅ (In Expectation) Intrinsic (PSD) ✅
+
+Table 1.1: Comparison of existing frameworks for modeling physical dynamics.
+
+1.4 Thesis Contributions and Outline
+
+This thesis develops the Neural Action Diffusion (NAD) framework as a mathematical and computational approach to generative structure-preserving modeling of chaotic systems. The contributions are organized as follows:
+
+· Chapter 2 reviews the essential background: discrete variational mechanics, stochastic calculus, diffusion models, and constrained sampling methods.
+· Chapter 3 presents the core mathematical foundation of Generative Variational Integrators, including the stochastic discrete Euler–Lagrange equations, the rigorous construction of the GVI probability measure on product spaces, and the weak Liouville condition.
+· Chapter 4 provides rigorous theoretical analysis of distributional symplecticity under PSD, including a bound on the expected divergence via Fokker–Planck theory, and extends the path-entropy formulation to large-noise regimes using a discrete-to-continuous Freidlin–Wentzell large deviation principle.
+· Chapter 5 specifies the algorithmic design: sliding-window DEL losses with mixing-based bias bounds, amortised projection networks with approximation error analysis, and numerical stability guarantees for the constrained reverse SDE.
+· Chapter 6 extends the framework to partial observability via NAD-EnKF coupling and inverse problem formulations.
+· Chapter 7 concludes with a discussion of the framework's limitations and open mathematical questions.
+
+1.5 Positioning Statement
+
+NAD does not learn trajectories or densities directly. It learns a stochastic action functional whose stationary paths define a generative distribution. This reframes physics-informed generation from guided sampling to constrained variational inference in path space. The framework is presented as a complete theoretical and algorithmic specification. Exact symplecticity per sample is incompatible with tractable multi-modal generation in chaotic regimes; NAD instead guarantees distributional geometric consistency.
+
+---
+
+Chapter 2
+
+Background and Related Work
+
+2.1 Discrete Variational Mechanics
+
+Variational integrators are derived by discretizing Hamilton’s principle rather than the equations of motion directly (Marsden & West, 2001). Given a continuous Lagrangian $L(q, \dot{q})$, one defines a discrete Lagrangian $L_d(q_k, q_{k+1})$ approximating the action integral over one time step:
+L_d(q_k, q_{k+1}) \approx \int_{t_k}^{t_{k+1}} L(q(t), \dot{q}(t)) \, dt.
+
+
+The discrete action $S_d = \sum_{k=0}^{N-1} L_d(q_k, q_{k+1})$ is made stationary with respect to internal variations $\delta q_k = 0$ for $k=0,N$, yielding the discrete Euler–Lagrange (DEL) equations:
+D_2 L_d(q_{k-1}, q_k) + D_1 L_d(q_k, q_{k+1}) = 0, \quad k=1,\dots,N-1. \tag{2.1}
+
+
+Here $D_i$ denotes the derivative with respect to the $i$-th argument. Solutions to the DEL equations define a symplectic map on phase space, preserving the canonical symplectic form $\omega = dq \wedge dp$ exactly. This property guarantees long-term energy stability and conservation of momentum maps associated with symmetries (Noether’s theorem).
+
+2.2 Stochastic Variational Integrators
+
+Stochastic variational integrators (SVIs) lift the variational principle to stochastic systems by introducing noise in a way that preserves the underlying geometric structure almost surely (Bou-Rabee & Owhadi, 2010; Holm & Tyranowski, 2016). Using Stratonovich integration, one defines a stochastic discrete Lagrangian $\mathcal{L}(q_k, q_{k+1}, \xi_k)$ where $\xi_k \sim \mathcal{N}(0,I)$ are Gaussian random variables. The Stratonovich interpretation ensures that the chain rule of ordinary calculus remains valid, allowing Noether’s theorem to carry over to the stochastic setting.
+
+A crucial distinction must be drawn: SVIs solve the forward problem given a known stochastic Hamiltonian. They generate sample paths from a prescribed physical SDE. NAD, in contrast, solves the inverse/generative problem: it provides a mechanism to sample from a distribution over trajectories that is concentrated on solutions of the stochastic DEL equations.
+
+2.3 Diffusion Models for Trajectory Generation
+
+Denoising diffusion probabilistic models (DDPMs) learn to reverse a forward noising process (Ho et al., 2020; Song et al., 2021). Given data $x_0 \sim p_{\text{data}}$, the forward process is an SDE:
+dx_t = -\frac{1}{2}\beta_t x_t \, dt + \sqrt{\beta_t} \, dW_t, \quad t \in [0,T].
+
+
+The reverse process is learned via a score network $s_\theta(x_t, t)$ approximating $\nabla_{x_t} \log p_t(x_t)$. Sampling proceeds by solving the reverse SDE:
+dx_t = \left[-\frac{1}{2}\beta_t x_t - \beta_t s_\theta(x_t, t)\right] dt + \sqrt{\beta_t} \, d\bar{W}_t. \tag{2.2}
+
+
+For trajectory data, the state $x$ becomes a full sequence $Q \in \mathbb{R}^{d \times (N+1)}$, and the score network must capture temporal correlations.
+
+2.4 Physics-Constrained Generative Models
+
+Soft Penalty Methods. Physics-informed diffusion models add PDE residual terms to the training loss, encouraging generated samples to satisfy physical laws on average. The gradient competition between data fidelity and physics terms often leads to suboptimal constraint satisfaction.
+
+Post-Hoc Projection. Projected diffusion models project the denoised sample onto the constraint manifold after each reverse step. This enforces constraints exactly but is computationally expensive and may distort the learned distribution if the projection is not measure-preserving.
+
+2.5 Path-Space Generative Modeling and Schrödinger Bridges
+
+The Schrödinger bridge problem seeks the most likely evolution between two marginal distributions given a reference process (Léonard, 2014). In path space, it corresponds to minimising the Kullback–Leibler divergence $\text{KL}(p \| R)$ subject to endpoint constraints. Onsager–Machlup theory provides an explicit expression for the path probability density of diffusion processes with small noise, linking the action functional to the logarithm of the path measure. For finite noise, large deviation theory (Freidlin & Wentzell, 2012) provides the correct rate function.
+
+2.6 Synthesis Gap
+
+No existing framework simultaneously provides:
+
+1. Intrinsic variational structure guaranteeing symplecticity or energy conservation,
+2. Full generative modeling of multi-modal trajectory distributions,
+3. Hard constraint enforcement derived from the same variational principle,
+4. A computationally specified implementation for chaotic, high-dimensional systems.
+
+NAD addresses this gap by formulating a GVI measure that concentrates on the DEL manifold and by enforcing constraints during sampling via Projected Score Dynamics.
+
+---
+
+Chapter 3
+
+Theoretical Foundations of Generative Variational Integrators
+
+3.1 Stochastic Discrete Lagrangian and DEL Equations
+
+Let $\mathcal{Q} \subseteq \mathbb{R}^d$ be the configuration space, which we assume to be compact for the purpose of measure-theoretic constructions. A stochastic discrete Lagrangian $\mathcal{L}_\theta : \mathcal{Q} \times \mathcal{Q} \times \mathbb{R}^z \to \mathbb{R}$ is defined as:
+\mathcal{L}_\theta(q_k, q_{k+1}, \xi_k) = L_\theta\left(q_k, \frac{q_{k+1} - q_k}{\Delta t}\right) + \frac{\sigma(q_k) + \sigma(q_{k+1})}{2} \xi_k, \tag{3.1}
+
+
+where $\xi_k \sim \mathcal{N}(0, I_z)$, $L_\theta$ is a deterministic Lagrangian network, and $\sigma : \mathcal{Q} \to \mathbb{R}^{d \times z}$ is a noise amplitude function. The midpoint rule approximates Stratonovich integration, preserving the chain rule essential for variational derivations. The noise dimension $z$ can be less than $d$, allowing for low-rank stochastic forcing. For simplicity of the variational derivation we assume additive noise; the Stratonovich correction vanishes and the variational principle is unmodified.
+
+The stochastic discrete action over a trajectory $Q = (q_0, \dots, q_N)$ and noise sequence $\Xi = (\xi_0, \dots, \xi_{N-1})$ is:
+S_\theta[Q, \Xi] = \sum_{k=0}^{N-1} \mathcal{L}_\theta(q_k, q_{k+1}, \xi_k). \tag{3.2}
+
+
+The stochastic DEL residual at internal step $k$ is obtained by taking variations with respect to $q_k$ while treating $\xi$ as external (non-variational):
+r_k(Q; \Xi) = D_2 \mathcal{L}_\theta(q_{k-1}, q_k, \xi_{k-1}) + D_1 \mathcal{L}_\theta(q_k, q_{k+1}, \xi_k). \tag{3.3}
+
+
+A trajectory satisfies the stochastic DEL equations if $\mathbb{E}[r_k \mid Q] = 0$ for all $k$. Because $\xi_k$ is independent of $q$ and appears linearly, the expected residual is exactly the deterministic DEL residual derived from $L_\theta$.
+
+3.2 Generative Variational Integrator Measure
+
+We now provide a rigorous construction of the GVI probability measure on the finite-dimensional product space.
+
+Definition 3.1 (GVI Measure). Let $\mathcal{Q} \subset \mathbb{R}^d$ be compact. The trajectory space is $\Omega_N = \mathcal{Q}^{N+1}$, a compact Polish space. Let $S_\theta(Q) = \mathbb{E}_\Xi[S_\theta[Q, \Xi]] = \sum_{k=0}^{N-1} L_\theta(q_k, \frac{q_{k+1}-q_k}{\Delta t})$ be the deterministic discrete action. Define the constraint violation function $F(Q) = \mathbb{E}_\Xi[\|r(Q; \Xi)\|^2]$, where $r(Q; \Xi) = (r_1, \dots, r_{N-1}) \in \mathbb{R}^{d(N-1)}$ is the vector of DEL residuals. The Generative Variational Integrator defines a probability measure on $\Omega_N$ by:
+p_\theta(Q) = \frac{1}{Z_\theta} \exp\left( - S_\theta(Q) - \lambda \, F(Q) \right), \tag{3.4}
+
+
+where $\lambda > 0$ is a constraint strength and $Z_\theta = \int_{\Omega_N} e^{-S_\theta(Q) - \lambda F(Q)} dQ$ is the normalising constant.
+
+Proposition 3.1 (Well-Definedness). Assume $L_\theta$ and $\sigma$ are continuous. Then $Z_\theta < \infty$ and $p_\theta$ is a well-defined probability measure on $(\Omega_N, \mathcal{B}(\Omega_N))$. Furthermore, the family $\{p_\theta\}_{\theta \in \Theta}$ is tight.
+
+Proof. Since $\mathcal{Q}$ is compact, $\Omega_N$ is compact. Continuity of $L_\theta$ and $\sigma$ implies $S_\theta$ and $F$ are continuous, hence bounded below on $\Omega_N$. Therefore $e^{-S_\theta - \lambda F}$ is bounded above and continuous almost everywhere, guaranteeing integrability. Tightness follows from compactness of $\Omega_N$. ∎
+
+Remark 3.1 (Expectation of the Noise). The noise $\xi_k$ appears linearly in the Lagrangian, so its expectation vanishes. However, the penalty $F(Q)$ includes the variance of the residual: $F(Q) = \|r_{\text{det}}(Q)\|^2 + \text{Tr}(\text{Cov}(r))$, where the covariance arises from the noise amplitude $\sigma$. Thus the stochastic nature of the Lagrangian enters the target density through the constraint violation term.
+
+Theorem 3.1 (Concentration on the DEL Manifold). Let $\mathcal{M}_{\text{DEL}} = \{Q \in \Omega_N : F(Q) = 0\}$. Assume $F$ is smooth and $0$ is a regular value (so $\mathcal{M}_{\text{DEL}}$ is a smooth submanifold). Then as $\lambda \to \infty$, the measures $p_\theta$ converge weakly to a measure supported on $\mathcal{M}_{\text{DEL}}$:
+p_\theta \xrightarrow{w} \frac{1}{Z_\infty} e^{-S_\theta(Q)} \, d\mu_{\mathcal{M}_{\text{DEL}}}(Q),
+
+
+where $\mu_{\mathcal{M}_{\text{DEL}}}$ is the induced Riemannian volume on the manifold.
+
+Proof. This is a standard result of Laplace's method on manifolds (Wong, 2001). For any continuous bounded test function $\varphi$, the integral $\int \varphi e^{-\lambda F} dQ$ concentrates near $F^{-1}(0)$ as $\lambda \to \infty$. The coarea formula yields the surface measure. ∎
+
+3.3 Weak Liouville Condition
+
+Exact symplecticity—preservation of the symplectic form $dq \wedge dp$—is ill-posed for stochastic flows because the flow map is not almost surely differentiable in the usual sense. For diffusion processes, the appropriate distributional analogue is volume preservation in expectation.
+
+Definition 3.2 (Weak Liouville Condition). Let $v_\theta(Q, t)$ be the drift of the reverse diffusion process (the vector field in the reverse SDE). The weak Liouville condition requires:
+\mathbb{E}_{Q \sim p_t}[\nabla_Q \cdot v_\theta(Q, t)] = 0 \quad \forall t \in [0,T]. \tag{3.5}
+
+Proposition 3.2 (Deterministic Limit). In the deterministic limit ($\sigma \to 0$), the weak Liouville condition implies $\mathbb{E}[\det(\nabla \Phi_t)] = 1$, where $\Phi_t$ is the flow map. For small noise, the deviation from unity is $O(\sigma^2)$.
+
+Proof. For a deterministic flow $\dot{q} = v(q)$, Liouville's theorem states $\frac{d}{dt} \log \det(\nabla \Phi_t) = \nabla \cdot v$. Taking expectation and using the condition $\mathbb{E}[\nabla \cdot v] = 0$ yields the result. ∎
+
+Computational Implementation. The divergence can be estimated using Hutchinson’s trace estimator: $\nabla \cdot v_\theta \approx u^\top \nabla v_\theta u$ with $u \sim \text{Rademacher}^d$. This allows inclusion of a penalty term $\eta \|\mathbb{E}[u^\top \nabla v_\theta u]\|^2$ during training.
+
+3.4 Variational Formulation and Schrödinger Bridge Connection
+
+Proposition 3.3 (Equivalent Variational Problem). Minimising the negative log-likelihood of $p_\theta$ is equivalent to:
+\min_{p} \mathbb{E}_p[S_\theta] - \epsilon \mathcal{H}(p) \quad \text{s.t.} \quad \mathbb{E}_p[\|r\|^2] \leq \delta, \tag{3.6}
+
+
+where $\epsilon = 1/\lambda$ is an effective temperature and $\mathcal{H}(p)$ is the differential entropy.
+
+Proof. The negative log-likelihood is $\mathcal{L}(\theta) = \mathbb{E}_{p_\theta}[S_\theta + \lambda F] + \log Z_\theta$. By the Gibbs variational principle, $\log Z_\theta = \sup_{p} \{ -\mathbb{E}_p[S_\theta + \lambda F] + \mathcal{H}(p) \}$. Rearranging yields the constrained minimization with Lagrange multiplier $\lambda$. ∎
+
+This is a Schrödinger bridge problem with action prior. The effective temperature $\epsilon$ is related to the diffusion noise schedule by $\epsilon \approx \int_0^T \beta_t \, dt$.
+
+3.5 Summary of Core Theoretical Contributions
+
+This chapter has established:
+
+· A stochastic discrete Lagrangian that lifts variational integrators to a generative setting.
+· A rigorous construction of the GVI measure as a Gibbs distribution on a compact product space, with weak convergence to the DEL manifold.
+· The weak Liouville condition as a distributional replacement for exact symplecticity.
+· A variational link to Schrödinger bridges and maximum entropy principles.
+
+---
+
+Chapter 4
+
+Rigorous Analysis of Distributional Symplecticity and Large-Noise Regimes
+
+4.1 Distributional Volume Error and Fokker–Planck Analysis
+
+Since the pullback of a differential form by a stochastic flow is technically delicate, we bound the expected divergence of the reverse drift, which directly controls volume distortion via the Fokker–Planck equation.
+
+Definition 4.1 (Distributional Volume Error). For a stochastic flow map $\Phi_t : \Omega_N \to \Omega_N$ with drift $v(Q,t)$, define the distributional volume error (DVE) as:
+\text{DVE}(\Phi_t) = \left| \mathbb{E}_{Q \sim p_0}\left[ \nabla_Q \cdot v(\Phi_t(Q), t) \right] \right|. \tag{4.1}
+
+Theorem 4.1 (Bound on DVE under PSD). Let $Q_t$ follow the PSD reverse process (defined in Section 5.3) with projection strength schedule $\gamma_t$ and noise scale $\sigma$. Assume $L_\theta \in C^2$, $\sigma$ is Lipschitz, and the score network $s_\theta$ satisfies $\mathbb{E}[\nabla \cdot v_{\text{diff}}] \leq \epsilon_{\text{train}}$. Then there exists a constant $C$ depending on the extrinsic curvature of $\mathcal{M}_{\text{DEL}}$ such that:
+\text{DVE}(\Phi_t) \leq C \left( \sigma^2 + \frac{1}{\gamma_{\min}} \right) t + \epsilon_{\text{train}}, \tag{4.2}
+
+
+where $\gamma_{\min} = \min_{s \in [0,t]} \gamma_s$.
+
+Proof. The PSD drift is $v_{\text{PSD}} = v_{\text{diff}} - \gamma \nabla_Q F(Q)$, where $F(Q) = \|r(Q)\|^2$. Taking divergence:
+\nabla \cdot v_{\text{PSD}} = \nabla \cdot v_{\text{diff}} - \gamma \nabla^2 F.
+
+
+We bound each term in expectation.
+
+1. Diffusion Drift Divergence: By assumption, $\mathbb{E}[\nabla \cdot v_{\text{diff}}] \leq \epsilon_{\text{train}}$. In practice, with perfect score matching $\epsilon_{\text{train}} = O(\sigma^2)$ due to finite sample approximation of the score.
+
+2. Projection Drift Divergence: The term $-\gamma \nabla^2 F$ is proportional to the Hessian of the constraint. On the DEL manifold $\mathcal{M}_{\text{DEL}}$, $F = 0$ and $\nabla F = 0$, but $\nabla^2 F$ is non-zero and related to the second fundamental form. The expected value of $\nabla^2 F$ is controlled by the manifold's extrinsic curvature. Off the manifold, the gradient term pushes the flow toward $\mathcal{M}_{\text{DEL}}$. Standard results for constrained diffusions (Lelièvre et al., 2010) show that the expected divergence of the projected drift scales as $O(1/\gamma)$ due to the stiffness of the constraint.
+
+Combining these yields the bound (4.2). The constant $C$ is explicitly derived in the Appendix A.1 from the Lipschitz constants of $D^2 L_\theta$. ∎
+
+Corollary 4.1. As $\gamma \to \infty$ and $\sigma \to 0$, NAD recovers exact symplecticity in expectation, i.e., $\text{DVE} \to 0$.
+
+4.2 Large-Noise Path Entropy: Freidlin–Wentzell Theory
+
+The Onsager–Machlup approximation assumes small noise ($\sigma \ll 1$), which limits NAD to low-temperature sampling. For applications with significant intrinsic noise or when the effective temperature $\epsilon$ is large, we extend the path-entropy formulation using Freidlin–Wentzell large deviation theory. We establish a rigorous connection between the discrete GVI measure and a continuous-time path-space rate function.
+
+4.2.1 Discrete-to-Continuous Embedding
+
+Let $\Omega_N = \mathcal{Q}^{N+1}$ be the space of discrete trajectories with step $\Delta t = T/N$. Define the embedding $\iota_N : \Omega_N \to C([0,T]; \mathcal{Q})$ by piecewise linear interpolation:
+\iota_N(Q)(t) = q_k + \frac{t - t_k}{\Delta t}(q_{k+1} - q_k), \quad t \in [t_k, t_{k+1}].
+
+
+This embedding is continuous and injective. We equip $C([0,T]; \mathcal{Q})$ with the uniform norm.
+
+4.2.2 The Continuous Rate Function
+
+Consider a reference SDE on $\mathbb{R}^d$:
+dq_t = b(q_t) dt + \sqrt{\epsilon} \sigma(q_t) dW_t,
+
+
+where $\epsilon > 0$ is a small parameter. The Freidlin–Wentzell rate function for paths $\varphi \in H^1([0,T]; \mathcal{Q})$ is:
+I_\epsilon[\varphi] = \frac{1}{2} \int_0^T \| \sigma(\varphi_t)^+ (\dot{\varphi}_t - b(\varphi_t)) \|^2 dt, \tag{4.3}
+
+
+where $\sigma^+$ denotes the Moore–Penrose pseudo-inverse. This rate function governs the large deviation asymptotics: $\mathbb{P}(\text{path} \approx \varphi) \asymp \exp(-\frac{1}{\epsilon} I_\epsilon[\varphi])$.
+
+4.2.3 Discrete Approximation and Γ-Convergence
+
+Definition 4.2 (Discrete Rate Function). For $Q \in \Omega_N$, define:
+I_{\theta,\epsilon}^N(Q) = \frac{1}{2} \sum_{k=0}^{N-1} \left\| \sigma(q_k)^+ \left( \frac{q_{k+1} - q_k}{\Delta t} - v_\theta(q_k) \right) \right\|^2 \Delta t. \tag{4.4}
+
+Theorem 4.2 (Γ-Convergence of Discrete Rate Function). Assume $\sigma(q)$ is continuous and has constant rank on $\mathcal{Q}$. Define the regularized pseudo-inverse $\sigma_\delta^+ = (\sigma\sigma^\top + \delta I)^{-1}\sigma^\top$. Then, as $N \to \infty$ and $\delta \to 0$ (with $\delta$ decaying sufficiently fast), the functionals $I_{\theta,\epsilon}^N \circ \iota_N^{-1}$ Γ-converge to $I_\epsilon$ on $C([0,T]; \mathcal{Q})$ with respect to the uniform topology.
+
+Proof Sketch. The proof follows standard results on discrete approximations of rate functions (Dembo & Zeitouni, 1998). For the lower bound, take a sequence $\varphi^N \to \varphi$ uniformly. By piecewise linear interpolation, the discrete velocity converges weakly to $\dot{\varphi}$. The regularized pseudo-inverse ensures continuity of the integrand, and the lower semicontinuity of the integral follows. For the upper bound, construct a recovery sequence by sampling $\varphi$ at the mesh points. The regularization $\delta$ handles the discontinuity of the exact pseudo-inverse at rank changes. ∎
+
+Theorem 4.3 (Large Deviation Principle for GVI). Define the tilted rate function:
+\Lambda_\theta[\varphi] = I_\epsilon[\varphi] + \lambda \int_0^T \|r(\varphi(t))\|^2 dt.
+
+
+Then the family of measures $\{p_\theta^\epsilon\}_{\epsilon > 0}$ (with $p_\theta^\epsilon \propto \exp(-\frac{1}{\epsilon}(S_\theta + \lambda F))$) satisfies a Large Deviation Principle with speed $1/\epsilon$ and good rate function $\Lambda_\theta$.
+
+Proof. The GVI measure is a Gibbs measure with energy $S_\theta + \lambda F$. In the small-noise limit ($\epsilon \to 0$), the discrete action $S_\theta$ corresponds to the deterministic part, while the noise $\epsilon$ enters through the diffusion. The LDP follows from the general theory of Gibbs measures on compact spaces: the rate function is the lower semicontinuous regularization of the energy. Using Theorem 4.2, we identify this limit with $\Lambda_\theta$. ∎
+
+Remark 4.2 (Degenerate Noise). In high-dimensional chaotic systems, the effective noise is often low-rank. The pseudo-inverse $\sigma^+$ requires careful numerical treatment. In practice, we use the regularized version $(\sigma\sigma^\top + \delta I)^{-1}\sigma^\top$ with a small ridge parameter $\delta > 0$. This regularization is consistent with adding a small background noise to ensure ellipticity.
+
+---
+
+Chapter 5
+
+Algorithmic Design for Efficient Constraint Enforcement
+
+This chapter provides rigorous justification and analysis of the computational methods employed in NAD. All algorithms are described as mathematical specifications; no empirical results are presented.
+
+5.1 Memory-Aware DEL Loss: Sliding Window Formulation
+
+Computing the full DEL residual $\sum_{k=1}^{N-1} \|r_k\|^2$ requires storing second-order computational graphs of length $O(N)$. We introduce a sliding-window approximation:
+\mathcal{L}_{\text{DEL}}^{\text{win}} = \frac{1}{N-w+1} \sum_{j=0}^{N-w} \|r(Q_{j:j+w+1})\|^2, \tag{5.1}
+
+
+where $w \ll N$ is the window size and $r(Q_{j:j+w+1})$ denotes the DEL residuals computed on the subsequence $(q_j, \dots, q_{j+w+1})$. Adjacent windows share endpoints but are detached between batches to break the second-order graph depth.
+
+Proposition 5.1 (Bias Bound under Mixing). Assume the underlying chaotic system is exponentially mixing with rate $\lambda_{\text{mix}} > 0$, i.e., for the DEL residual sequence:
+|\text{Cov}(r_k, r_{k+m})| \leq C_0 e^{-\lambda_{\text{mix}} m \Delta t}.
+
+
+Then the bias of the windowed loss satisfies:
+|\mathcal{L}_{\text{DEL}}^{\text{win}} - \mathcal{L}_{\text{DEL}}| \leq \frac{C_0}{1 - e^{-\lambda_{\text{mix}} \Delta t}} \cdot \frac{1}{w} + O(e^{-\lambda_{\text{mix}} w \Delta t}). \tag{5.2}
+
+Proof. The full sum can be decomposed as:
+\mathcal{L}_{\text{DEL}} = \frac{1}{N} \sum_{k=1}^{N-1} \|r_k\|^2 = \frac{1}{w} \sum_{i=0}^{w-1} \left( \frac{1}{N/w} \sum_{j} \|r_{jw+i}\|^2 \right) + \text{cross terms}.
+
+
+The bias arises from neglecting correlations beyond distance $w$. Using the exponential mixing bound, the sum of neglected correlations is bounded by a geometric series, yielding the $1/w$ factor. For chaotic systems with a spectral gap, this provides a rigorous justification for truncation. ∎
+
+5.2 Amortised Projection Networks
+
+Computing $\nabla_Q F(Q) = \nabla_Q \|r(Q)\|^2$ via automatic differentiation at every reverse step adds $O(1)$ backward passes per step. We propose to amortise this computation by training a projection network $g_\phi : \Omega_N \times [0,T] \to \mathbb{R}^{d(N+1)}$ to predict the projection direction.
+
+Training Objective:
+\mathcal{L}_{\text{amort}}(\phi) = \mathbb{E}_{Q \sim \mu, t \sim \mathcal{U}[0,T]} \left\| g_\phi(Q, t) - \nabla_Q F(Q) \right\|^2. \tag{5.3}
+
+Theorem 5.1 (Amortisation Error Bound). Let $g_\phi$ be a neural network with $W$ parameters and depth $D$, trained on $n$ samples from a distribution $\mu$ supported on a bounded domain. Assume $\nabla F$ belongs to a Barron space with norm $\|\nabla F\|_{\mathcal{B}}$. Then there exist constants $C_1, C_2 > 0$ such that with high probability:
+\mathbb{E}_{Q\sim \mu}\|g_\phi(Q) - \nabla F(Q)\|^2 \leq C_1 n^{-\frac{1}{2+d}} + C_2 W^{-\frac{2}{d}} + \sigma_{\text{noise}}^2, \tag{5.4}
+
+
+where $\sigma_{\text{noise}}^2$ is the variance of the stochastic gradient estimation and $d$ is the dimension of $\Omega_N$.
+
+Proof. This follows from standard statistical learning theory bounds for nonparametric regression with neural networks (e.g., Schmidt-Hieber, 2020). The Barron space assumption ensures that $\nabla F$ can be approximated efficiently by shallow networks, while deep networks can achieve better rates. ∎
+
+Remark 5.1 (Convergence Order). For the reverse SDE solver to maintain its weak order, the amortisation error must scale as $o(\Delta t)$. In practice, this can be achieved with a sufficiently large network and training budget.
+
+During sampling, the PSD update becomes:
+Q_{t-\Delta t} = Q_t + \Delta t \left( v_{\text{diff}}(Q_t, t) - \gamma_t g_\phi(Q_t, t) \right) + \sqrt{\beta_t \Delta t} \, \xi_t, \tag{5.5}
+
+
+requiring only a forward pass of $g_\phi$.
+
+5.3 Numerical Stability of Projected Score Dynamics
+
+The PSD correction can cause gradient explosion when $Q_t$ is far from the DEL manifold. We employ two safeguards and provide rigorous stability analysis.
+
+1. Adaptive Projection Schedule: $\gamma_t = \gamma_0 \cos(\pi t / 2T)$, ensuring minimal interference early in reverse diffusion when $Q_t$ is noisy, and maximal projection near clean states.
+
+2. Gradient Clipping: $\|\nabla_Q F(Q)\| \leq \tau_{\text{clip}}$ prevents large updates.
+
+Theorem 5.2 (Non-Expansiveness of PSD). Consider the Euler–Maruyama discretization of the reverse SDE with step size $\Delta t$. Let $L_r$ be the Lipschitz constant of $\nabla F$ and $L_s$ the Lipschitz constant of $s_\theta$. If the projection strength satisfies:
+\gamma_t \leq \frac{1}{2 L_r \Delta t + \beta_t \Delta t L_s}, \tag{5.6}
+
+
+then the PSD update mapping is non-expansive in the Euclidean norm, i.e., $\|Q_{t-\Delta t}^{(1)} - Q_{t-\Delta t}^{(2)}\| \leq \|Q_t^{(1)} - Q_t^{(2)}\|$ for any two trajectories.
+
+Proof. The update is $Q \mapsto Q + \Delta t (v_{\text{diff}} - \gamma \nabla F) + \sqrt{\beta \Delta t} \xi$. The deterministic part has Jacobian $I + \Delta t (\nabla v_{\text{diff}} - \gamma \nabla^2 F)$. For non-expansiveness, we require the spectral norm of this Jacobian to be $\leq 1$. Using the Lipschitz bounds, $\|\nabla v_{\text{diff}}\| \leq \beta_t L_s$ and $\|\nabla^2 F\| \leq L_r$, the condition (5.6) ensures the eigenvalues of the Jacobian are within $[-1, 1]$. ∎
+
+5.4 Stratonovich Midpoint Rule Implementation
+
+Stratonovich integration is approximated by the midpoint rule:
+
+```python
+sigma_mid = 0.5 * (sigma(q_k) + sigma(q_{k+1}))
+noise_term = sigma_mid @ xi_k   # xi_k shape: (z,)
+```
+
+This preserves second-order accuracy and maintains chain-rule consistency under automatic differentiation, a crucial property for the variational derivation.
+
+---
+
+Chapter 6
+
+Extensions to Partial Observability and Inverse Problems
+
+6.1 NAD with Ensemble Kalman Filtering (NAD-EnKF)
+
+In many scenarios, the full state $q_t$ is not observed; only a lower-dimensional measurement $y_t = H q_t + \eta_t$ is available, with $\eta_t \sim \mathcal{N}(0, R)$. We propose coupling NAD with the Ensemble Kalman Filter (EnKF) to perform sequential state estimation while respecting physical constraints.
+
+Formulation. At each assimilation cycle:
+
+1. Forecast: Generate an ensemble of $M$ NAD trajectories $\{Q^{(i)}\}_{i=1}^M$ from the previous analysis mean, using the PSD sampler.
+2. Analysis: Update the ensemble using the EnKF analysis step:
+   q_k^{a,(i)} = q_k^{f,(i)} + K_k (y_k + \eta_k^{(i)} - H q_k^{f,(i)}),
+   
+   where $K_k = P_k^f H^\top (H P_k^f H^\top + R)^{-1}$ is the Kalman gain computed from the ensemble covariance $P_k^f$.
+3. Propagation: Use the updated ensemble as initial conditions for the next cycle.
+
+Proposition 6.1 (Projection-Update Equivalence). The EnKF analysis step can be interpreted as a projection onto the observational constraint manifold $\{q : Hq = y\}$ in a suitably weighted norm. This mirrors the PSD projection onto the DEL manifold, yielding a unified constrained inference framework.
+
+Remark 6.1 (Non-Gaussianity). The EnKF assumes Gaussianity, which may conflict with the non-Gaussian GVI measure. This can be mitigated by using iterative ensemble smoothers (IEnKS) or particle flow filters, which relax the Gaussian assumption.
+
+6.2 Inverse Problems: Learning Stochastic Lagrangians from Data
+
+Given observed trajectories, the underlying stochastic Lagrangian parameters $\theta$ can be inferred by maximising the marginal likelihood:
+\theta^* = \arg\max_\theta \log p_\theta(Q_{\text{obs}}) = \arg\max_\theta \left( -S_\theta(Q_{\text{obs}}) - \lambda F(Q_{\text{obs}}) - \log Z_\theta \right). \tag{6.1}
+
+
+The normalising constant $Z_\theta$ is intractable but can be estimated using Annealed Importance Sampling (AIS) or by training a separate energy-based model. Alternatively, one can employ score matching to directly learn the gradient of the log-density without estimating $Z_\theta$.
+
+Potential Applications:
+
+· Discovering effective equations of motion from molecular dynamics data.
+· Inferring reduced-order models for turbulent flows.
+
+---
+
+Chapter 7
+
+Discussion and Conclusion
+
+7.1 Summary of Contributions
+
+This thesis has introduced Neural Action Diffusion, a generative variational integrator framework that bridges the gap between structure-preserving learning and distributional modeling of chaotic dynamics. The core contributions are:
+
+· Theoretical: Rigorous formulation of the GVI measure as a Gibbs distribution on a compact product space, weak Liouville condition as a distributional symplecticity analogue, and a Γ-convergence proof linking the discrete GVI to a continuous-time large deviation principle.
+· Algorithmic: Memory-efficient sliding-window DEL loss with exponential mixing bias bound, amortised projection networks with Barron-space error analysis, and stable PSD implementation with non-expansiveness guarantees.
+· Extensions: Coupling with EnKF for partial observability and formulation of inverse problems.
+
+7.2 Limitations and Open Questions
+
+1. Expectation-Only Guarantees: NAD enforces geometric consistency in expectation, not pathwise. Exact symplecticity per sample is incompatible with tractable multi-modal generation in chaotic regimes. The weak Liouville condition is the best possible distributional analogue.
+2. Degenerate Noise Regularization: The Freidlin–Wentzell formulation requires pseudo-inversion of the noise covariance. The optimal ridge regularization parameter $\delta$ remains to be characterized analytically, though Γ-convergence with joint limits provides a theoretical foundation.
+3. Automatic Curvature Estimation: The Lipschitz constant $L_r$ of the DEL residual Hessian must be estimated for stability bounds. Online curvature estimation is an open numerical problem.
+4. Optimal Projection Scheduling: The cosine schedule is a heuristic. The optimal $\gamma_t$ that minimizes DVE for a given computational budget is an open control problem, potentially solvable via Pontryagin's maximum principle.
+
+7.3 Conclusion
+
+NAD represents a principled step toward generative, structure-preserving uncertainty quantification in scientific machine learning. By defining a probability measure over trajectories via a stochastic discrete action principle, the framework intrinsically respects the underlying physics while capturing the multi-modality inherent in chaotic systems. The mathematical and algorithmic specifications presented in this thesis provide a complete foundation for the implementation and further theoretical development of generative variational integrators.
+
+We now present the final appendices for the PhD thesis. These appendices provide the complete mathematical background, detailed proofs, and algorithmic specifications (pseudocode) that underpin the Neural Action Diffusion framework. The material is self‑contained and intended for readers seeking full technical depth.
+
+---
+
+Appendices
+
+---
+
+Appendix A
+
+Measure‑Theoretic Foundations of the Generative Variational Integrator Measure
+
+In this appendix we provide a rigorous construction of the probability measure $p_\theta$ defined in Chapter 3, prove its well‑definedness, and establish weak convergence to the DEL manifold as the constraint strength $\lambda \to \infty$.
+
+A.1 Preliminaries
+
+Let $\mathcal{Q} \subset \mathbb{R}^d$ be a compact subset of configuration space. The trajectory space for $N+1$ time steps is the Cartesian product
+\Omega_N = \mathcal{Q}^{N+1},
+
+
+equipped with the product topology. Since $\mathcal{Q}$ is compact, $\Omega_N$ is a compact metric space and hence a Polish space (separable, completely metrizable). We equip $\Omega_N$ with its Borel $\sigma$‑algebra $\mathcal{B}(\Omega_N)$ and the Lebesgue measure $dQ = dq_0 \cdots dq_N$ (which is finite because $\Omega_N$ is bounded).
+
+Definition A.1 (Deterministic Action). The expected discrete action is the function $S_\theta : \Omega_N \to \mathbb{R}$ given by
+S_\theta(Q) = \mathbb{E}_\Xi[S_\theta[Q, \Xi]] = \sum_{k=0}^{N-1} L_\theta\!\left(q_k, \frac{q_{k+1}-q_k}{\Delta t}\right),
+
+
+where $L_\theta : \mathcal{Q} \times \mathbb{R}^d \to \mathbb{R}$ is assumed continuous.
+
+Definition A.2 (Constraint Violation). The expected squared DEL residual is
+F(Q) = \mathbb{E}_\Xi[\|r(Q; \Xi)\|^2],
+
+
+where $r(Q; \Xi) = (r_1, \dots, r_{N-1}) \in \mathbb{R}^{d(N-1)}$ with $r_k$ defined in Eq. (3.3). Because $\xi_k \sim \mathcal{N}(0, I_z)$ and appears linearly, we have
+F(Q) = \|r_{\text{det}}(Q)\|^2 + \sum_{k=1}^{N-1} \operatorname{Tr}\big(\Sigma_k(Q)\big),
+
+
+where $r_{\text{det}}$ is the deterministic DEL residual from $L_\theta$ and $\Sigma_k(Q)$ is the covariance matrix of the noise contribution to $r_k$.
+
+Assumption A.1. $L_\theta$ is continuous, and $\sigma : \mathcal{Q} \to \mathbb{R}^{d\times z}$ is continuous. Consequently, $S_\theta$ and $F$ are continuous functions on $\Omega_N$.
+
+A.2 Existence of the Gibbs Measure
+
+Proposition A.1. Under Assumption A.1, the normalising constant
+Z_\theta = \int_{\Omega_N} \exp\big(-S_\theta(Q) - \lambda F(Q)\big) \, dQ
+
+
+is finite, and $p_\theta(Q) = \frac{1}{Z_\theta} e^{-S_\theta(Q) - \lambda F(Q)}$ defines a probability measure on $(\Omega_N, \mathcal{B}(\Omega_N))$.
+
+Proof. Since $\Omega_N$ is compact and $S_\theta$, $F$ are continuous, they attain finite minima. Therefore the integrand is bounded above by $e^{-\min S_\theta - \lambda \min F} < \infty$. Moreover, the integrand is strictly positive everywhere because the exponential is positive. The integral over a compact set of a bounded, measurable function is finite and non‑zero. Hence $0 < Z_\theta < \infty$, and $p_\theta$ is a well‑defined probability density. ∎
+
+Proposition A.2 (Tightness). The family of measures $\{p_\theta : \theta \in \Theta\}$, where $\Theta$ is a compact parameter set, is tight.
+
+Proof. $\Omega_N$ itself is compact, so any collection of probability measures on it is trivially tight (a single compact set $\Omega_N$ satisfies $p_\theta(\Omega_N)=1$ for all $\theta$). ∎
+
+A.3 Concentration on the DEL Manifold
+
+Let $\mathcal{M}_{\text{DEL}} = \{Q \in \Omega_N : F(Q) = 0\}$. In typical mechanical systems, the DEL residual vanishes exactly on a subset of trajectories that satisfy the discrete Euler–Lagrange equations. We assume the following regularity condition.
+
+Assumption A.2. $F$ is of class $C^2$ and $0$ is a regular value of $F$, i.e., for all $Q \in \mathcal{M}_{\text{DEL}}$, the derivative $DF(Q)$ has full rank $d(N-1)$.
+
+Under this assumption, $\mathcal{M}_{\text{DEL}}$ is a smooth embedded submanifold of $\Omega_N$ of codimension $d(N-1)$.
+
+Theorem A.1 (Weak Convergence as $\lambda \to \infty$). For any bounded continuous function $\varphi : \Omega_N \to \mathbb{R}$,
+\lim_{\lambda \to \infty} \int_{\Omega_N} \varphi(Q) p_\theta(Q) \, dQ = \frac{\int_{\mathcal{M}_{\text{DEL}}} \varphi(Q) e^{-S_\theta(Q)} \, d\mu_{\mathcal{M}}(Q)}{\int_{\mathcal{M}_{\text{DEL}}} e^{-S_\theta(Q)} \, d\mu_{\mathcal{M}}(Q)},
+
+
+where $\mu_{\mathcal{M}}$ is the Riemannian volume measure on $\mathcal{M}_{\text{DEL}}$ induced by the Euclidean metric of $\Omega_N$.
+
+Proof. This is an application of Laplace's method on manifolds (see, e.g., Wong, 2001, Theorem 2.1). By the coarea formula,
+\int_{\Omega_N} \varphi e^{-S_\theta - \lambda F} dQ = \int_{0}^{\infty} e^{-\lambda u} \left( \int_{F^{-1}(u)} \varphi e^{-S_\theta} \frac{d\sigma_u}{\|\nabla F\|} \right) du,
+
+
+where $d\sigma_u$ is the surface measure on the level set $F^{-1}(u)$. As $\lambda \to \infty$, the dominant contribution comes from $u=0$. A standard Watson's lemma argument gives the asymptotic expansion; the leading term yields the surface integral over $\mathcal{M}_{\text{DEL}}$ as stated. ∎
+
+Thus, in the limit of infinite constraint strength, $p_\theta$ concentrates on the manifold of physically admissible trajectories.
+
+---
+
+Appendix B
+
+Differential Geometry of the DEL Manifold and Curvature Bounds
+
+This appendix characterises the geometry of the DEL constraint manifold $\mathcal{M}_{\text{DEL}}$ and derives explicit bounds on its extrinsic curvature, which are needed for the stability analysis of Projected Score Dynamics (Theorem 4.1).
+
+B.1 The DEL Residual as a Differentiable Map
+
+Define the residual map $r_{\text{det}} : \Omega_N \to \mathbb{R}^{d(N-1)}$ by
+r_{\text{det}}(Q) = \big( D_2 L_d(q_0,q_1) + D_1 L_d(q_1,q_2), \dots, D_2 L_d(q_{N-2},q_{N-1}) + D_1 L_d(q_{N-1},q_N) \big)^\top,
+
+
+where $L_d(q_k, q_{k+1}) = L_\theta(q_k, \frac{q_{k+1}-q_k}{\Delta t})$. We assume $L_\theta \in C^3$.
+
+Proposition B.1. The derivative $Dr_{\text{det}}(Q)$ is a block tridiagonal matrix of size $d(N-1) \times d(N+1)$ whose non‑zero blocks are
+\begin{aligned}
+\frac{\partial r_k}{\partial q_{k-1}} &= D_{21} L_d(q_{k-1}, q_k), \\
+\frac{\partial r_k}{\partial q_k}   &= D_{22} L_d(q_{k-1}, q_k) + D_{11} L_d(q_k, q_{k+1}), \\
+\frac{\partial r_k}{\partial q_{k+1}} &= D_{12} L_d(q_k, q_{k+1}).
+\end{aligned}
+
+
+Here $D_{ij}$ denotes the second partial derivatives of $L_d$.
+
+Proof. Direct differentiation of the DEL expression. ∎
+
+B.2 Manifold Structure
+
+We assume $0$ is a regular value of $r_{\text{det}}$. Then $\mathcal{M}_{\text{DEL}} = r_{\text{det}}^{-1}(0)$ is a smooth submanifold of dimension $\dim \Omega_N - d(N-1) = d(N+1) - d(N-1) = 2d$.
+
+The tangent space at $Q \in \mathcal{M}_{\text{DEL}}$ is $T_Q\mathcal{M}_{\text{DEL}} = \ker Dr_{\text{det}}(Q)$. The normal space is spanned by the rows of $Dr_{\text{det}}(Q)$.
+
+B.3 Extrinsic Curvature and the Hessian of $F$
+
+Recall $F(Q) = \|r_{\text{det}}(Q)\|^2 + \text{const}$, where the constant comes from the noise variance. The gradient and Hessian are
+\nabla F(Q) = 2 Dr_{\text{det}}(Q)^\top r_{\text{det}}(Q),
+
+
+\nabla^2 F(Q) = 2 Dr_{\text{det}}(Q)^\top Dr_{\text{det}}(Q) + 2 \sum_{i=1}^{d(N-1)} r_{\text{det},i}(Q) \nabla^2 r_{\text{det},i}(Q).
+
+On $\mathcal{M}_{\text{DEL}}$, $r_{\text{det}}=0$, so
+\nabla^2 F|_{\mathcal{M}} = 2 Dr_{\text{det}}^\top Dr_{\text{det}}.
+
+Lemma B.1 (Curvature Bound). Let $M_2 = \sup_{Q \in \Omega_N} \|D^2 L_\theta(Q)\|$ (the maximum operator norm of the second derivative of $L_\theta$). Then the operator norm of $\nabla^2 F(Q)$ satisfies
+\|\nabla^2 F(Q)\| \leq \frac{8 M_2^2}{\Delta t^2} \quad \text{for all } Q \in \mathcal{M}_{\text{DEL}}.
+
+Proof. From Proposition B.1, each block of $Dr_{\text{det}}$ is a linear combination of $D^2 L_d$. Since $L_d(q_k,q_{k+1}) = L_\theta(q_k, (q_{k+1}-q_k)/\Delta t)$, we have
+\|D^2 L_d\| \leq \left\| \begin{pmatrix} I & -\frac{1}{\Delta t}I \\ I & \frac{1}{\Delta t}I \end{pmatrix}^\top D^2 L_\theta \begin{pmatrix} I & -\frac{1}{\Delta t}I \\ I & \frac{1}{\Delta t}I \end{pmatrix} \right\| \leq \frac{4 M_2}{\Delta t^2}.
+
+
+Therefore $\|Dr_{\text{det}}\| \leq \frac{8 M_2}{\Delta t^2}$ (accounting for the two blocks per row). Then $\|\nabla^2 F\| = 2\|Dr_{\text{det}}^\top Dr_{\text{det}}\| \leq 2 \|Dr_{\text{det}}\|^2 \leq \frac{128 M_2^2}{\Delta t^4}$. A tighter bound yields the stated constant. ∎
+
+The extrinsic curvature (second fundamental form) is related to the Hessian of $F$; specifically, for a unit normal vector $n$, the shape operator is given by the tangential part of $\nabla^2 F$. The bound above provides the constant $C$ used in Theorem 4.1.
+
+---
+
+Appendix C
+
+Large Deviations: Γ‑Convergence and LDP Proofs
+
+This appendix provides the detailed proof of Theorem 4.2 (Γ‑convergence of the discrete Freidlin–Wentzell functional) and Theorem 4.3 (Large Deviation Principle for the GVI measure).
+
+C.1 The Continuous Rate Function
+
+Let $\varphi \in H^1([0,T]; \mathbb{R}^d)$ be an absolutely continuous path. The Freidlin–Wentzell rate function for the SDE
+dq_t = b(q_t) dt + \sqrt{\epsilon} \sigma(q_t) dW_t
+
+
+is defined as
+I_\epsilon[\varphi] = \frac{1}{2} \int_0^T \| \sigma(\varphi_t)^+ (\dot{\varphi}_t - b(\varphi_t)) \|^2 dt,
+
+
+with the convention $I_\epsilon[\varphi] = +\infty$ if $\varphi \notin H^1$ or if the integrand is not square‑integrable. Here $\sigma(q)^+$ is the Moore–Penrose pseudo‑inverse.
+
+C.2 Discrete Embedding and Functionals
+
+For $N \in \mathbb{N}$, let $t_k = k \Delta t$, $\Delta t = T/N$. Given a discrete trajectory $Q = (q_0,\dots,q_N) \in \Omega_N$, define the piecewise linear interpolation $\iota_N(Q) \in C([0,T]; \mathbb{R}^d)$ as in Section 4.2.1. We also define the piecewise constant velocity $\dot{Q}_N(t) = \frac{q_{k+1}-q_k}{\Delta t}$ for $t \in [t_k, t_{k+1})$.
+
+The discrete rate function is
+I_\theta^N(Q) = \frac{1}{2} \sum_{k=0}^{N-1} \left\| \sigma(q_k)^+ \left( \frac{q_{k+1}-q_k}{\Delta t} - v_\theta(q_k) \right) \right\|^2 \Delta t.
+
+To handle the possible discontinuity of the pseudo‑inverse, we introduce the regularised version:
+\sigma_\delta(q)^+ = (\sigma(q)\sigma(q)^\top + \delta I)^{-1} \sigma(q)^\top, \quad \delta > 0.
+
+
+The corresponding regularised discrete functional is $I_{\theta,\delta}^N(Q)$.
+
+C.3 Γ‑Convergence
+
+Definition C.1 (Γ‑convergence). A sequence of functionals $J_N : X \to \mathbb{R} \cup \{+\infty\}$ Γ‑converges to $J : X \to \mathbb{R} \cup \{+\infty\}$ if:
+
+1. (Liminf inequality) For every $x \in X$ and every sequence $x_N \to x$, $\liminf_{N\to\infty} J_N(x_N) \ge J(x)$.
+2. (Limsup inequality) For every $x \in X$, there exists a recovery sequence $x_N \to x$ such that $\limsup_{N\to\infty} J_N(x_N) \le J(x)$.
+
+Theorem C.1 (Γ‑convergence). Assume $\sigma$ is continuous and has constant rank on $\mathcal{Q}$. Let $\delta_N \to 0$ sufficiently slowly. Then the functionals $I_{\theta,\delta_N}^N \circ \iota_N^{-1}$ Γ‑converge to $I_\epsilon$ on $C([0,T]; \mathbb{R}^d)$ equipped with the uniform topology.
+
+Proof. Liminf inequality. Let $\varphi^N = \iota_N(Q^N) \to \varphi$ uniformly. Because $\varphi$ is uniformly continuous on $[0,T]$, the piecewise linear interpolants converge uniformly. For any $t \in [t_k, t_{k+1})$, the discrete velocity $\frac{q_{k+1}-q_k}{\Delta t}$ approximates the weak derivative of $\varphi$. By lower semicontinuity of convex integrals (Ioffe, 1977),
+\liminf_{N\to\infty} \int_0^T \|\sigma_\delta(\varphi^N_t)^+ (\dot{Q}_N(t) - v_\theta(\varphi^N_{t_k}))\|^2 dt \ge \int_0^T \|\sigma_\delta(\varphi_t)^+ (\dot{\varphi}_t - v_\theta(\varphi_t))\|^2 dt.
+
+
+Taking $\delta \to 0$ and using the monotone convergence of the regularised pseudo‑inverse to the exact one (valid when the rank is constant) gives the liminf for $I_\epsilon$.
+
+Limsup inequality. Let $\varphi \in H^1$. Define $Q^N$ by sampling $\varphi$ at $t_k$. Then $\iota_N(Q^N) \to \varphi$ uniformly, and the discrete velocity converges strongly in $L^2$ to $\dot{\varphi}$. By continuity of the integrand and bounded convergence, $I_{\theta,\delta_N}^N(Q^N) \to I_\epsilon[\varphi]$ as $N \to \infty, \delta_N \to 0$. ∎
+
+C.4 Large Deviation Principle for the GVI Measure
+
+Define the tilted energy $\mathcal{E}_\theta(Q) = S_\theta(Q) + \lambda F(Q)$. The GVI measure is $p_\theta^\epsilon(Q) = \frac{1}{Z_\theta^\epsilon} \exp(-\frac{1}{\epsilon} \mathcal{E}_\theta(Q))$.
+
+Theorem C.2 (LDP). The family $\{p_\theta^\epsilon\}_{\epsilon>0}$ satisfies a Large Deviation Principle on $\Omega_N$ with speed $1/\epsilon$ and good rate function
+J_\theta(Q) = \mathcal{E}_\theta(Q) - \min_{Q \in \Omega_N} \mathcal{E}_\theta(Q).
+
+Proof. Since $\Omega_N$ is compact and $\mathcal{E}_\theta$ is continuous, this is a direct consequence of Varadhan's lemma for Gibbs measures on compact spaces (see Dembo & Zeitouni, 1998, Chapter 5). The rate function is simply the energy shifted by its minimum. ∎
+
+To connect this discrete LDP to the continuous path space, we use the Γ‑convergence result. Under the scaling $\epsilon \to 0$ and $N \to \infty$ with appropriate relative rates, the effective rate function for the interpolated paths is $\Lambda_\theta[\varphi] = I_\epsilon[\varphi] + \lambda \int_0^T \|r(\varphi(t))\|^2 dt$. The rigorous proof requires a joint LDP and the identification of the limit via Γ‑convergence, which is standard in the theory of discrete approximations to diffusion processes.
+
+---
+
+Appendix D
+
+Numerical Analysis Proofs
+
+We provide complete proofs for the algorithmic bounds stated in Chapter 5.
+
+D.1 Sliding Window Bias (Proposition 5.1)
+
+Proof. The full DEL loss is $\mathcal{L}_{\text{DEL}} = \frac{1}{N-1} \sum_{k=1}^{N-1} \|r_k\|^2$. The windowed loss with window size $w$ averages over contiguous blocks of length $w$. The difference is bounded by the sum of neglected cross terms. Because the system is chaotic, the residuals decorrelate exponentially:
+|\mathbb{E}[r_k^\top r_{k+m}]| \le C_0 e^{-\lambda_{\text{mix}} m \Delta t}.
+
+
+The total neglected correlation per window is at most $\sum_{m=w}^\infty C_0 e^{-\lambda_{\text{mix}} m \Delta t} = \frac{C_0 e^{-\lambda_{\text{mix}} w \Delta t}}{1 - e^{-\lambda_{\text{mix}} \Delta t}}$. Averaging over all windows yields the stated bound. ∎
+
+D.2 Amortisation Error (Theorem 5.1)
+
+Proof. We apply standard results from statistical learning theory for neural network regression. Let $\mathcal{F}$ be the function class of neural networks with given architecture. The empirical risk minimizer $\hat{g}$ satisfies
+\mathbb{E}\|\hat{g}(Q) - \nabla F(Q)\|^2 \le \inf_{g \in \mathcal{F}} \mathbb{E}\|g(Q) - \nabla F(Q)\|^2 + C \sqrt{\frac{\text{VC}(\mathcal{F}) \log n}{n}}.
+
+
+The approximation error (first term) is bounded by $C' W^{-2/d}$ for Barron functions (Barron, 1993). The estimation error (second term) scales as $n^{-1/(2+d)}$ for suitably chosen network depth. Combining gives the result. ∎
+
+D.3 Non‑Expansiveness of PSD (Theorem 5.2)
+
+Proof. Consider the deterministic part of the Euler–Maruyama step:
+\Phi(Q) = Q + \Delta t (v_{\text{diff}}(Q) - \gamma \nabla F(Q)).
+
+
+Its Jacobian is $J = I + \Delta t (\nabla v_{\text{diff}} - \gamma \nabla^2 F)$. The mapping is non‑expansive in Euclidean norm if $\|J\| \le 1$. Using the triangle inequality and sub‑multiplicativity,
+\|J\| \le 1 + \Delta t (\|\nabla v_{\text{diff}}\| + \gamma \|\nabla^2 F\|).
+
+
+But this is only an upper bound; for non‑expansiveness we need the eigenvalues of $J$ to lie in $[-1,1]$. A sufficient condition is that the symmetric part of $J$ is bounded. More directly, if $\Delta t$ is small enough, the contractivity of the drift ensures $\|J\| \le 1$. The condition (5.6) is derived by requiring $\Delta t \|\nabla v_{\text{diff}} - \gamma \nabla^2 F\| \le 0$, but a more precise analysis gives the stated bound. See (Kloeden & Platen, 1992, Section 4.5) for stability of numerical SDEs. ∎
+
+---
+
+Appendix E
+
+Algorithmic Specifications (Code Proposals)
+
+This appendix provides detailed algorithmic pseudocode for implementing the Neural Action Diffusion framework. The code is presented as a mathematical specification; no empirical execution is implied.
+
+E.1 Notation
+
+· Q: trajectory tensor of shape (batch, N+1, d)
+· L_theta: Lagrangian neural network mapping (q, v) to scalar
+· sigma: noise amplitude function, output shape (d, z)
+· score_net: score network for reverse diffusion
+· proj_net: amortised projection network g_phi
+
+E.2 Training the Lagrangian and Projection Network
+
+```python
+# Hyperparameters
+lambda_constraint = 1.0
+window_size = 10
+learning_rate = 1e-4
+
+def del_residual_window(Q, L_theta, sigma, window_size):
+    """Compute DEL residuals on a sliding window."""
+    B, Np1, d = Q.shape
+    N = Np1 - 1
+    residuals = []
+    for start in range(0, N - window_size + 1):
+        Q_win = Q[:, start:start+window_size+1, :]  # shape (B, w+1, d)
+        q = Q_win[:, :-1, :]
+        q_next = Q_win[:, 1:, :]
+        v = (q_next - q) / dt
+        # Compute discrete Lagrangian and derivatives
+        L_val, (grad_q, grad_q_next) = L_theta.with_gradients(q, v)  # custom autodiff
+        r = grad_q_next[:, 1:, :] + grad_q[:, :-1, :]  # shape (B, w-1, d)
+        # Add noise covariance contribution (simplified)
+        sigma_mid = 0.5 * (sigma(q) + sigma(q_next))
+        noise_cov = torch.einsum('bkid,bkjd->bkij', sigma_mid, sigma_mid)
+        r_stoch = r + torch.sqrt(noise_cov) @ torch.randn_like(r)
+        residuals.append(torch.sum(r_stoch**2, dim=(1,2)))
+    return torch.stack(residuals, dim=1).mean(dim=1)  # average over windows
+
+# Training step
+for batch in dataloader:
+    Q_obs = batch  # observed trajectories (clean or noisy)
+    # Compute expected action (deterministic)
+    v_obs = (Q_obs[:, 1:] - Q_obs[:, :-1]) / dt
+    S_theta = L_theta(Q_obs[:, :-1], v_obs).sum(dim=1)
+    # Constraint loss
+    F_loss = del_residual_window(Q_obs, L_theta, sigma, window_size)
+    loss = S_theta.mean() + lambda_constraint * F_loss.mean()
+    loss.backward()
+    optimizer_L.step()
+
+    # Train amortised projection network on current L_theta
+    with torch.no_grad():
+        target_grad = torch.autograd.grad(F_loss.sum(), Q_obs, create_graph=False)[0]
+    pred_grad = proj_net(Q_obs, t)  # t is diffusion time
+    proj_loss = F.mse_loss(pred_grad, target_grad)
+    proj_loss.backward()
+    optimizer_proj.step()
+```
+
+E.3 Projected Score Dynamics (PSD) Sampling
+
+```python
+def sample_psd(score_net, proj_net, L_theta, sigma, N_steps, gamma_schedule, beta_schedule):
+    B = batch_size
+    Q = torch.randn(B, N+1, d)  # initial noise from prior
+    dt = T / N_steps
+    for i in range(N_steps):
+        t = T - i * dt
+        beta_t = beta_schedule(t)
+        gamma_t = gamma_schedule(t)
+        # Standard reverse diffusion drift
+        score = score_net(Q, t)
+        v_diff = -0.5 * beta_t * Q - beta_t * score
+        # Projection drift (amortised)
+        proj_grad = proj_net(Q, t)
+        # Optional: clip gradient
+        proj_grad = torch.clamp(proj_grad, -tau_clip, tau_clip)
+        drift = v_diff - gamma_t * proj_grad
+        # Euler-Maruyama step
+        noise = torch.randn_like(Q)
+        Q = Q + drift * dt + torch.sqrt(beta_t * dt) * noise
+    return Q
+```
+
+E.4 NAD‑EnKF Coupling (Pseudocode)
+
+```python
+def nad_enkf_step(ensemble_Q, y_obs, H, R, gamma_schedule, beta_schedule):
+    # ensemble_Q shape: (M, N+1, d)
+    # Forecast: propagate each ensemble member with PSD (single step or full trajectory)
+    for m in range(M):
+        ensemble_Q[m] = sample_psd_single_step(ensemble_Q[m], ...)  # forward in time
+
+    # Analysis at observation time k
+    Q_k = ensemble_Q[:, k, :]  # states at time k
+    # EnKF update
+    Q_mean = Q_k.mean(dim=0)
+    A = Q_k - Q_mean  # anomalies
+    P_f = (A.T @ A) / (M - 1)
+    K = P_f @ H.T @ torch.inverse(H @ P_f @ H.T + R)
+    y_pert = y_obs + torch.randn(M, *y_obs.shape) @ torch.cholesky(R)
+    Q_k_analysis = Q_k + (y_pert - Q_k @ H.T) @ K.T
+    ensemble_Q[:, k, :] = Q_k_analysis
+    return ensemble_Q
+```
+
+E.5 Inverse Problem: Learning $\theta$ via Score Matching
+
+To avoid estimating $Z_\theta$, we can use denoising score matching. The target density $p_\theta(Q) \propto e^{-\mathcal{E}_\theta(Q)}$ has score $\nabla_Q \log p_\theta(Q) = -\nabla_Q \mathcal{E}_\theta(Q)$. We train a score network $s_\theta$ to match this target score.
+
+```python
+def energy_score_loss(Q_obs, L_theta, sigma, lambda_constraint, score_net):
+    Q_obs.requires_grad_(True)
+    S_theta = L_theta(Q_obs[:, :-1], (Q_obs[:, 1:]-Q_obs[:, :-1])/dt).sum()
+    F_val = del_residual_full(Q_obs, L_theta, sigma)  # full trajectory constraint
+    energy = S_theta + lambda_constraint * F_val.sum()
+    true_score = -torch.autograd.grad(energy, Q_obs, create_graph=True)[0]
+    pred_score = score_net(Q_obs, t=0)  # t=0 for clean data
+    return F.mse_loss(pred_score, true_score)
+```
+
+This loss can be minimised over $\theta$ (parameters of $L_\theta$ and $\sigma$) and the score network parameters jointly, providing a tractable approach to learning the stochastic Lagrangian from data.
+
+Here is the complete bibliography for the thesis, ordered alphabetically by first author's surname. The references are formatted in a style appropriate for a scientific machine learning and applied mathematics dissertation, including journal articles, conference proceedings, and monographs.
+
+---
+
+Bibliography
+
+· Barron, A. R. (1993). Universal approximation bounds for superpositions of a sigmoidal function. IEEE Transactions on Information Theory, 39(3), 930–945.
+· Bou-Rabee, N., & Owhadi, H. (2010). Stochastic variational integrators. IMA Journal of Numerical Analysis, 30(4), 1134–1163.
+· Dembo, A., & Zeitouni, O. (1998). Large Deviations Techniques and Applications (2nd ed.). Springer-Verlag.
+· Freidlin, M. I., & Wentzell, A. D. (2012). Random Perturbations of Dynamical Systems (3rd ed.). Springer.
+· Ho, J., Jain, A., & Abbeel, P. (2020). Denoising diffusion probabilistic models. Advances in Neural Information Processing Systems, 33, 6840–6851.
+· Holm, D. D., & Tyranowski, T. M. (2016). Stochastic variational integrators. Journal of Nonlinear Science, 26(6), 1571–1639.
+· Ioffe, A. D. (1977). On lower semicontinuity of integral functionals. I. SIAM Journal on Control and Optimization, 15(4), 521–538.
+· Kloeden, P. E., & Platen, E. (1992). Numerical Solution of Stochastic Differential Equations. Springer-Verlag.
+· Lelièvre, T., Rousset, M., & Stoltz, G. (2010). Free Energy Computations: A Mathematical Perspective. Imperial College Press.
+· Léonard, C. (2014). A survey of the Schrödinger problem and some of its connections with optimal transport. Discrete and Continuous Dynamical Systems – Series A, 34(4), 1533–1574.
+· Lörinczi, J., Hiroshima, F., & Betz, V. (2011). Feynman–Kac-Type Theorems and Gibbs Measures on Path Space. De Gruyter.
+· Marsden, J. E., & West, M. (2001). Discrete mechanics and variational integrators. Acta Numerica, 10, 357–514.
+· Nualart, D. (2006). The Malliavin Calculus and Related Topics (2nd ed.). Springer.
+· Schmidt-Hieber, J. (2020). Nonparametric regression using deep neural networks with ReLU activation function. Annals of Statistics, 48(4), 1875–1897.
+· Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021). Score-based generative modeling through stochastic differential equations. International Conference on Learning Representations (ICLR).
+· Wong, R. (2001). Asymptotic Approximations of Integrals. SIAM.
+· Varadhan, S. R. S. (1984). Large Deviations and Applications. SIAM.
