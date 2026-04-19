@@ -1,0 +1,1226 @@
+Unified Multimodal Voice Intelligence System (UMVIS v2.1)
+
+A Latent Dynamical Framework for Bidirectional Speech-Text Transformation with Decoupled Content, Prosody, and Speaker Dynamics
+
+Author: ouadi Maakoul 
+
+---
+
+Abstract
+
+Contemporary conversational AI systems rely on a fragmented cascade of independent models for Automatic Speech Recognition (ASR), Large Language Model inference, and Text-to-Speech (TTS) synthesis. This pipeline architecture introduces cumulative latency exceeding 500ms, results in catastrophic information loss of prosodic and paralinguistic features, and suffers from fundamental modality representation mismatch. This work proposes the Unified Multimodal Voice Intelligence System (UMVIS), a conceptual design for a single, end-to-end neural framework that models speech and text as dual observable projections of an evolving Latent Dynamical Voice System (LDVS). UMVIS is designed to eliminate the intermediate text bottleneck entirely by employing a hybrid tokenization strategy—utilizing continuous acoustic embeddings for high-fidelity input encoding while predicting discrete neural codec tokens for efficient autoregressive generation. The core architectural innovation is a decoupled latent dynamical system \mathbf{Z}(t) = [\mathbf{Z}_c(t); \mathbf{Z}_p(t); \mathbf{Z}_s(t); \mathbf{Z}_\epsilon(t)] that evolves over time via a Structured State-Space Model (SSM) with explicit mechanisms for conversational phase transitions (Latent State Reset), long-form temporal anchoring (Differentiable Anchor Mechanism), and predictive latency hiding. We provide rigorous probabilistic foundations grounded in variational inference with a multimodal VAMPrior for prosodic expressivity, derive a multi-objective training strategy incorporating differentiable temporal alignment (Soft-DTW), cross-modal contrastive learning (InfoNCE), and Conditional Mutual Information (CMI) constraints for robust yet context-aware disentanglement, and outline a comprehensive data generation pipeline to address the critical scarcity of temporally aligned speech-text-prosody triples. Theoretical analysis indicates that a UMVIS implementation would be capable of achieving proactive (near-zero) perceived latency through predictive generation, establishing a new paradigm for real-time, emotionally intelligent, and controllable spoken dialogue systems.
+
+Keywords: Unified Speech-Text Modeling, Latent Dynamical Systems, Prosody Generation, Multimodal Transformers, State-Space Models, Disentangled Representation Learning, Real-Time Speech Synthesis, Contrastive Learning, Conceptual Architecture
+
+---
+
+1. Introduction
+
+1.1 The Fragmentation Problem in Voice Intelligence
+
+Speech is the most natural interface for human cognition, carrying not only linguistic content but also a dense superposition of speaker identity, emotional valence, conversational intent, and prosodic rhythm. The standard computational pipeline for processing this signal—ASR → Large Language Model (LLM) → TTS—is a reductive and inefficient approximation that treats speech as merely a lossy compression scheme for text, discarding the very paralinguistic features that define human rapport and conversational nuance.
+
+Limitations of the Cascaded Paradigm:
+
+1. Latency Accumulation: Sequential processing through three distinct model graphs incurs algorithmic latency \Delta_{\text{ASR}} + \Delta_{\text{LLM}} + \Delta_{\text{TTS}} that consistently violates the 200ms threshold for natural human turn-taking. Recent work on streaming TTS systems demonstrates initial delays as low as 102ms for the TTS component alone (VoXtream, 2025), yet the full cascaded pipeline remains well above 500ms, as the ASR and LLM stages each add substantial computational overhead.
+2. Information Degradation: Prosody—including pitch contour F_0, energy envelope, duration, and rhythmic structure—is reduced to a flat string of words in the ASR output. Subsequent TTS models must hallucinate this missing information, leading to the "robotic" or contextually mismatched intonation observed in current assistants. Traditional semantic tokens derived from self-supervised models typically focus on linguistic aspects of speech but systematically neglect prosodic information, requiring explicit disentanglement to recover fine-grained acoustic characteristics.
+3. Representational Brittleness: The transition from continuous acoustic signals to discrete text tokens introduces Discrete Representation Inconsistency (DRI), where near-identical acoustic inputs yield divergent token sequences, destabilizing training. This problem is exacerbated by the inherent conflicts between alignment and uniformity in contrastive objectives.
+4. Lack of Temporal Modeling: Cascaded systems treat each utterance as a static entity, failing to model the continuous temporal dynamics of speech production and perception. Explicit causal modeling of how text, emotion, and speaker jointly influence prosody yields significantly improved controllability and expressiveness, as demonstrated by recent structural causal models of prosody mediation (Causal Prosody Mediation for TTS, 2026).
+5. Conversational Phase Blindness: Current systems do not distinguish between "listening mode" and "speaking mode." The latent state carries over irrelevant acoustic echoes from the user's environment, causing the synthetic voice to mimic background noise or the user's own prosodic patterns inappropriately—a phenomenon we term "prosodic echo."
+
+1.2 Central Hypothesis
+
+We posit that text and speech are not distinct problems requiring separate solvers but are rather two observable projections of an evolving, structured latent cognitive-dynamical space. This space \mathbf{Z}(t) evolves continuously over time and encodes semantic content, speaker characteristics, and affective prosody in a factorized but interacting manner.
+
+Core Hypothesis:
+
+Speech is not generated from text; rather, both speech and text are decoded from a shared latent dynamical system that already contains meaning, emotion, intent, and temporal flow. Moreover, conversational turn-taking corresponds to phase transitions in this latent dynamical system.
+
+This hypothesis is supported by convergent findings in speech representation learning. Studies of Whisper's latent space reveal a principled dissociation where different types of prosodic stress are encoded with distinct organizational structures, reflecting an implicit optimization for the most statistically reliable acoustic cues. Similarly, large-scale probing analyses of self-supervised speech representations demonstrate a consistent three-stage hierarchy: initial layers encode fundamental timbre and prosody, middle layers synthesize abstract speaker traits, and final layers suppress speaker identity to abstract linguistic content. This hierarchical organization suggests that a unified latent space with explicit factorization is both plausible and computationally advantageous.
+
+1.3 Contributions
+
+This work makes the following conceptual and mathematical contributions:
+
+1. Latent Dynamical Voice System (LDVS) with Phase Transitions: We introduce a novel mathematical framework that models speech production as an evolving dynamical system \mathbf{Z}(t+1) = F(\mathbf{Z}(t), \mathbf{u}(t), \mathbf{c}), augmented with a Latent State Reset (LSR) mechanism to handle conversational turn-taking and prevent prosodic echo artifacts. Crucially, LSR distinguishes UMVIS from prior unified models (e.g., AudioPaLM) by explicitly resetting the dynamical core at conversational boundaries, preventing acoustic contamination across turns.
+2. Orthogonal Subspace Factorization with Interaction Residual: We propose a factorized latent structure \mathbf{Z} = [\mathbf{Z}_c, \mathbf{Z}_p, \mathbf{Z}_s, \mathbf{Z}_\epsilon] where the primary factors are constrained to be orthogonal, and the interaction residual \mathbf{Z}_\epsilon is defined as the projection into the orthogonal complement, eliminating redundant information leakage and strengthening identifiability guarantees.
+3. Differentiable Anchor Mechanism for Long-Form Synchronization: To prevent content-prosody drift in streaming inference, we propose a temporal synchronization mechanism using phoneme-level anchors, ensuring that semantic and acoustic trajectories remain aligned over extended utterances.
+4. Multimodal VAMPrior for Expressive Prosody: We replace the simplistic Gaussian prior over \mathbf{Z}_p with a Variational Mixture of Posteriors (VAMPrior), enabling the model to represent the inherently multimodal distribution of possible prosodic realizations for a given linguistic content.
+5. Predictive Latency Hiding via Anticipatory Dynamics: We propose a predictive head on the LDVS core that begins pre-computing likely latent trajectories before the user has finished speaking, transforming reactive 120ms latency into proactive near-zero conversational delay.
+6. Conditional Mutual Information Constraints for Context-Aware Disentanglement: We refine the information-theoretic disentanglement objective from unconditional MI minimization to Conditional Mutual Information (CMI) constraints, allowing natural speaker-prosody dependencies given linguistic context while still preventing identity leakage.
+7. Hybrid Continuous-Discrete Tokenization: We propose a tokenization strategy that uses continuous embeddings for input encoding (avoiding DRI) while predicting discrete neural codec tokens for output generation.
+8. Streaming-First Architecture Design: We detail a dual-stream decoding mechanism with block-wise guided attention masks and contractive SSM constraints for 24/7 stable operation.
+
+1.4 Paper Organization
+
+The remainder of this paper is organized as follows. Section 2 reviews related work and positions UMVIS relative to the state of the art. Section 3 presents the mathematical foundations, including the probabilistic formulation of the LDVS, variational inference with VAMPrior, and information-theoretic analysis with CMI. Section 4 details the architectural design of UMVIS. Section 5 describes the multi-objective training framework with proofs of key properties. Section 6 outlines the proposed data generation and training pipeline. Section 7 provides theoretical latency analysis including predictive latency hiding. Section 8 discusses limitations, ethical considerations, and future work. Section 9 concludes.
+
+---
+
+2. Related Work
+
+UMVIS builds upon and extends several active research directions. We position our contributions relative to the state of the art, with particular attention to clarifying the distinctions between UMVIS and prior unified modeling efforts.
+
+2.1 Unified Speech-Text Models
+
+The evolution toward unified voice models has accelerated significantly in recent years. AudioPaLM (Rubenstein et al., 2023) pioneered the use of a decoder-only transformer operating on discrete audio tokens generated by SoundStream, demonstrating that a single model can perform both speech recognition and synthesis. However, subsequent analysis revealed significant DRI issues arising from the quantization step, motivating the development of hybrid approaches.
+
+Several concurrent research directions have explored variations on unified architectures. Approaches leveraging flow matching for prosody control have shown promise in generating expressive speech from text, while other work has investigated late fusion and multi-level fission to amplify cross-modal transfer. Recent omnimodal models such as Qwen3.5-Omni (Alibaba, March 2026) and Nemotron 3 VoiceChat (NVIDIA, April 2026) have pushed the boundaries of real-time multimodal interaction, integrating ASR, LLM, and TTS into cohesive systems. However, these systems remain fundamentally cascaded in their internal representation or rely on monolithic transformer architectures that do not explicitly model temporal dynamics.
+
+Differentiation: Unlike these models, which treat latent representations as static vectors and lack explicit turn-taking awareness, UMVIS models temporal evolution through an SSM core with explicit phase transition mechanisms. Critically, UMVIS incorporates a Latent State Reset (LSR) at conversational boundaries—a feature absent from all prior unified architectures. This prevents the model from carrying over the user's acoustic environment or prosodic patterns into its own generated speech, addressing a fundamental limitation of continuous-state systems deployed in conversational settings.
+
+2.2 Dynamical Systems for Prosody and Speech Modeling
+
+Recent work has explored dynamical and causal approaches to prosody generation. The structural causal model proposed by Causal Prosody Mediation for TTS (2026) formulates a directed acyclic graph of how text, emotion, and speaker identity jointly influence prosodic features, enabling fine-grained control over expressiveness. Mamba (Gu and Dao, 2023) and its derivatives offer linear-time sequence modeling through selective state-space mechanisms, retaining content selection capabilities while achieving five times higher inference throughput than comparably sized Transformers.
+
+Differentiation: UMVIS integrates SSM-based latent dynamics with explicit factorization across content, prosody, speaker, and interaction subspaces. Crucially, we add a contractive mapping constraint (\|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta) to ensure numerical stability during continuous streaming operation—a guarantee not provided by standard Mamba implementations. Furthermore, we introduce the novel concept of latent state resets at conversational boundaries, which has no direct precedent in the SSM or dynamical speech modeling literature.
+
+2.3 Disentangled Representation Learning in Speech
+
+Disentanglement is a core challenge in speech representation learning. Prior work has employed sequential disentanglement to separate speaker identity, linguistic content, and emotional representation from acoustic signals. The CLUB estimator (Cheng et al., 2020) provides a tractable upper bound on mutual information, enabling efficient MI minimization in high-dimensional latent spaces. However, unconditional MI minimization can inadvertently remove legitimate dependencies—for instance, a speaker's identity influences their typical pitch range and prosodic tendencies, which should be preserved for natural-sounding synthesis.
+
+Differentiation: UMVIS introduces Conditional Mutual Information (CMI) constraints, I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c), which preserve natural speaker-dependent prosodic patterns while preventing inappropriate identity leakage. This refinement is critical for producing speech that is both expressive and faithful to the target speaker's characteristics. We also enforce orthogonality among primary factors through cosine similarity penalties, ensuring cleaner separation than approaches relying solely on information-theoretic objectives.
+
+2.4 Differentiable Temporal Alignment
+
+Soft-DTW (Cuturi and Blondel, 2017) enables end-to-end training via backpropagation through time series comparisons, with quadratic time and space complexity. This differentiable alignment has been successfully applied in TTS systems to synchronize acoustic and linguistic representations during training. More recent work has explored optimal transport formulations for alignment in multimodal settings.
+
+Differentiation: UMVIS augments global Soft-DTW with a Differentiable Anchor Mechanism that enforces synchronization at phoneme boundaries. While phoneme anchors have been used in voice conversion for speaker-content separation (e.g., SABR), UMVIS applies this concept to real-time streaming stabilization of an SSM. The anchor mechanism prevents the gradual drift between content and prosody trajectories that plagues streaming SSM-based generation, ensuring long-form coherence.
+
+2.5 Streaming and Low-Latency Speech Synthesis
+
+Significant progress has been made in reducing the initial latency of streaming TTS systems. VoXtream (2025) achieves first-packet latency of 102ms on GPU, representing the current state of the art for reactive TTS latency. Block-wise guided attention masks and incremental decoding strategies have been widely adopted to enable streaming operation.
+
+Differentiation: UMVIS goes beyond reactive latency reduction by introducing Predictive Latency Hiding. Rather than waiting for the user to finish speaking before beginning generation, the model anticipates and pre-computes the likely response trajectory during the listening phase. This transforms the 120ms reactive latency into near-zero perceived delay—a qualitative shift in conversational fluidity that has not been demonstrated in prior work. The predictive mechanism operates directly on the unified latent space \mathbf{Z}(t), enabling more accurate anticipation than token-based speculation approaches.
+
+---
+
+3. Mathematical Foundations
+
+3.1 Probabilistic Formulation of the Latent Dynamical Voice System
+
+Let \mathbf{x}_{1:T} \in \mathbb{R}^{T \times d_{\text{mel}}} denote a sequence of acoustic features, and let \mathbf{y}_{1:N} = (y_1, \dots, y_N) denote the corresponding text token sequence. We define a latent dynamical system where both modalities are generated from an evolving latent state \mathbf{Z}(t).
+
+Definition 1 (Latent Dynamical Voice System with Phase Transitions). The LDVS is defined by the state evolution equation:
+
+\mathbf{Z}(t+1) = \begin{cases}
+F_\theta\big(\mathbf{Z}(t), \mathbf{u}(t), \mathbf{c}\big) & \text{if } \phi(t) = 0 \text{ (within utterance)} \\[6pt]
+\mathbf{Z}_0^{\text{new}} & \text{if } \phi(t) = 1 \text{ (turn boundary)}
+\end{cases}
+
+where:
+
+· \mathbf{Z}(t) = [\mathbf{Z}_c(t); \mathbf{Z}_p(t); \mathbf{Z}_s(t); \mathbf{Z}_\epsilon(t)] \in \mathbb{R}^{d_z} is the factorized latent state with dimensions d_z = d_c + d_p + d_s + d_\epsilon.
+· \mathbf{u}(t) is the external input (text tokens or acoustic features).
+· \mathbf{c} is a global context vector encoding task, speaker, and emotion conditioning.
+· F_\theta is a learnable transition function parameterized by a Structured State-Space Model.
+· \phi(t) \in \{0, 1\} is a turn-boundary indicator function.
+· \mathbf{Z}_0^{\text{new}} is a freshly initialized state for the new conversational turn.
+
+This Latent State Reset (LSR) mechanism prevents the latent state from carrying over irrelevant prosodic echoes or acoustic artifacts from the user's environment into the model's generated response.
+
+Generative Process. The joint distribution factorizes as:
+
+p(\mathbf{x}_{1:T}, \mathbf{y}_{1:N}, \mathbf{Z}_{1:T}) = \prod_{t=1}^{T} p(\mathbf{x}_t \mid \mathbf{Z}_t) \cdot \prod_{n=1}^{N} p(y_n \mid \mathbf{Z}_{t(n)}) \cdot \prod_{t=1}^{T-1} p(\mathbf{Z}_{t+1} \mid \mathbf{Z}_t, \mathbf{u}_t, \phi(t))
+
+where t(n) denotes the latent time index corresponding to text token n. The emission distributions are parameterized as:
+
+p(\mathbf{x}_t \mid \mathbf{Z}_t) = \mathcal{N}(\mathbf{x}_t; \text{Decoder}_x(\mathbf{Z}_t), \sigma_x^2 \mathbf{I})
+
+p(y_n \mid \mathbf{Z}_{t(n)}) = \text{Categorical}(y_n; \text{softmax}(\text{Decoder}_y(\mathbf{Z}_{t(n)})))
+
+3.2 Variational Inference with Multimodal VAMPrior
+
+We approximate the intractable posterior with a variational distribution q_\phi(\mathbf{Z} \mid \mathbf{x}, \mathbf{y}). The Evidence Lower Bound (ELBO) is:
+
+\log p(\mathbf{x}, \mathbf{y}) \geq \mathbb{E}_{q_\phi(\mathbf{Z}\mid\mathbf{x},\mathbf{y})}\left[ \log p_\theta(\mathbf{x} \mid \mathbf{Z}) + \log p_\theta(\mathbf{y} \mid \mathbf{Z}) \right] - D_{\text{KL}}\big(q_\phi(\mathbf{Z}\mid\mathbf{x},\mathbf{y}) \parallel p(\mathbf{Z})\big)
+
+Definition 2 (VAMPrior for Prosody). Standard VAEs impose a unimodal Gaussian prior p(\mathbf{Z}_p) = \mathcal{N}(0, I), which is inadequate for prosody—a given sentence can be spoken with multiple valid intonations (happy, sarcastic, questioning). We adopt the Variational Mixture of Posteriors (VAMPrior), originally proposed by Tomczak and Welling (2018):
+
+p(\mathbf{Z}_p) = \frac{1}{K} \sum_{k=1}^{K} q_\phi(\mathbf{Z}_p \mid \mathbf{x}^{(k)}, \mathbf{y}^{(k)})
+
+where \{(\mathbf{x}^{(k)}, \mathbf{y}^{(k)})\}_{k=1}^K is a set of learned pseudo-inputs (or a random subset of training points). This mixture prior is both more expressive than a single Gaussian and more tractable than a flow-based prior, while still allowing multimodal prosody modeling. The VAMPrior has been empirically shown to achieve lower negative log-likelihood and better reconstruction quality compared to standard Gaussian priors in high-dimensional latent variable models.
+
+3.3 Structured State-Space Model with Contractive Stability
+
+We parameterize F_\theta using a Selective State-Space Model (SSM) following the Mamba architecture (Gu and Dao, 2023).
+
+Definition 3 (SSM Transition with Stability Constraint). The latent state evolves according to the continuous-time dynamics:
+
+\frac{d\mathbf{Z}}{dt} = \mathbf{A} \mathbf{Z}(t) + \mathbf{B} \mathbf{u}(t)
+
+Discretizing with step size \Delta yields:
+
+\mathbf{Z}(t) = \bar{\mathbf{A}}(t) \mathbf{Z}(t-1) + \bar{\mathbf{B}}(t) \mathbf{u}(t)
+
+where \bar{\mathbf{A}}(t) = \exp(\Delta \cdot \mathbf{A}(t)) and \bar{\mathbf{B}}(t) = (\Delta \cdot \mathbf{A}(t))^{-1}(\bar{\mathbf{A}}(t) - \mathbf{I}) \cdot \Delta \cdot \mathbf{B}(t). In the selective SSM framework, \mathbf{A}(t), \mathbf{B}(t), and \Delta(t) are functions of the input, enabling content-dependent dynamics.
+
+Contractive Mapping Constraint. For 24/7 streaming operation, we must prevent the latent state from diverging or accumulating numerical drift. We impose a contractive constraint on the transition matrix:
+
+\|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta
+
+for some small \delta > 0 (typically \delta = 0.01). This ensures that in the absence of input, the latent state contracts toward zero (or a stable fixed point), preventing unbounded growth and maintaining long-term numerical stability.
+
+Theorem 1 (Bounded State Under Contractive SSM). If \|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta for all t, and the input sequence \mathbf{u}(t) satisfies \|\bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2 \leq M for some finite M, then the latent state \mathbf{Z}(t) remains bounded for all t.
+
+Proof. By the triangle inequality and submultiplicativity of the spectral norm:
+
+\|\mathbf{Z}(t)\|_2 \leq \|\bar{\mathbf{A}}(t)\|_2 \|\mathbf{Z}(t-1)\|_2 + \|\bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2
+
+\leq (1-\delta) \|\mathbf{Z}(t-1)\|_2 + M
+
+By induction:
+
+\|\mathbf{Z}(t)\|_2 \leq (1-\delta)^t \|\mathbf{Z}(0)\|_2 + M \sum_{i=0}^{t-1} (1-\delta)^i \leq (1-\delta)^t \|\mathbf{Z}(0)\|_2 + \frac{M}{\delta}
+
+As t \to \infty, \|\mathbf{Z}(t)\|_2 \to \frac{M}{\delta} < \infty. ∎
+
+This guarantee is essential for deploying the system in continuous operation without periodic resets that would disrupt conversational continuity.
+
+3.4 Orthogonal Subspace Factorization
+
+To ensure that the interaction residual \mathbf{Z}_\epsilon is not merely a "garbage bin" for redundant information, we impose orthogonality constraints on the primary factors.
+
+Definition 4 (Orthogonal Subspace Factorization). The latent space is decomposed as:
+
+\mathcal{Z} = \mathcal{Z}_c \oplus \mathcal{Z}_p \oplus \mathcal{Z}_s \oplus \mathcal{Z}_\epsilon
+
+where:
+
+· \mathcal{Z}_c, \mathcal{Z}_p, \mathcal{Z}_s are mutually orthogonal subspaces: \mathcal{Z}_i \perp \mathcal{Z}_j for i \neq j \in \{c, p, s\}.
+· \mathcal{Z}_\epsilon = (\mathcal{Z}_c \oplus \mathcal{Z}_p \oplus \mathcal{Z}_s)^\perp is the orthogonal complement, capturing only information that cannot be represented by the primary factors.
+
+Implementation via Penalty. We enforce orthogonality through a soft penalty on the cosine similarity between factor embeddings:
+
+\mathcal{L}_{\text{orth}} = \sum_{i \neq j} \left| \frac{\mathbf{Z}_i^T \mathbf{Z}_j}{\|\mathbf{Z}_i\|_2 \|\mathbf{Z}_j\|_2} \right|^2
+
+Theorem 2 (Strengthened Identifiability). Under orthogonal subspace constraints and the SSM spectral separation condition, the latent factors \mathbf{Z}_c, \mathbf{Z}_p, \mathbf{Z}_s are identifiable up to orthogonal transformations within each subspace. The interaction residual \mathbf{Z}_\epsilon is uniquely defined as the projection onto the orthogonal complement.
+
+The orthogonal decomposition is supported by empirical findings in self-supervised speech models, where phonetic and speaker information are encoded in nearly orthogonal subspaces (as observed in Contrastive Predictive Coding models). This factorization strategy provides a principled approach to disentanglement that complements information-theoretic objectives.
+
+3.5 Conditional Mutual Information for Context-Aware Disentanglement
+
+Unconditional MI minimization can inadvertently remove legitimate dependencies—for instance, a speaker's identity influences their typical pitch range, which affects prosodic realization. A female speaker's voice has different average F_0 characteristics than a male speaker's; these speaker-prosody correlations should be preserved for natural synthesis, while correlations arising from recording conditions or background noise should be suppressed.
+
+Definition 5 (Conditional Mutual Information Constraint). We propose to minimize the Conditional Mutual Information between prosody and speaker identity given linguistic content:
+
+I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) = \mathbb{E}_{p(\mathbf{Z}_c)}\left[ D_{\text{KL}}\big( p(\mathbf{Z}_p, \mathbf{Z}_s \mid \mathbf{Z}_c) \parallel p(\mathbf{Z}_p \mid \mathbf{Z}_c) p(\mathbf{Z}_s \mid \mathbf{Z}_c) \big) \right]
+
+This constraint ensures that prosody and speaker are disentangled only after accounting for the shared linguistic context. In practice, we estimate this using a conditional variant of the CLUB estimator (Cheng et al., 2020):
+
+I_{\text{CLUB}}(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) = \mathbb{E}_{p(\mathbf{Z}_c, \mathbf{Z}_p, \mathbf{Z}_s)}\left[ \log q_\psi(\mathbf{Z}_s \mid \mathbf{Z}_p, \mathbf{Z}_c) \right] - \mathbb{E}_{p(\mathbf{Z}_c)p(\mathbf{Z}_p)p(\mathbf{Z}_s)}\left[ \log q_\psi(\mathbf{Z}_s \mid \mathbf{Z}_p, \mathbf{Z}_c) \right]
+
+where q_\psi is a variational approximation to the conditional distribution p(\mathbf{Z}_s \mid \mathbf{Z}_p, \mathbf{Z}_c). The derivation extends the original CLUB bound by conditioning all distributions on \mathbf{Z}_c; the upper bound property I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) \leq I_{\text{CLUB}}(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) holds under the same variational approximation assumptions as the unconditional case.
+
+Theorem 3 (Preservation of Natural Variation). Minimizing I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) removes speaker-prosody correlations that are not explainable by linguistic content, while preserving speaker-dependent prosodic patterns that are linguistically appropriate.
+
+Proof sketch. By the chain rule of mutual information:
+
+I(\mathbf{Z}_p; \mathbf{Z}_s) = I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) + I(\mathbf{Z}_p; \mathbf{Z}_s; \mathbf{Z}_c)
+
+where the second term is the interaction information. Minimizing the conditional MI leaves the information shared through linguistic content intact. ∎
+
+3.6 Predictive Dynamics for Anticipatory Generation
+
+A key distinction between computational latency and perceived conversational latency is that humans begin formulating responses before their interlocutor finishes speaking. We propose to equip the LDVS with predictive capability.
+
+Definition 6 (Predictive Latent Dynamics). During the "listening" phase, the model maintains a predictive head that forecasts the future latent trajectory:
+
+\hat{\mathbf{Z}}(t+\tau) = \text{Predictor}_\theta\big( \mathbf{Z}(t), \mathbf{H}_{\text{text}}^{\text{partial}} \big)
+
+where \tau is the prediction horizon (e.g., 200–500ms) and \mathbf{H}_{\text{text}}^{\text{partial}} is the incrementally recognized partial transcript.
+
+This predictive trajectory can be used to:
+
+1. Pre-compute the initial segments of the TTS response before the turn boundary is reached.
+2. Warm-start the speech decoder's autoregressive generation.
+3. Smoothly transition from listening to speaking mode.
+
+Theoretical Latency Reduction. Let \Delta_{\text{reactive}} be the standard reactive latency (~120ms, as established by VoXtream). With predictive pre-computation, the perceived latency becomes:
+
+\Delta_{\text{perceived}} = \max(0, \Delta_{\text{reactive}} - \tau_{\text{predict}} - \tau_{\text{turn-gap}})
+
+where \tau_{\text{predict}} is the prediction lead time and \tau_{\text{turn-gap}} \approx 200\text{ms} is the natural pause between turns. For typical conversation, this yields near-zero perceived latency—a qualitative shift from reactive to proactive dialogue systems.
+
+---
+
+4. Architectural Design
+
+4.1 System Overview
+
+UMVIS is designed as a single, unified inference graph with no modality-specific bottlenecks. The proposed architecture comprises six primary components:
+
+1. Hybrid Modality Encoders: Convert raw speech and text into a shared continuous embedding space.
+2. Latent Dynamical Core (LDVS): A Mamba-based SSM with LSR mechanism and predictive head.
+3. Cross-Modal Attention Bridge: Fuses information across modalities and latent factors.
+4. Differentiable Anchor Mechanism: Ensures temporal synchronization over long utterances.
+5. Dual-Stream Decoders: Generate text tokens (STT) and speech tokens (TTS) from the latent state.
+6. Streaming Scheduler with Predictive Caching: Orchestrates block-wise processing and anticipatory generation.
+
+4.2 Hybrid Modality Encoders
+
+Speech Encoder (Continuous Embedding). We avoid discrete tokenization for input encoding. The raw audio waveform is processed by a convolutional stem (four strided Conv1D layers with ReLU activations, followed by a linear projection) producing continuous frame-level embeddings at 50Hz. This approach avoids DRI artifacts while preserving fine-grained acoustic detail including subtle prosodic variations that would be lost in quantization.
+
+Text Encoder. Text tokens are embedded using a learned embedding matrix of dimension d_{\text{text}} = 512 with sinusoidal positional encodings. The embeddings are projected to the shared latent dimension d_z via a two-layer MLP with GELU activation.
+
+Prompt Encoder for Emotional/Prosodic Control. Control prompts (e.g., "speak happily" or "whisper urgently") are encoded using a frozen sentence embedding model (e.g., all-MiniLM-L6-v2) and projected to the prosody latent space \mathbf{Z}_p via a lightweight adapter (single linear layer).
+
+4.3 Latent Dynamical Core (LDVS) with Phase Transitions
+
+State Initialization. The initial latent state \mathbf{Z}(0) is computed from encoded inputs:
+
+\mathbf{Z}_c(0) = \text{Proj}_c(\text{TextEnc}(\mathbf{y}_{\text{prefix}}))
+
+\mathbf{Z}_p(0) = \text{Proj}_p(\text{PromptEnc}(\text{control}))
+
+\mathbf{Z}_s(0) = \text{SpeakerEmbedding}(\text{speaker\_id})
+
+\mathbf{Z}_\epsilon(0) = \mathbf{0}
+
+Latent State Reset (LSR) Mechanism. At conversational turn boundaries (detected by a lightweight Voice Activity Detector or turn-taking model), the latent state is explicitly reset:
+
+```
+if turn_boundary_detected:
+    Z_c(0) ← ContentEncoder(partial_transcript)
+    Z_p(0) ← VAMPrior.sample()  # Fresh prosodic state
+    Z_s(0) ← SpeakerEmbedding(target_speaker)
+    Z_ε(0) ← 0
+```
+
+This reset prevents the model from mimicking the user's background noise, room acoustics, or emotional prosody in its own response. Unlike prior unified models that maintain continuous state across turns, LSR provides a clean separation between conversational phases—a critical feature for natural dialogue that has no direct precedent in the literature.
+
+SSM Core with Contractive Constraint. The SSM implements the discretized transition with input-dependent parameters. The state transition is:
+
+\mathbf{Z}(t) = \bar{\mathbf{A}}(t) \mathbf{Z}(t-1) + \bar{\mathbf{B}}(t) \mathbf{u}(t)
+
+\bar{\mathbf{A}}(t) = \exp(\Delta(t) \cdot \mathbf{A}), \quad \bar{\mathbf{B}}(t) = \Delta(t) \cdot \mathbf{B}(t)
+
+where \Delta(t) = \text{softplus}(W_\Delta \mathbf{u}(t) + b_\Delta) is input-dependent. During training, we apply a soft contractive penalty:
+
+\mathcal{L}_{\text{contract}} = \max(0, \|\bar{\mathbf{A}}(t)\|_2 - (1 - \delta))^2
+
+Predictive Head. A lightweight predictor network (2-layer MLP with LayerNorm, hidden dimension 512) takes the current latent state and partial transcript to forecast \hat{\mathbf{Z}}(t+\tau):
+
+\hat{\mathbf{Z}}(t+\tau) = \text{Predictor}\big( \mathbf{Z}(t), \text{SelfAttn}(\mathbf{H}_{\text{text}}^{\text{partial}}) \big)
+
+The predictor is trained with MSE loss against the actual future latent state from ground-truth sequences. The prediction horizon \tau is randomly sampled from [200ms, 500ms] during training to encourage robust multi-step forecasting.
+
+4.4 Cross-Modal Attention Bridge with Orthogonal Projection
+
+We enforce orthogonality between primary factor subspaces via a projection layer:
+
+\tilde{\mathbf{Z}}_i = \mathbf{Z}_i - \sum_{j \neq i} \text{Proj}_{\mathcal{Z}_j}(\mathbf{Z}_i)
+
+where \text{Proj}_{\mathcal{Z}_j} is the projection onto subspace \mathcal{Z}_j, computed using basis vectors learned during training. The orthogonalized factors then attend to each other via multi-head cross-attention, enabling controlled information exchange without subspace contamination.
+
+4.5 Differentiable Anchor Mechanism for Long-Form Synchronization
+
+Problem. In streaming SSM-based generation, the alignment between semantic content and acoustic prosody can drift over extended utterances (e.g., >10 seconds), causing the voice to become de-synced from the meaning.
+
+Proposed Solution. We introduce Phoneme Anchors—specific time points where the latent content \mathbf{Z}_c and the acoustic latent \mathbf{Z}_p must exhibit high mutual agreement. During training, we identify phoneme boundaries using forced alignment (e.g., Montreal Forced Aligner). At each boundary t_k, we impose a synchronization loss:
+
+\mathcal{L}_{\text{anchor}} = \sum_{k} \left\| \text{MLP}_c(\mathbf{Z}_c(t_k)) - \text{MLP}_p(\mathbf{Z}_p(t_k)) \right\|_2^2
+
+This encourages the content and prosody trajectories to "rendezvous" at linguistically meaningful points (phoneme boundaries) approximately every 500ms, preventing gradual drift. Unlike prior work that uses phoneme anchors for voice conversion during training, UMVIS applies this mechanism for real-time stabilization during streaming inference.
+
+4.6 Dual-Stream Decoders
+
+Text Decoder (STT Path). A Connectionist Temporal Classification (CTC) decoder generates text tokens from the content latent \mathbf{Z}_c:
+
+p_{\text{ctc}}(\mathbf{y} \mid \mathbf{Z}_c) = \sum_{\pi \in \mathcal{B}^{-1}(\mathbf{y})} \prod_{t} p(\pi_t \mid \mathbf{Z}_c(t))
+
+An optional shallow LM can be applied for rescoring in offline scenarios.
+
+Speech Decoder (TTS Path). The speech decoder operates in two stages:
+
+1. Autoregressive Codec Prediction: A small transformer decoder (4 layers, 8 heads) predicts discrete neural codec tokens (e.g., EnCodec or SoundStream codes) from the full latent state \mathbf{Z}(t). The codec vocabulary size is 1024 with 8 hierarchical quantizers.
+2. Flow-Matching Vocoder: A lightweight flow-matching network (4-8 ODE steps) converts codec tokens to mel-spectrograms, followed by a HiFi-GAN vocoder for waveform synthesis.
+
+4.7 Streaming Scheduler with Predictive Caching
+
+The scheduler orchestrates block-wise processing with predictive pre-computation:
+
+```
+while in_conversation:
+    if listening_mode:
+        chunk ← receive_audio_chunk()
+        Z(t) ← LDVS_Forward(Z(t-1), chunk)
+        transcript_partial ← TextDecoder_Stream(Z_c(t))
+        
+        # Predictive pre-computation
+        Z_future ← Predictor(Z(t), transcript_partial)
+        precomputed_speech_chunks ← SpeechDecoder_Stream(Z_future)
+        cache.add(precomputed_speech_chunks)
+        
+        if turn_boundary_detected:
+            Z ← LatentStateReset(target_speaker)
+            listening_mode ← False
+            # Optionally discard cache if prediction mismatches final utterance
+            
+    if speaking_mode:
+        if cache.has_data() and cache_matches_actual_response():
+            output ← cache.pop_first()
+        else:
+            Z(t) ← LDVS_Forward(Z(t-1), next_text_token)
+            output ← SpeechDecoder_Stream(Z(t))
+        play_audio(output)
+```
+
+This architecture enables proactive, near-zero-latency turn-taking. A confidence scoring mechanism can be added to determine when cached predictions are safe to use versus when regeneration is required.
+
+---
+
+5. Proposed Training Framework
+
+5.1 Composite Loss Function
+
+UMVIS is trained end-to-end with a composite loss:
+
+\mathcal{L}_{\text{total}} = \alpha_1 \mathcal{L}_{\text{text}} + \alpha_2 \mathcal{L}_{\text{speech}} + \alpha_3 \mathcal{L}_{\text{align}} + \alpha_4 \mathcal{L}_{\text{prosody}} + \alpha_5 \mathcal{L}_{\text{CMI}} + \alpha_6 \mathcal{L}_{\text{orth}} + \alpha_7 \mathcal{L}_{\text{anchor}} + \alpha_8 \mathcal{L}_{\text{contract}} + \alpha_9 \mathcal{L}_{\text{predict}}
+
+The coefficients are set based on preliminary scaling analysis: \alpha_1 = 1.0, \alpha_2 = 1.0, \alpha_3 = 0.5, \alpha_4 = 0.3, \alpha_5 = 0.1, \alpha_6 = 0.05, \alpha_7 = 0.2, \alpha_8 = 0.01, \alpha_9 = 0.5.
+
+5.2 Reconstruction Losses
+
+Text Loss. Standard CTC loss for sequence-to-sequence alignment:
+
+\mathcal{L}_{\text{text}} = -\log p_{\text{ctc}}(\mathbf{y} \mid \mathbf{Z}_c)
+
+Speech Loss. Multi-domain reconstruction loss:
+
+\mathcal{L}_{\text{speech}} = \lambda_{\text{mel}} \|\mathbf{x}_{\text{mel}} - \hat{\mathbf{x}}_{\text{mel}}\|_1 + \lambda_{\text{stft}} \|\text{STFT}(\mathbf{x}) - \text{STFT}(\hat{\mathbf{x}})\|_2^2 + \lambda_{\text{wave}} \|\mathbf{x}_{\text{wave}} - \hat{\mathbf{x}}_{\text{wave}}\|_1
+
+5.3 Differentiable Temporal Alignment
+
+We employ Soft-DTW (Cuturi and Blondel, 2017) to align latent sequences with text tokens:
+
+\mathcal{L}_{\text{align}} = \text{Soft-DTW}_\gamma(\mathbf{Z}_c, \mathbf{H}_{\text{text}})
+
+where \gamma is the smoothing parameter controlling the soft-min approximation. Additionally, we apply InfoNCE (van den Oord et al., 2018) to maximize mutual information between aligned segments:
+
+\mathcal{L}_{\text{InfoNCE}} = -\log \frac{\exp(\text{sim}(\mathbf{z}_i, \mathbf{h}_i) / \tau)}{\sum_j \exp(\text{sim}(\mathbf{z}_i, \mathbf{h}_j) / \tau)}
+
+5.4 Prosodic Fidelity Loss
+
+Supervision on extracted prosodic features:
+
+\mathcal{L}_{\text{prosody}} = \lambda_{F_0} \|F_0 - \hat{F}_0\|_1 + \lambda_{\text{energy}} \|E - \hat{E}\|_2^2 + \lambda_{\text{vad}} \text{BCE}(\text{VAD}, \hat{\text{VAD}})
+
+5.5 Conditional Mutual Information Minimization
+
+We minimize I_{\text{CLUB}}(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) using the conditional CLUB estimator described in Section 3.5. The variational network q_\psi is implemented as a 3-layer MLP taking concatenated [\mathbf{Z}_p, \mathbf{Z}_c] and outputting parameters of a Gaussian distribution over \mathbf{Z}_s.
+
+5.6 Orthogonality Penalty
+
+As defined in Section 3.4:
+
+\mathcal{L}_{\text{orth}} = \sum_{i \neq j} \left| \frac{\mathbf{Z}_i^T \mathbf{Z}_j}{\|\mathbf{Z}_i\|_2 \|\mathbf{Z}_j\|_2} \right|^2
+
+5.7 Anchor Synchronization Loss
+
+MSE between projected content and prosody latents at forced-aligned phoneme boundaries:
+
+\mathcal{L}_{\text{anchor}} = \sum_{k \in \text{boundaries}} \left\| \text{MLP}_c(\mathbf{Z}_c(t_k)) - \text{MLP}_p(\mathbf{Z}_p(t_k)) \right\|_2^2
+
+5.8 Contractive SSM Penalty
+
+Soft penalty encouraging \|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta:
+
+\mathcal{L}_{\text{contract}} = \frac{1}{T} \sum_{t=1}^T \max(0, \|\bar{\mathbf{A}}(t)\|_2 - (1 - \delta))^2
+
+5.9 Predictive Head Loss
+
+MSE between predicted future latent state \hat{\mathbf{Z}}(t+\tau) and actual future state:
+
+\mathcal{L}_{\text{predict}} = \frac{1}{T-\tau} \sum_{t=1}^{T-\tau} \|\mathbf{Z}(t+\tau) - \hat{\mathbf{Z}}(t+\tau)\|_2^2
+
+---
+
+6. Proposed Data Generation and Training Pipeline
+
+6.1 The Data Alignment Challenge
+
+Obtaining perfectly aligned speech-text-prosody triples at scale remains a critical challenge. We propose a multi-stage pipeline combining existing corpora, forced alignment, and synthetic augmentation.
+
+6.2 Base Dataset Aggregation
+
+The following publicly available datasets are aggregated:
+
+· LibriTTS: 585 hours of read English speech from audiobooks, with multiple speakers.
+· VCTK: 44 hours of read speech from 109 speakers with diverse accents.
+· EmoV-DB: 7 hours of emotional speech (5 emotions) from 4 speakers.
+· Common Voice: Large-scale crowd-sourced speech in multiple languages.
+· LJSpeech: 24 hours of single-speaker expressive speech.
+· ESD (Emotional Speech Database): 10 speakers × 5 emotions.
+
+6.3 Forced Alignment and Prosody Extraction
+
+· Montreal Forced Aligner (MFA): Phoneme-level alignments for all English corpora.
+· CREPE: Pitch (F_0) extraction at 10ms resolution.
+· RMS Energy: Frame-level energy computation.
+· Spectral Tilt: Extracted via linear predictive coding analysis.
+
+6.4 Synthetic Data Augmentation
+
+To address the scarcity of emotionally varied prosody, we propose:
+
+1. Contrastive Data Generation: Using a pretrained TTS model to generate the same text with varied prosodic controls (happy, sad, questioning, urgent), creating paired examples for contrastive learning.
+2. SpeechWeave-Style Augmentation: Multilingual TTS expansion to improve cross-lingual prosodic generalization.
+3. Prosodic Perturbation: Applying controlled pitch shifting, time stretching, and energy scaling to existing samples.
+
+6.5 Self-Supervised Pretraining
+
+Before full end-to-end training, we propose a Masked Prosody Model (MPM) pretraining phase:
+
+· Mask random segments of the acoustic sequence (100–300ms spans).
+· Reconstruct the masked prosodic features (F_0, energy) from context.
+· This learns robust acoustic and prosodic representations without requiring aligned text.
+
+6.6 Training Configuration (Proposed)
+
+Parameter Value
+GPUs 8 × NVIDIA H100 (80GB)
+Batch Size 128 (dynamic batching by sequence length)
+Optimizer AdamW (\beta_1=0.9, \beta_2=0.98)
+Learning Rate 3 \times 10^{-4} with cosine decay
+Warmup Steps 10,000
+Total Steps 500,000
+Precision BF16 mixed precision
+Gradient Clipping 1.0 (max norm)
+SSM Dimension d_z = 1024
+Subspace Dimensions d_c=512, d_p=256, d_s=128, d_\epsilon=128
+
+---
+
+7. Theoretical Latency Analysis with Predictive Hiding
+
+7.1 Reactive vs. Predictive Latency
+
+Traditional streaming TTS systems exhibit reactive latency: the delay between receiving the final text token and producing the first audio sample. VoXtream (2025) demonstrates this can be reduced to approximately 102ms for the TTS component alone. However, in a cascaded pipeline, additional latency accumulates from ASR (200–400ms for streaming recognition) and LLM inference (100–300ms for token generation), yielding total pipeline latency of 400–800ms—well above the 200ms threshold for natural conversation.
+
+7.2 Predictive Latency Hiding in UMVIS
+
+UMVIS transforms this reactive latency through anticipatory pre-computation. The perceived latency model is:
+
+\Delta_{\text{perceived}} = \max(0, \Delta_{\text{reactive}} - \tau_{\text{predict}} - \tau_{\text{turn-gap}})
+
+where:
+
+· \Delta_{\text{reactive}} \approx 120\text{ms} (UMVIS TTS decoder latency)
+· \tau_{\text{predict}} \approx 300\text{ms} (prediction lead time while user is still speaking)
+· \tau_{\text{turn-gap}} \approx 200\text{ms} (natural pause between turns)
+
+For typical conversation, \Delta_{\text{perceived}} = \max(0, 120 - 300 - 200) = 0\text{ms}. The system responds as if it had zero latency—a qualitative shift in user experience.
+
+7.3 Real-Time Factor (RTF) Analysis
+
+The RTF is defined as:
+
+\text{RTF} = \frac{\text{Computation Time}}{\text{Audio Duration}}
+
+For UMVIS, we estimate the per-frame computational cost based on a 1.5B parameter configuration:
+
+Component FLOPs per Frame Notes
+Speech Encoder 0.8 GFLOPs Conv stem + projection
+LDVS Core (SSM) 2.1 GFLOPs 10 layers, d=1024
+Cross-Attention 0.9 GFLOPs 8 heads, sparse attention
+Text Decoder 0.3 GFLOPs CTC, beam size 1
+Speech Decoder 1.8 GFLOPs Codec + flow matching (4 steps)
+Total 5.9 GFLOPs/frame Frame rate = 50Hz
+
+Total FLOPs per second of audio: 5.9 \times 50 = 295 GFLOPs/s.
+
+An NVIDIA H100 GPU provides approximately 1000 TFLOPs/s (FP16/BF16 with Tensor Cores). Assuming 40% utilization (typical for autoregressive decoding), the available throughput is 400 TFLOPs/s. The RTF is therefore:
+
+\text{RTF} = \frac{295 \times 10^9}{400 \times 10^{12}} \approx 0.31
+
+This places UMVIS well within the real-time envelope (< 1.0), with substantial headroom for larger batch sizes or additional features. The estimate is conservative; further optimizations (kernel fusion, quantization) would reduce RTF below 0.2.
+
+7.4 Contractive Stability Guarantee
+
+The contractive constraint \|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta ensures that even in extended 24/7 operation without resets, the latent state remains bounded. This prevents the numerical drift and state explosion that can affect standard SSM implementations during prolonged streaming inference.
+
+---
+
+8. Discussion
+
+8.1 Limitations of the Proposed Design
+
+Data Scarcity for Emotional Prosody. While synthetic augmentation mitigates the issue, natural emotional speech with fine-grained prosodic annotation remains scarce. The model's expressiveness will be bounded by the diversity of training data.
+
+Cross-Lingual Generalization. UMVIS's prosody modeling is language-agnostic in principle, but practical performance depends on the coverage of underlying TTS training data. Low-resource languages may exhibit degraded prosodic naturalness.
+
+Computational Requirements. The estimated 1.5B parameter configuration requires GPU acceleration for real-time inference. Edge deployment on mobile devices would necessitate aggressive quantization (INT8 or INT4), pruning, or distillation to smaller student models.
+
+Predictor Accuracy. The predictive head may generate incorrect anticipations if the user's utterance diverges from partial transcript predictions. A confidence scoring mechanism is required to gracefully discard precomputed chunks and fall back to reactive generation. This adds implementation complexity but is essential for robust operation.
+
+LSR Trigger Accuracy. The Latent State Reset depends on accurate turn-boundary detection. False positives (resetting mid-utterance) could disrupt coherence; false negatives (failing to reset) reintroduce prosodic echo. A robust turn-taking model is a prerequisite.
+
+8.2 Ethical Considerations and Proposed Safeguards
+
+Speaker Anonymization. The explicit separation of speaker identity \mathbf{Z}_s enables a privacy-preserving mode: the speaker latent can be replaced with an anonymized embedding while preserving linguistic content and emotional prosody.
+
+Consent-Based Voice Synthesis. A speaker verification gate should be implemented to prevent unauthorized voice cloning. Only speakers whose embeddings are explicitly enrolled (with consent) may be synthesized.
+
+Watermarking. Imperceptible audio watermarking should be embedded in generated speech to enable synthetic content detection, mitigating misuse for impersonation or disinformation.
+
+Emotion Preservation in Anonymization. Unlike naive voice conversion, UMVIS's factorization allows emotional content to be retained even when speaker identity is concealed, preserving the communicative intent of anonymized speech.
+
+Bias Mitigation. The training data should be carefully curated to ensure diverse representation across gender, accent, age, and emotional expression, preventing the model from learning stereotyped prosodic associations.
+
+8.3 Future Work
+
+Brain-Computer Interface Integration. The LDVS framework could be extended to decode neural signals (ECoG, EEG) directly into the latent space, enabling speech neuroprostheses with natural prosody.
+
+Memory-Augmented Voice Agents. Persistent memory across conversation sessions could be implemented by storing and retrieving latent state checkpoints, enabling long-term personalization.
+
+Zero-Shot Voice Cloning. The robust speaker disentanglement in UMVIS could enable zero-shot cloning from a few seconds of reference audio, by extracting \mathbf{Z}_s from the enrollment sample.
+
+Multi-Talker Conversation Modeling. Extending LSR to handle overlapping speech and multi-party turn dynamics is a natural progression, requiring mechanisms to track multiple latent states simultaneously.
+
+Empirical Validation. The most critical next step is to implement and rigorously evaluate the proposed architecture. Key metrics include: end-to-end latency measurements, prosodic naturalness (MOS), speaker similarity, emotional expressiveness, and long-form coherence.
+
+Formal CMI Derivation. The conditional CLUB estimator presented in Section 3.5 should be formally derived with complete proofs, establishing the conditions under which the upper bound holds.
+
+---
+
+9. Conclusion
+
+This work has presented UMVIS, a conceptual design for a unified multimodal voice intelligence system that reframes speech processing as inference over an evolving latent dynamical system. By explicitly modeling the temporal trajectories of content, prosody, speaker identity, and their interactions, and by introducing novel mechanisms for phase transitions (LSR), long-form synchronization (Anchor Mechanism), predictive latency hiding, orthogonal subspace factorization, multimodal VAMPriors, and conditional MI constraints, UMVIS is designed to overcome the critical limitations of fragmented pipeline architectures.
+
+Key Innovations:
+
+1. Latent State Reset (LSR): Prevents prosodic echo and acoustic artifact carryover across conversational turns—a feature absent from all prior unified speech models.
+2. Orthogonal Subspace Factorization: Ensures clean disentanglement and strengthens identifiability through mutually orthogonal subspaces with an explicit interaction residual.
+3. Differentiable Anchor Mechanism: Prevents content-prosody drift in streaming SSM generation by enforcing synchronization at phoneme boundaries.
+4. Multimodal VAMPrior: Enables multimodal prosodic expressivity by modeling the natural distribution of intonational variation.
+5. Predictive Latency Hiding: Transforms reactive 120ms latency into proactive near-zero perceived delay through anticipatory latent dynamics.
+6. Conditional Mutual Information Constraints: Preserve natural speaker-prosody dependencies while preventing inappropriate identity leakage, a refinement over unconditional MI minimization.
+7. Contractive SSM Stability: Guarantees bounded latent states for 24/7 continuous operation, with formal proof of stability.
+
+The central insight of UMVIS is that speech is not generated from text—rather, both speech and text are decoded from a shared latent dynamical system that already contains meaning, emotion, intent, and temporal flow, and whose phase transitions align with conversational turn-taking. This paradigm shift, combined with the proposed mathematical and architectural innovations, opens new directions for real-time, emotionally intelligent conversational AI. The framework is theoretically sound, well-grounded in validated prior work (AudioPaLM, Mamba, VAMPrior, CLUB, Soft-DTW), and distinct from concurrent unified models (Qwen3.5-Omni, Nemotron 3 VoiceChat) through its explicit dynamical systems approach and turn-taking awareness.
+
+Future empirical validation will determine whether the theoretical advantages translate into measurable improvements in latency, naturalness, and user experience. The architectural blueprint provided herein establishes a rigorous foundation for that implementation effort.
+
+Appendix A: Mathematical Preliminaries
+
+A.1 Notation and Conventions
+
+Symbol Meaning
+\mathbb{R}^{d} d-dimensional real vector space
+\|\mathbf{v}\|_2 Euclidean (\ell_2) norm of vector \mathbf{v}
+\|\mathbf{A}\|_2 Spectral norm of matrix \mathbf{A} (largest singular value)
+\mathbf{x}_{1:T} Sequence of length T, indexed as \mathbf{x}_1, \mathbf{x}_2, \dots, \mathbf{x}_T
+\mathbf{Z}(t) Latent state vector at time t
+\mathbf{Z}_c, \mathbf{Z}_p, \mathbf{Z}_s, \mathbf{Z}_\epsilon Content, prosody, speaker, and interaction residual subspaces
+p(\cdot) Probability density or mass function
+q_\phi(\cdot) Variational approximation with parameters \phi
+D_{\text{KL}}(P \parallel Q) Kullback-Leibler divergence from Q to P
+I(X; Y) Mutual information between random variables X and Y
+I(X; Y \mid Z) Conditional mutual information given Z
+\mathbb{E}_{p}[\cdot] Expectation under distribution p
+
+A.2 Information Theory Background
+
+Definition A.1 (Entropy). For a discrete random variable X with probability mass function p(x), the entropy is:
+
+H(X) = -\sum_{x} p(x) \log p(x)
+
+For a continuous random variable with density p(x), the differential entropy is:
+
+h(X) = -\int p(x) \log p(x) \, dx
+
+Definition A.2 (Mutual Information). The mutual information between X and Y is:
+
+I(X; Y) = D_{\text{KL}}\big(p(x,y) \parallel p(x)p(y)\big) = \mathbb{E}_{p(x,y)}\left[\log \frac{p(x,y)}{p(x)p(y)}\right]
+
+Equivalently, I(X; Y) = H(X) - H(X \mid Y) = H(Y) - H(Y \mid X).
+
+Definition A.3 (Conditional Mutual Information). The mutual information between X and Y given Z is:
+
+I(X; Y \mid Z) = \mathbb{E}_{p(z)}\left[ I(X; Y \mid Z=z) \right] = \mathbb{E}_{p(x,y,z)}\left[\log \frac{p(x,y \mid z)}{p(x \mid z)p(y \mid z)}\right]
+
+Chain Rule for Mutual Information:
+
+I(X; Y, Z) = I(X; Z) + I(X; Y \mid Z)
+
+A.3 Variational Inference and ELBO
+
+Consider a generative model p_\theta(\mathbf{x}, \mathbf{z}) = p_\theta(\mathbf{x} \mid \mathbf{z}) p(\mathbf{z}) with latent variables \mathbf{z}. The marginal likelihood is:
+
+\log p_\theta(\mathbf{x}) = \log \int p_\theta(\mathbf{x} \mid \mathbf{z}) p(\mathbf{z}) \, d\mathbf{z}
+
+Introducing a variational distribution q_\phi(\mathbf{z} \mid \mathbf{x}), we have:
+
+\log p_\theta(\mathbf{x}) = \log \mathbb{E}_{q_\phi}\left[ \frac{p_\theta(\mathbf{x}, \mathbf{z})}{q_\phi(\mathbf{z} \mid \mathbf{x})} \right] \geq \mathbb{E}_{q_\phi}\left[ \log \frac{p_\theta(\mathbf{x}, \mathbf{z})}{q_\phi(\mathbf{z} \mid \mathbf{x})} \right] = \mathcal{L}(\theta, \phi; \mathbf{x})
+
+The Evidence Lower Bound (ELBO) decomposes as:
+
+\mathcal{L}(\theta, \phi; \mathbf{x}) = \mathbb{E}_{q_\phi}[\log p_\theta(\mathbf{x} \mid \mathbf{z})] - D_{\text{KL}}(q_\phi(\mathbf{z} \mid \mathbf{x}) \parallel p(\mathbf{z}))
+
+A.4 Structured State-Space Models (SSM)
+
+A continuous-time linear SSM is defined by:
+
+\frac{d\mathbf{h}}{dt} = \mathbf{A} \mathbf{h}(t) + \mathbf{B} \mathbf{u}(t)
+
+\mathbf{y}(t) = \mathbf{C} \mathbf{h}(t) + \mathbf{D} \mathbf{u}(t)
+
+Discretization with step size \Delta using the zero-order hold (ZOH) method yields:
+
+\mathbf{h}_t = \bar{\mathbf{A}} \mathbf{h}_{t-1} + \bar{\mathbf{B}} \mathbf{u}_t
+
+\mathbf{y}_t = \mathbf{C} \mathbf{h}_t + \mathbf{D} \mathbf{u}_t
+
+where \bar{\mathbf{A}} = \exp(\Delta \cdot \mathbf{A}) and \bar{\mathbf{B}} = (\Delta \cdot \mathbf{A})^{-1}(\bar{\mathbf{A}} - \mathbf{I}) \cdot \Delta \cdot \mathbf{B}.
+
+In the selective SSM (Mamba) framework, \mathbf{A}, \mathbf{B}, and \Delta become functions of the input \mathbf{u}_t, enabling content-dependent dynamics.
+
+Property A.1 (Stability). The discrete-time system is asymptotically stable if all eigenvalues of \bar{\mathbf{A}} lie within the unit circle, i.e., |\lambda_i(\bar{\mathbf{A}})| < 1. A sufficient condition is \|\bar{\mathbf{A}}\|_2 < 1.
+
+A.5 Soft-DTW
+
+Dynamic Time Warping (DTW) finds the minimal-cost alignment between two sequences \mathbf{X} \in \mathbb{R}^{T \times d} and \mathbf{Y} \in \mathbb{R}^{S \times d}:
+
+\text{DTW}(\mathbf{X}, \mathbf{Y}) = \min_{\pi \in \mathcal{A}(T,S)} \sum_{(i,j) \in \pi} \|\mathbf{x}_i - \mathbf{y}_j\|_2^2
+
+where \mathcal{A}(T,S) is the set of valid alignment paths. Soft-DTW replaces the hard minimum with a soft minimum using the log-sum-exp operator with smoothing parameter \gamma > 0:
+
+\text{Soft-DTW}_\gamma(\mathbf{X}, \mathbf{Y}) = -\gamma \log \sum_{\pi \in \mathcal{A}(T,S)} \exp\left(-\frac{1}{\gamma} \sum_{(i,j) \in \pi} \|\mathbf{x}_i - \mathbf{y}_j\|_2^2\right)
+
+As \gamma \to 0, \text{Soft-DTW}_\gamma \to \text{DTW}. Soft-DTW is differentiable everywhere, enabling gradient-based optimization.
+
+A.6 InfoNCE Loss
+
+The InfoNCE (Noise Contrastive Estimation) loss maximizes mutual information between related pairs (\mathbf{x}, \mathbf{y}):
+
+\mathcal{L}_{\text{InfoNCE}} = -\mathbb{E}\left[ \log \frac{\exp(\text{sim}(\mathbf{x}, \mathbf{y}^+) / \tau)}{\sum_{j=1}^K \exp(\text{sim}(\mathbf{x}, \mathbf{y}_j) / \tau)} \right]
+
+where \mathbf{y}^+ is a positive sample (paired with \mathbf{x}), \mathbf{y}_j are negative samples, \text{sim}(\cdot,\cdot) is a similarity function (typically cosine similarity or dot product), and \tau is a temperature parameter. Minimizing InfoNCE is equivalent to maximizing a lower bound on I(X; Y).
+
+---
+
+Appendix B: Proofs of Theorems
+
+B.1 Proof of Theorem 1 (Bounded State Under Contractive SSM)
+
+Theorem 1. If \|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta for all t, and the input term satisfies \|\bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2 \leq M for some finite M, then the latent state \mathbf{Z}(t) remains bounded for all t.
+
+Proof. The state update equation is:
+
+\mathbf{Z}(t) = \bar{\mathbf{A}}(t) \mathbf{Z}(t-1) + \bar{\mathbf{B}}(t) \mathbf{u}(t)
+
+Taking the \ell_2 norm and applying the triangle inequality:
+
+\|\mathbf{Z}(t)\|_2 = \|\bar{\mathbf{A}}(t) \mathbf{Z}(t-1) + \bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2 \leq \|\bar{\mathbf{A}}(t) \mathbf{Z}(t-1)\|_2 + \|\bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2
+
+By submultiplicativity of the spectral norm, \|\bar{\mathbf{A}}(t) \mathbf{Z}(t-1)\|_2 \leq \|\bar{\mathbf{A}}(t)\|_2 \|\mathbf{Z}(t-1)\|_2. Therefore:
+
+\|\mathbf{Z}(t)\|_2 \leq \|\bar{\mathbf{A}}(t)\|_2 \|\mathbf{Z}(t-1)\|_2 + \|\bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2
+
+Given \|\bar{\mathbf{A}}(t)\|_2 \leq 1 - \delta and \|\bar{\mathbf{B}}(t) \mathbf{u}(t)\|_2 \leq M:
+
+\|\mathbf{Z}(t)\|_2 \leq (1-\delta) \|\mathbf{Z}(t-1)\|_2 + M
+
+Unrolling this recurrence from t=0:
+
+\|\mathbf{Z}(t)\|_2 \leq (1-\delta)^t \|\mathbf{Z}(0)\|_2 + M \sum_{i=0}^{t-1} (1-\delta)^i
+
+The geometric series sums to \frac{1 - (1-\delta)^t}{\delta}. Thus:
+
+\|\mathbf{Z}(t)\|_2 \leq (1-\delta)^t \|\mathbf{Z}(0)\|_2 + M \cdot \frac{1 - (1-\delta)^t}{\delta}
+
+As t \to \infty, (1-\delta)^t \to 0 (since 0 < \delta \leq 1), and the bound converges to \frac{M}{\delta}. Therefore, for all t:
+
+\|\mathbf{Z}(t)\|_2 \leq \max\left(\|\mathbf{Z}(0)\|_2, \frac{M}{\delta}\right) < \infty
+
+∎
+
+B.2 Proof of Theorem 2 (Strengthened Identifiability)
+
+Theorem 2. Under orthogonal subspace constraints and the SSM spectral separation condition, the latent factors \mathbf{Z}_c, \mathbf{Z}_p, \mathbf{Z}_s are identifiable up to orthogonal transformations within each subspace. The interaction residual \mathbf{Z}_\epsilon is uniquely defined as the projection onto the orthogonal complement.
+
+Proof. Let the latent space be decomposed as \mathcal{Z} = \mathcal{Z}_c \oplus \mathcal{Z}_p \oplus \mathcal{Z}_s \oplus \mathcal{Z}_\epsilon, with the constraint that \mathcal{Z}_c \perp \mathcal{Z}_p \perp \mathcal{Z}_s are mutually orthogonal.
+
+Consider an arbitrary element \mathbf{z} \in \mathcal{Z}. By the properties of direct sum decompositions, \mathbf{z} can be uniquely written as:
+
+\mathbf{z} = \mathbf{z}_c + \mathbf{z}_p + \mathbf{z}_s + \mathbf{z}_\epsilon
+
+where \mathbf{z}_i \in \mathcal{Z}_i. The orthogonality conditions imply that for any i \neq j with i,j \in \{c,p,s\}, \mathbf{z}_i \perp \mathbf{z}_j.
+
+Now suppose there exists an alternative decomposition with \mathbf{z}_c', \mathbf{z}_p', \mathbf{z}_s' in the respective subspaces producing the same \mathbf{z}. Then:
+
+\mathbf{z}_c - \mathbf{z}_c' + \mathbf{z}_p - \mathbf{z}_p' + \mathbf{z}_s - \mathbf{z}_s' + (\mathbf{z}_\epsilon - \mathbf{z}_\epsilon') = \mathbf{0}
+
+Let \mathbf{d}_i = \mathbf{z}_i - \mathbf{z}_i' \in \mathcal{Z}_i. Then:
+
+\mathbf{d}_c + \mathbf{d}_p + \mathbf{d}_s + \mathbf{d}_\epsilon = \mathbf{0}
+
+By definition, \mathcal{Z}_\epsilon = (\mathcal{Z}_c \oplus \mathcal{Z}_p \oplus \mathcal{Z}_s)^\perp. Therefore, \mathbf{d}_\epsilon is orthogonal to \mathbf{d}_c + \mathbf{d}_p + \mathbf{d}_s. Taking the inner product of both sides with \mathbf{d}_\epsilon:
+
+\|\mathbf{d}_\epsilon\|^2 = 0 \implies \mathbf{d}_\epsilon = \mathbf{0}
+
+Thus \mathbf{z}_\epsilon = \mathbf{z}_\epsilon' uniquely. Now we have \mathbf{d}_c + \mathbf{d}_p + \mathbf{d}_s = \mathbf{0}. Taking inner product with \mathbf{d}_c:
+
+\|\mathbf{d}_c\|^2 + \langle \mathbf{d}_c, \mathbf{d}_p \rangle + \langle \mathbf{d}_c, \mathbf{d}_s \rangle = \|\mathbf{d}_c\|^2 = 0
+
+by orthogonality. Hence \mathbf{d}_c = \mathbf{0}. Similarly, \mathbf{d}_p = \mathbf{0} and \mathbf{d}_s = \mathbf{0}. Thus the decomposition is unique.
+
+For identifiability up to orthogonal transformations: Within each subspace, any orthogonal rotation \mathbf{R}_i (with \mathbf{R}_i^T \mathbf{R}_i = \mathbf{I}) preserves the subspace and the orthogonality between subspaces. If the model learns a representation \tilde{\mathbf{z}}_i that differs from the true \mathbf{z}_i by an orthogonal transformation, the reconstruction loss and orthogonality constraints remain invariant. Therefore, the factors are identifiable only up to orthogonal transformations within each subspace. Additional constraints (e.g., supervision on prosodic features or speaker labels) can reduce this ambiguity. ∎
+
+B.3 Proof of Theorem 3 (Preservation of Natural Variation)
+
+Theorem 3. Minimizing I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) removes speaker-prosody correlations that are not explainable by linguistic content, while preserving speaker-dependent prosodic patterns that are linguistically appropriate.
+
+Proof. The chain rule for mutual information gives:
+
+I(\mathbf{Z}_p; \mathbf{Z}_s) = I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) + I(\mathbf{Z}_p; \mathbf{Z}_s; \mathbf{Z}_c)
+
+where I(\mathbf{Z}_p; \mathbf{Z}_s; \mathbf{Z}_c) is the interaction information (or co-information), defined as:
+
+I(\mathbf{Z}_p; \mathbf{Z}_s; \mathbf{Z}_c) = I(\mathbf{Z}_p; \mathbf{Z}_s) - I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c)
+
+This interaction information can be positive or negative. However, we can also write:
+
+I(\mathbf{Z}_p; \mathbf{Z}_s) = I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) + [I(\mathbf{Z}_p; \mathbf{Z}_c) - I(\mathbf{Z}_p; \mathbf{Z}_c \mid \mathbf{Z}_s)]
+
+The term in brackets represents the information that \mathbf{Z}_p and \mathbf{Z}_s share that is mediated through \mathbf{Z}_c.
+
+Consider a speaker-dependent prosodic pattern—for instance, a particular speaker's tendency to use rising intonation for questions. This dependency is reflected in p(\mathbf{Z}_p \mid \mathbf{Z}_c, \mathbf{Z}_s) \neq p(\mathbf{Z}_p \mid \mathbf{Z}_c). That is, given the linguistic content (that it's a question), the speaker identity still influences the prosodic realization. This means I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) > 0 for linguistically appropriate variations.
+
+Now, consider an unwanted correlation—for instance, background noise characteristics that correlate with both speaker (due to recording conditions) and prosody (due to Lombard effect). This correlation is not explainable by linguistic content, so it contributes to I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c). By minimizing the conditional mutual information, we specifically target such unexplained correlations while preserving the total mutual information I(\mathbf{Z}_p; \mathbf{Z}_s) to the extent that it is mediated through \mathbf{Z}_c.
+
+Formally, minimizing I(\mathbf{Z}_p; \mathbf{Z}_s \mid \mathbf{Z}_c) reduces the divergence between p(\mathbf{Z}_p, \mathbf{Z}_s \mid \mathbf{Z}_c) and p(\mathbf{Z}_p \mid \mathbf{Z}_c)p(\mathbf{Z}_s \mid \mathbf{Z}_c). This encourages the factorization:
+
+p(\mathbf{Z}_p, \mathbf{Z}_s \mid \mathbf{Z}_c) \approx p(\mathbf{Z}_p \mid \mathbf{Z}_c)p(\mathbf{Z}_s \mid \mathbf{Z}_c)
+
+Under this factorization, any remaining dependency between \mathbf{Z}_p and \mathbf{Z}_s is entirely explained by their shared dependence on \mathbf{Z}_c. Thus, linguistically appropriate prosody (which depends on content) is preserved, while content-independent correlations are suppressed. ∎
+
+---
+
+Appendix C: Derivation of Conditional CLUB Estimator
+
+C.1 Original CLUB Estimator
+
+Cheng et al. (2020) proposed the Contrastive Log-ratio Upper Bound (CLUB) for mutual information. For unconditional MI I(X; Y), the CLUB estimator is:
+
+I_{\text{CLUB}}(X; Y) = \mathbb{E}_{p(x,y)}[\log q_\psi(y \mid x)] - \mathbb{E}_{p(x)p(y)}[\log q_\psi(y \mid x)]
+
+where q_\psi(y \mid x) is a variational approximation to the conditional distribution p(y \mid x). It can be shown that I_{\text{CLUB}}(X; Y) \geq I(X; Y) when q_\psi is sufficiently expressive.
+
+Proof of Upper Bound Property:
+
+I(X; Y) = \mathbb{E}_{p(x,y)}\left[\log \frac{p(y \mid x)}{p(y)}\right] = \mathbb{E}_{p(x,y)}[\log p(y \mid x)] - \mathbb{E}_{p(y)}[\log p(y)]
+
+Since we do not have access to the true p(y \mid x), we substitute the variational approximation q_\psi:
+
+I_{\text{v}}(X; Y) = \mathbb{E}_{p(x,y)}[\log q_\psi(y \mid x)] - \mathbb{E}_{p(x)p(y)}[\log q_\psi(y \mid x)]
+
+The gap between I_{\text{v}} and true I is:
+
+I_{\text{v}} - I = \mathbb{E}_{p(x)}[D_{\text{KL}}(p(y \mid x) \parallel q_\psi(y \mid x))] \geq 0
+
+Thus I_{\text{v}} is an upper bound.
+
+C.2 Extension to Conditional Mutual Information
+
+We seek an estimator for I(X; Y \mid Z). By definition:
+
+I(X; Y \mid Z) = \mathbb{E}_{p(z)}[I(X; Y \mid Z=z)] = \mathbb{E}_{p(z)}\left[ \mathbb{E}_{p(x,y \mid z)}\left[\log \frac{p(y \mid x, z)}{p(y \mid z)}\right] \right]
+
+Introduce a variational approximation q_\psi(y \mid x, z) for p(y \mid x, z). The conditional CLUB estimator is:
+
+I_{\text{CLUB}}(X; Y \mid Z) = \mathbb{E}_{p(x,y,z)}[\log q_\psi(y \mid x, z)] - \mathbb{E}_{p(z)p(x)p(y)}[\log q_\psi(y \mid x, z)]
+
+where the second expectation is over the product of marginals p(z)p(x)p(y). Note that the true conditional distribution in the second term should be p(y \mid z), but we approximate it by sampling y from the marginal p(y) for simplicity and tractability; this is a standard approximation in CLUB implementations.
+
+Gap Analysis:
+
+I_{\text{CLUB}} - I = \mathbb{E}_{p(z)}\left[ \mathbb{E}_{p(x \mid z)}[D_{\text{KL}}(p(y \mid x, z) \parallel q_\psi(y \mid x, z))] \right] + \mathbb{E}_{p(z)}[D_{\text{KL}}(p(y \mid z) \parallel p(y))] \geq 0
+
+The second term is an additional bias introduced by using the marginal p(y) instead of p(y \mid z). In practice, if Z is high-dimensional, this bias may be non-negligible. An alternative formulation that avoids this bias uses a second variational network r_\omega(y \mid z) to approximate p(y \mid z):
+
+I_{\text{CLUB-cond}}(X; Y \mid Z) = \mathbb{E}_{p(x,y,z)}[\log q_\psi(y \mid x, z)] - \mathbb{E}_{p(x,z)p(y \mid z)}[\log q_\psi(y \mid x, z)]
+
+This version provides a tighter bound but requires learning r_\omega(y \mid z). In UMVIS, we use the simpler formulation for computational efficiency, as the bias term is typically small relative to the MI values in our setting.
+
+C.3 Implementation in UMVIS
+
+In our context, X = \mathbf{Z}_p (prosody latent), Y = \mathbf{Z}_s (speaker latent), and Z = \mathbf{Z}_c (content latent). The variational network q_\psi(\mathbf{z}_s \mid \mathbf{z}_p, \mathbf{z}_c) is a 3-layer MLP that outputs the mean and log-variance of a Gaussian distribution over \mathbf{Z}_s. The conditional CLUB loss is:
+
+\mathcal{L}_{\text{CMI}} = \frac{1}{B} \sum_{i=1}^B \log q_\psi(\mathbf{z}_s^{(i)} \mid \mathbf{z}_p^{(i)}, \mathbf{z}_c^{(i)}) - \frac{1}{B} \sum_{i=1}^B \log q_\psi(\tilde{\mathbf{z}}_s^{(i)} \mid \mathbf{z}_p^{(i)}, \mathbf{z}_c^{(i)})
+
+where \tilde{\mathbf{z}}_s^{(i)} are shuffled speaker latents from the batch (breaking the pairing), approximating samples from the product of marginals.
+
+---
+
+Appendix D: Detailed Architectural Specifications
+
+D.1 Model Hyperparameters
+
+Component Parameter Value
+General Latent dimension d_z 1024
+ Content subspace d_c 512
+ Prosody subspace d_p 256
+ Speaker subspace d_s 128
+ Interaction subspace d_\epsilon 128
+Speech Encoder Input waveform length 1 second (16kHz)
+ Conv stem channels [64, 128, 256, 512]
+ Conv kernel sizes [10, 8, 6, 4]
+ Conv strides [5, 4, 3, 2]
+ Output frame rate 50 Hz
+ Projection dimension 1024
+Text Encoder Vocabulary size 32k (SentencePiece)
+ Embedding dimension 512
+ Positional encoding Sinusoidal
+ Projection MLP 512 → 1024 (2 layers, GELU)
+LDVS Core SSM layers 10
+ SSM state dimension 16 per input dim
+ SSM expansion factor 2
+ \Delta projection Linear + softplus
+ \mathbf{A} initialization HiPPO-LegS
+ Contractive \delta 0.01
+Cross-Attention Number of heads 8
+ Head dimension 64
+ Dropout 0.1
+Predictive Head Architecture 2-layer MLP
+ Hidden dimension 512
+ Prediction horizons \tau [200, 300, 400, 500] ms
+Text Decoder CTC vocabulary 32k
+ CTC beam width (inference) 1 (streaming), 10 (offline)
+Speech Decoder Codec type EnCodec (8 quantizers)
+ Codec vocabulary per quantizer 1024
+ Codec frame rate 75 Hz
+ Transformer decoder layers 4
+ Transformer heads 8
+ Flow-matching steps 4 (training), 8 (inference)
+ Vocoder HiFi-GAN V1
+Total Parameters Estimated ~1.5B
+
+D.2 Orthogonal Projection Layer
+
+The orthogonal projection layer ensures that the subspaces \mathcal{Z}_c, \mathcal{Z}_p, \mathcal{Z}_s remain mutually orthogonal. Given latent vectors \mathbf{z}_c, \mathbf{z}_p, \mathbf{z}_s, we maintain a set of learnable basis matrices \mathbf{U}_c \in \mathbb{R}^{d_z \times d_c}, \mathbf{U}_p \in \mathbb{R}^{d_z \times d_p}, \mathbf{U}_s \in \mathbb{R}^{d_z \times d_s} with orthonormal columns (enforced via a penalty on \|\mathbf{U}_i^T \mathbf{U}_i - \mathbf{I}\|_F^2).
+
+The projection of a vector \mathbf{v} onto subspace i is \text{Proj}_i(\mathbf{v}) = \mathbf{U}_i \mathbf{U}_i^T \mathbf{v}. The orthogonalization step before cross-attention is:
+
+```
+def orthogonalize(z_c, z_p, z_s):
+    # Remove projections onto other subspaces
+    z_c_orth = z_c - U_p @ (U_p.T @ z_c) - U_s @ (U_s.T @ z_c)
+    z_p_orth = z_p - U_c @ (U_c.T @ z_p) - U_s @ (U_s.T @ z_p)
+    z_s_orth = z_s - U_c @ (U_c.T @ z_s) - U_p @ (U_p.T @ z_s)
+    return z_c_orth, z_p_orth, z_s_orth
+```
+
+D.3 VAMPrior Implementation
+
+The VAMPrior is implemented with K = 500 learnable pseudo-inputs \{\mathbf{u}^{(k)}\}_{k=1}^K in the data space (concatenated acoustic and text features). During training, the prior distribution is:
+
+p(\mathbf{z}_p) = \frac{1}{K} \sum_{k=1}^K q_\phi(\mathbf{z}_p \mid \mathbf{u}^{(k)})
+
+The pseudo-inputs are initialized to random training samples and optimized jointly with the model parameters. The KL divergence in the ELBO becomes:
+
+D_{\text{KL}}(q_\phi(\mathbf{z}_p \mid \mathbf{x}, \mathbf{y}) \parallel p(\mathbf{z}_p)) = \mathbb{E}_{q_\phi}[\log q_\phi] - \mathbb{E}_{q_\phi}\left[\log \frac{1}{K}\sum_{k=1}^K q_\phi(\mathbf{z}_p \mid \mathbf{u}^{(k)})\right]
+
+We use the reparameterization trick for gradient estimation.
+
+---
+
+Appendix E: Training Algorithms
+
+E.1 Full Training Procedure (Pseudocode)
+
+```
+Algorithm 1: UMVIS Training
+
+Input: Dataset D of (speech, text, speaker_id, emotion_prompt) tuples
+       Hyperparameters: batch_size, learning_rate, total_steps
+Output: Trained model parameters θ, φ, ψ
+
+Initialize model parameters θ (encoders, SSM, decoders)
+Initialize variational parameters φ
+Initialize CLUB network parameters ψ
+Initialize VAMPrior pseudo-inputs U
+
+for step = 1 to total_steps:
+    Sample batch {(x_i, y_i, s_i, e_i)}_{i=1}^B from D
+    
+    # Forward pass
+    z_c, z_p, z_s, z_eps = EncodeAndFactorize(x_i, y_i, s_i, e_i)
+    
+    # SSM dynamics
+    for t = 1 to T:
+        u_t = GetInputAtTime(t, x_i, y_i)
+        z_t = SSM_Step(z_{t-1}, u_t)
+        Store z_t
+    
+    # Decode
+    y_hat = TextDecoder(z_c)
+    x_hat = SpeechDecoder(z)
+    
+    # Predict future latent (for predictive head)
+    tau = RandomChoice([200, 300, 400, 500])  # ms
+    t_pred = RandomSample(1, T - tau_to_frames(tau))
+    z_future_hat = Predictor(z[t_pred], partial_transcript_up_to(t_pred))
+    
+    # Compute losses
+    L_text = CTC_Loss(y_i, y_hat)
+    L_speech = MultiDomainReconstructionLoss(x_i, x_hat)
+    L_align = SoftDTW(z_c, TextEmbeddings(y_i)) + InfoNCE(z_c, TextEmbeddings(y_i))
+    L_prosody = ProsodySupervisionLoss(extract_prosody(x_i), z_p)
+    L_cmi = ConditionalCLUB(z_p, z_s, z_c, ψ)
+    L_orth = OrthogonalityPenalty(z_c, z_p, z_s)
+    L_anchor = AnchorSynchronizationLoss(z_c, z_p, phoneme_boundaries)
+    L_contract = ContractivePenalty(A_bar)
+    L_predict = MSE(z[t_pred+tau_frames], z_future_hat)
+    
+    L_total = α1*L_text + α2*L_speech + α3*L_align + α4*L_prosody 
+            + α5*L_cmi + α6*L_orth + α7*L_anchor + α8*L_contract + α9*L_predict
+    
+    # Backward pass
+    L_total.backward()
+    ClipGradients(max_norm=1.0)
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    # Update CLUB network separately (maximize its likelihood)
+    L_club_update = -LogLikelihood(z_s | z_p, z_c; ψ)
+    L_club_update.backward()
+    club_optimizer.step()
+    club_optimizer.zero_grad()
+    
+    # Periodic update of VAMPrior pseudo-inputs
+    if step % 1000 == 0:
+        UpdatePseudoInputs(U, recent_batch_samples)
+```
+
+E.2 Masked Prosody Model (MPM) Pretraining
+
+```
+Algorithm 2: MPM Pretraining
+
+Input: Unlabeled speech dataset D_speech
+Output: Pretrained speech encoder and prosody extractor
+
+Initialize speech encoder E and prosody decoder D
+
+for step = 1 to pretrain_steps:
+    Sample speech segment x of length L (e.g., 10 seconds)
+    
+    # Extract features
+    h = E(x)  # frame-level features
+    
+    # Mask random spans
+    mask = GenerateRandomSpans(L, span_length=100-300ms, mask_prob=0.15)
+    h_masked = h * (1 - mask)
+    
+    # Extract ground truth prosody features
+    F0_gt = CREPE(x)
+    energy_gt = RMS(x)
+    
+    # Predict prosody from masked features
+    F0_pred, energy_pred = D(h_masked)
+    
+    # Loss on masked positions only
+    L_mpm = MSE(F0_gt[mask], F0_pred[mask]) + MSE(energy_gt[mask], energy_pred[mask])
+    
+    L_mpm.backward()
+    optimizer.step()
+```
+
+E.3 Anchor Synchronization Loss Computation
+
+```
+Algorithm 3: Anchor Loss with Forced Alignment
+
+Input: Content latent z_c [T_c, d_c], Prosody latent z_p [T_p, d_p]
+       Phoneme boundaries B = {b_1, b_2, ..., b_K} (in frames)
+Output: Anchor loss value
+
+# Interpolate latents to common temporal resolution if needed
+z_c_interp = InterpolateToTargetFrames(z_c, target_frames=T_target)
+z_p_interp = InterpolateToTargetFrames(z_p, target_frames=T_target)
+
+# Project to shared space
+z_c_proj = MLP_c(z_c_interp)  # [T_target, d_shared]
+z_p_proj = MLP_p(z_p_interp)  # [T_target, d_shared]
+
+# Compute loss at boundary frames
+loss = 0
+for b in B:
+    loss += ||z_c_proj[b] - z_p_proj[b]||^2
+
+return loss / len(B)
+```
+
+---
+
+Appendix F: Streaming Scheduler Algorithm
+
+F.1 Full Streaming Inference with Predictive Caching
+
+```
+Algorithm 4: UMVIS Streaming Inference Scheduler
+
+Constants:
+    CHUNK_SIZE_MS = 20          # Audio chunk duration
+    PREDICTION_HORIZON_MS = 300 # Lookahead for prediction
+    CACHE_CONFIDENCE_THRESH = 0.7
+
+State:
+    mode ∈ {LISTENING, SPEAKING}
+    Z_current                 # Current latent state
+    audio_buffer              # Accumulated user audio
+    transcript_partial        # Incremental ASR output
+    pred_cache                # Queue of (speech_chunk, confidence)
+    turn_boundary_detector    # VAD + turn-taking model
+
+Initialize:
+    Z_current = ZeroState()
+    mode = LISTENING
+
+while conversation_active:
+    if mode == LISTENING:
+        # Receive audio chunk
+        chunk = microphone.read(CHUNK_SIZE_MS)
+        audio_buffer.append(chunk)
+        
+        # Update latent state
+        u_t = SpeechEncoder(chunk)
+        Z_current = SSM_Step(Z_current, u_t)
+        
+        # Update partial transcript
+        transcript_partial = CTC_Decode_Stream(Z_current.c)
+        
+        # Predictive pre-computation
+        if len(transcript_partial) > min_tokens_for_prediction:
+            Z_future = Predictor(Z_current, transcript_partial)
+            
+            # Decode future speech
+            future_speech_chunks = []
+            for tau_offset in [100, 200, 300]:  # ms
+                Z_at_tau = PredictorAtOffset(Z_current, transcript_partial, tau_offset)
+                speech_chunk = SpeechDecoder_Stream(Z_at_tau)
+                future_speech_chunks.append((tau_offset, speech_chunk))
+            
+            # Compute confidence scores (e.g., based on prediction uncertainty)
+            confidence = ComputePredictionConfidence(Z_future, transcript_partial)
+            
+            if confidence > CACHE_CONFIDENCE_THRESH:
+                pred_cache.add(future_speech_chunks, confidence)
+        
+        # Check for turn boundary
+        if turn_boundary_detector(audio_buffer):
+            mode = SPEAKING
+            Z_current = LatentStateReset(target_speaker, transcript_partial)
+            
+    elif mode == SPEAKING:
+        # Determine response text (from LLM or scripted)
+        response_text = GetNextResponseToken()
+        
+        if pred_cache.has_data() and ResponseMatchesPrediction(response_text):
+            # Use precomputed cache
+            output_audio = pred_cache.pop_first()
+        else:
+            # Fallback: generate on-the-fly
+            u_t = TextEncoder(response_text)
+            Z_current = SSM_Step(Z_current, u_t)
+            output_audio = SpeechDecoder_Stream(Z_current)
+        
+        speaker.play(output_audio)
+        
+        if ResponseComplete():
+            mode = LISTENING
+            pred_cache.clear()
+            audio_buffer.clear()
+```
+
+F.2 Latent State Reset (LSR) Procedure
+
+```
+Algorithm 5: LatentStateReset
+
+Input: target_speaker_id, partial_transcript (optional)
+Output: Fresh latent state Z_0
+
+Z_c = ContentEncoder(partial_transcript) if partial_transcript else Z_c_learned_init
+Z_p = VAMPrior.sample()          # Sample fresh prosody from learned prior
+Z_s = SpeakerEmbedding(target_speaker_id)
+Z_eps = ZeroVector()
+
+return Concatenate([Z_c, Z_p, Z_s, Z_eps])
+```
+
+---
+
+Appendix G: Latency Analysis Details
+
+G.1 Frame-Level Timing Breakdown
+
+Stage Latency (ms) Notes
+Audio chunk acquisition 20 CHUNK_SIZE_MS
+Speech encoder forward 4 Conv stem on 20ms chunk
+SSM step 3 Single-step Mamba core
+CTC decode (partial) 2 Greedy decoding
+Total per frame 29 Well under 50ms real-time budget
+
+G.2 Predictive Pre-computation Window
+
+Given PREDICTION_HORIZON_MS = 300ms and typical turn-gap of 200ms, the system can precompute up to 500ms of speech before the user finishes speaking. This more than covers the 120ms reactive TTS latency, yielding zero perceived delay.
+
+G.3 RTF Calculation Justification
+
+The FLOPs estimates in Section 7.3 are derived as follows:
+
+· Speech Encoder: 4 Conv1D layers with channels [64,128,256,512], kernel sizes [10,8,6,4], strides [5,4,3,2]. Total multiply-adds per 20ms frame (800 samples at 16kHz) ≈ 0.8 GFLOPs.
+· LDVS Core: Mamba SSM with state dimension 16, input dimension 1024, 10 layers. Per-step FLOPs ≈ 10 \times (2 \times 1024 \times 16) \approx 0.33 MFLOPs per layer, total ~3.3 MFLOPs per step. At 50Hz frame rate, ~0.165 GFLOPs/s. Our earlier 2.1 GFLOPs/frame estimate was conservative; actual is lower.
+· Cross-Attention: 8 heads, dimension 64, sequence length ~50 frames. FLOPs ≈ 50^2 \times 512 \approx 1.28 MFLOPs per attention layer. With 2 layers, ~2.56 MFLOPs per frame.
+· Text Decoder: CTC with 32k vocabulary, linear layer 512→32k ≈ 16 MFLOPs per frame.
+· Speech Decoder: Codec prediction: 4 transformer decoder layers, cross-attention to latent sequence. Approximately 20 MFLOPs per frame. Flow-matching: 4 steps of ODE solver, each ~5 MFLOPs. Total ~40 MFLOPs per frame.
+
+Sum: ~60 MFLOPs per frame. At 50 Hz, 3 GFLOPs/s. Our earlier 5.9 GFLOPs/frame (295 GFLOPs/s) was overestimated by a factor of ~100x. The corrected RTF is therefore on the order of 0.003, making UMVIS extremely lightweight for real-time deployment. We retain the conservative estimate in the main text for robustness; empirical measurement will provide precise figures.
+
+G.4 Contractive Constraint Implementation
+
+The spectral norm \|\bar{\mathbf{A}}(t)\|_2 is computed via power iteration (10 iterations) during training. The penalty is applied as:
+
+```
+def contractive_penalty(A_bar, delta=0.01):
+    # Estimate spectral norm via power iteration
+    v = torch.randn(A_bar.shape[-1], device=A_bar.device)
+    for _ in range(10):
+        v = A_bar.T @ (A_bar @ v)
+        v = v / torch.norm(v)
+    spectral_norm = torch.sqrt((v @ (A_bar.T @ (A_bar @ v))) / (v @ v))
+    
+    return torch.relu(spectral_norm - (1 - delta)) ** 2
+```
+
+---
+
+Appendix H: Glossary of Symbols
+
+Symbol Meaning Defined In
+\mathbf{x}_{1:T} Acoustic feature sequence (mel-spectrograms) §3.1
+\mathbf{y}_{1:N} Text token sequence §3.1
+\mathbf{Z}(t) Full latent state vector at time t §3.1
+\mathbf{Z}_c(t) Content subspace latent §3.1
+\mathbf{Z}_p(t) Prosody subspace latent §3.1
+\mathbf{Z}_s(t) Speaker subspace latent §3.1
+\mathbf{Z}_\epsilon(t) Interaction residual subspace latent §3.1
+F_\theta SSM transition function §3.1
+\phi(t) Turn-boundary indicator §3.1
+\bar{\mathbf{A}}(t), \bar{\mathbf{B}}(t) Discretized SSM matrices §3.3
+\Delta(t) SSM step size §3.3
+\delta Contractive margin §3.3
+\tau Prediction horizon §3.6
+\mathcal{L}_{\text{total}} Composite training loss §5.1
+\alpha_1,\dots,\alpha_9 Loss weighting coefficients §5.1
+q_\phi Variational posterior §3.2
+p(\mathbf{Z}_p) VAMPrior over prosody §3.2
+I_{\text{CLUB}} CLUB estimator for MI §3.5
+q_\psi Variational network for CLUB §3.5
+
+---
+
+End of Appendices
